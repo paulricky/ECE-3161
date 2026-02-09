@@ -61,4 +61,5 @@ IK_RESIDUAL_THRESH = 1e-4
 # Smooth target pose a bit (0..1)
 POSE_SMOOTH_ALPHA = 0.25
 
+#replace with your own file path
 URDF_PATH = "/Users/ricky/PycharmProjects/ECE 3161/SO-ARM100"
