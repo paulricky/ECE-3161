@@ -1,3 +1,4 @@
+import math
 import time
 import cv2
 import pybullet as p
@@ -28,10 +29,10 @@ def ema_vec3(prev, new, alpha):
 
 
 def wrap_pi(a):
-    while a > 3.141592653589793:
-        a -= 6.283185307179586
-    while a < -3.141592653589793:
-        a += 6.283185307179586
+    while a > math.pi:
+        a -= math.pi*2
+    while a < math.pi*-1:
+        a += math.pi*2
     return a
 
 
