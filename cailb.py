@@ -120,8 +120,8 @@ def generate_charuco_board_png(
     dict_name: int = cv2.aruco.DICT_5X5_250,
     squares_x: int = 7,
     squares_y: int = 5,
-    square_length: float = 0.04,   # meters (only relative scale needed for intrinsics)
-    marker_length: float = 0.02,   # meters
+    square_length: float = 0.04,
+    marker_length: float = 0.02,
     dpi_px: int = 1600,
 ) -> str:
     d = cv2.aruco.getPredefinedDictionary(dict_name)

@@ -91,8 +91,6 @@ def rect_homography_to_workspace(rect_img_4x2):
     return H, Hinv
 
 def maybe_rotate_rect_using_marker(rect_img_4x2, marker_center, marker_angle):
-    # Heuristic: ensure marker "top edge direction" roughly aligns with rectangle top edge.
-    # If it aligns better after a 90deg corner rotation, rotate corner ordering.
     rect = rect_img_4x2.copy()
     top_edge = rect[1] - rect[0]
     rect_ang = math.atan2(float(top_edge[1]), float(top_edge[0]))
