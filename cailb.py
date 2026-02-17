@@ -1,497 +1,816 @@
 from __future__ import annotations
 
 import os
-import json
 import time
-from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple, List
+import argparse
+from typing import Dict, Tuple, Optional
 
 import cv2
 import numpy as np
 
-import values as val
 
-CALIB_DIR = os.path.join(os.path.dirname(__file__), "calibration_data")
-INTR_FILE = os.path.join(CALIB_DIR, "camera_intrinsics.json")
-WS_FILE = os.path.join(CALIB_DIR, "workspace.json")
-EXT_FILE = os.path.join(CALIB_DIR, "camera_extrinsics.json")
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+CALIB_DIR = os.path.join(_THIS_DIR, "calibration_data")
+os.makedirs(CALIB_DIR, exist_ok=True)
 
+INTRINSICS_NPZ = os.path.join(CALIB_DIR, "calibration_intrinsics.npz")
+WORKSPACE_NPZ = os.path.join(CALIB_DIR, "calibration_workspace.npz")
+EXTRINSICS_NPZ = os.path.join(CALIB_DIR, "calibration_extrinsics.npz")
 
-def _ensure_dir() -> None:
-    os.makedirs(CALIB_DIR, exist_ok=True)
-
-
-def _np_to_list(x: Any) -> Any:
-    if isinstance(x, np.ndarray):
-        return x.tolist()
-    if isinstance(x, (list, tuple)):
-        return [_np_to_list(v) for v in x]
-    if isinstance(x, dict):
-        return {k: _np_to_list(v) for k, v in x.items()}
-    return x
+ARTIFACTS_DIR = os.path.join(CALIB_DIR, "artifacts")
+os.makedirs(ARTIFACTS_DIR, exist_ok=True)
 
 
-def _list_to_np(x: Any, dtype=np.float64) -> Any:
-    if isinstance(x, list):
+def intrinsics_exists(path: str = INTRINSICS_NPZ) -> bool:
+    return os.path.exists(path)
+
+
+def workspace_exists(path: str = WORKSPACE_NPZ) -> bool:
+    return os.path.exists(path)
+
+
+def extrinsics_exists(path: str = EXTRINSICS_NPZ) -> bool:
+    return os.path.exists(path)
+
+
+def delete_calibration_files() -> None:
+    for pth in (INTRINSICS_NPZ, WORKSPACE_NPZ, EXTRINSICS_NPZ):
         try:
-            arr = np.array(x, dtype=dtype)
-            return arr
+            if os.path.exists(pth):
+                os.remove(pth)
         except Exception:
-            return [_list_to_np(v, dtype=dtype) for v in x]
-    if isinstance(x, dict):
-        return {k: _list_to_np(v, dtype=dtype) for k, v in x.items()}
-    return x
+            pass
 
 
-def save_intrinsics(intr: Dict[str, Any]) -> None:
-    _ensure_dir()
-    with open(INTR_FILE, "w") as f:
-        json.dump(_np_to_list(intr), f, indent=2)
-
-
-def save_workspace(ws: Dict[str, Any]) -> None:
-    _ensure_dir()
-    with open(WS_FILE, "w") as f:
-        json.dump(_np_to_list(ws), f, indent=2)
-
-
-def save_extrinsics(ext: Dict[str, Any]) -> None:
-    _ensure_dir()
-    with open(EXT_FILE, "w") as f:
-        json.dump(_np_to_list(ext), f, indent=2)
-
-
-def load_intrinsics() -> Optional[Dict[str, Any]]:
-    if not os.path.exists(INTR_FILE):
+def load_intrinsics(path: str = INTRINSICS_NPZ):
+    if not os.path.exists(path):
         return None
-    with open(INTR_FILE, "r") as f:
-        data = json.load(f)
-    data = _list_to_np(data)
-    if "K" in data:
-        data["K"] = np.array(data["K"], dtype=np.float64)
-    if "dist" in data:
-        data["dist"] = np.array(data["dist"], dtype=np.float64).reshape(-1, 1)
-    return data
-
-
-def load_workspace() -> Optional[Dict[str, Any]]:
-    if not os.path.exists(WS_FILE):
+    data = np.load(path, allow_pickle=True)
+    if "mtx" not in data or "dist" not in data:
         return None
-    with open(WS_FILE, "r") as f:
-        data = json.load(f)
-    data = _list_to_np(data)
-    if "H_img_to_ws" in data:
-        data["H_img_to_ws"] = np.array(data["H_img_to_ws"], dtype=np.float64)
-    if "H_ws_to_img" in data:
-        data["H_ws_to_img"] = np.array(data["H_ws_to_img"], dtype=np.float64)
-    if "rect_img_corners" in data:
-        data["rect_img_corners"] = np.array(data["rect_img_corners"], dtype=np.float64).reshape(4, 2)
-    return data
+    out = {
+        "mtx": data["mtx"].astype(np.float64),
+        "dist": data["dist"].astype(np.float64),
+    }
+    if "image_size" in data:
+        out["image_size"] = tuple(int(x) for x in data["image_size"].tolist())
+    if "rms" in data:
+        out["rms"] = float(np.array(data["rms"]).reshape(-1)[0])
+    if "reproj_err" in data:
+        out["reproj_err"] = float(np.array(data["reproj_err"]).reshape(-1)[0])
+    return out
 
 
-def load_extrinsics() -> Optional[Dict[str, Any]]:
-    if not os.path.exists(EXT_FILE):
+def load_workspace(path: str = WORKSPACE_NPZ):
+    if not os.path.exists(path):
         return None
-    with open(EXT_FILE, "r") as f:
-        data = json.load(f)
-    data = _list_to_np(data)
-    if "R" in data:
-        data["R"] = np.array(data["R"], dtype=np.float64).reshape(3, 3)
-    if "t" in data:
-        data["t"] = np.array(data["t"], dtype=np.float64).reshape(3, 1)
-    return data
+    data = np.load(path, allow_pickle=True)
+    if "H" not in data:
+        return None
+    out = {"H": data["H"].astype(np.float64)}
+    if "marker_world_mm" in data:
+        out["marker_world_mm"] = data["marker_world_mm"]
+    if "aruco_dict" in data:
+        out["aruco_dict"] = int(np.array(data["aruco_dict"]).reshape(-1)[0])
+    if "workspace_mode" in data:
+        out["workspace_mode"] = str(np.array(data["workspace_mode"]).reshape(-1)[0])
+    if "phone_model" in data:
+        out["phone_model"] = str(np.array(data["phone_model"]).reshape(-1)[0])
+    if "phone_wh_mm" in data:
+        out["phone_wh_mm"] = tuple(float(x) for x in np.array(data["phone_wh_mm"]).reshape(2))
+    return out
 
 
-def generate_aruco_marker_png(
-    out_png: str = "aruco_marker_id0.png",
-    marker_id: int = 0,
-    dict_name: int = cv2.aruco.DICT_5X5_250,
-    size_px: int = 900,
-    border_bits: int = 1,
-) -> str:
-    d = cv2.aruco.getPredefinedDictionary(dict_name)
-    img = cv2.aruco.generateImageMarker(d, marker_id, size_px, borderBits=border_bits)
-    cv2.imwrite(out_png, img)
-    return os.path.abspath(out_png)
+def load_extrinsics(path: str = EXTRINSICS_NPZ):
+    if not os.path.exists(path):
+        return None
+    data = np.load(path, allow_pickle=True)
+    if "R" not in data or "t" not in data:
+        return None
+    out = {
+        "R": data["R"].astype(np.float64),
+        "t": data["t"].astype(np.float64).reshape(3),
+    }
+    if "camera_height_mm" in data:
+        out["camera_height_mm"] = float(np.array(data["camera_height_mm"]).reshape(-1)[0])
+    if "rvec" in data:
+        out["rvec"] = data["rvec"].astype(np.float64).reshape(3)
+    if "tvec" in data:
+        out["tvec"] = data["tvec"].astype(np.float64).reshape(3)
+    return out
+
+
+def save_intrinsics(mtx, dist, image_size, rms=None, reproj_err=None):
+    np.savez(
+        INTRINSICS_NPZ,
+        mtx=np.asarray(mtx, dtype=np.float64),
+        dist=np.asarray(dist, dtype=np.float64),
+        image_size=np.asarray([image_size[0], image_size[1]], dtype=np.int32),
+        rms=np.asarray([0.0 if rms is None else float(rms)], dtype=np.float64),
+        reproj_err=np.asarray([0.0 if reproj_err is None else float(reproj_err)], dtype=np.float64),
+    )
+
+
+def save_workspace(H, workspace_mode: str, aruco_dict_id: int, marker_world_mm_arr=None, phone_model=None, phone_wh_mm=None):
+    kwargs = {
+        "H": np.asarray(H, dtype=np.float64),
+        "aruco_dict": np.asarray([int(aruco_dict_id)], dtype=np.int32),
+        "workspace_mode": np.asarray([str(workspace_mode)], dtype=object),
+    }
+    if marker_world_mm_arr is not None:
+        kwargs["marker_world_mm"] = np.asarray(marker_world_mm_arr, dtype=np.float64)
+    if phone_model is not None:
+        kwargs["phone_model"] = np.asarray([str(phone_model)], dtype=object)
+    if phone_wh_mm is not None:
+        kwargs["phone_wh_mm"] = np.asarray([float(phone_wh_mm[0]), float(phone_wh_mm[1])], dtype=np.float64)
+    np.savez(WORKSPACE_NPZ, **kwargs)
+
+
+def save_extrinsics(R, t, camera_height_mm=None, rvec=None, tvec=None):
+    np.savez(
+        EXTRINSICS_NPZ,
+        R=np.asarray(R, dtype=np.float64),
+        t=np.asarray(t, dtype=np.float64).reshape(3),
+        camera_height_mm=np.asarray([0.0 if camera_height_mm is None else float(camera_height_mm)], dtype=np.float64),
+        rvec=np.asarray([0.0, 0.0, 0.0] if rvec is None else np.asarray(rvec, dtype=np.float64).reshape(3), dtype=np.float64),
+        tvec=np.asarray([0.0, 0.0, 0.0] if tvec is None else np.asarray(tvec, dtype=np.float64).reshape(3), dtype=np.float64),
+    )
+
+
+def undistort_frame(frame, mtx, dist):
+    h, w = frame.shape[:2]
+    new_mtx, _ = cv2.getOptimalNewCameraMatrix(mtx, dist, (w, h), 1, (w, h))
+    return cv2.undistort(frame, mtx, dist, None, new_mtx)
+
+
+def pixel_to_world_mm(H, u, v):
+    pt = np.array([[[float(u), float(v)]]], dtype=np.float64)
+    out = cv2.perspectiveTransform(pt, H)[0, 0]
+    return float(out[0]), float(out[1])
+
+
+def _aruco_detector(dict_id: int):
+    aruco_dict = cv2.aruco.getPredefinedDictionary(dict_id)
+    params = cv2.aruco.DetectorParameters()
+    params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+    params.adaptiveThreshWinSizeMin = 3
+    params.adaptiveThreshWinSizeMax = 53
+    params.adaptiveThreshWinSizeStep = 10
+    params.minMarkerPerimeterRate = 0.02
+    params.maxMarkerPerimeterRate = 4.0
+    params.polygonalApproxAccuracyRate = 0.03
+    params.minCornerDistanceRate = 0.02
+    params.minDistanceToBorder = 2
+    detector = cv2.aruco.ArucoDetector(aruco_dict, params)
+    return aruco_dict, detector
+
+
+def _make_charuco(board_cols=5, board_rows=7, square_len=0.030, marker_len=0.022, dict_id=cv2.aruco.DICT_5X5_250):
+    aruco_dict = cv2.aruco.getPredefinedDictionary(dict_id)
+    board = cv2.aruco.CharucoBoard((board_cols, board_rows), float(square_len), float(marker_len), aruco_dict)
+    return aruco_dict, board
+
+
+def generate_aruco_marker_png(marker_id: int = 0, dict_id: int = cv2.aruco.DICT_5X5_250, size_px: int = 600) -> str:
+    aruco_dict = cv2.aruco.getPredefinedDictionary(dict_id)
+    img = cv2.aruco.generateImageMarker(aruco_dict, int(marker_id), int(size_px))
+    out_path = os.path.join(ARTIFACTS_DIR, f"aruco_{dict_id}_id{int(marker_id)}_{int(size_px)}px.png")
+    cv2.imwrite(out_path, img)
+    return out_path
 
 
 def generate_charuco_board_png(
-    out_png: str = "charuco_board.png",
-    dict_name: int = cv2.aruco.DICT_5X5_250,
-    squares_x: int = 7,
-    squares_y: int = 5,
-    square_length: float = 0.04,
-    marker_length: float = 0.02,
-    dpi_px: int = 1600,
+    dict_id: int = cv2.aruco.DICT_5X5_250,
+    cols: int = 5,
+    rows: int = 7,
+    square_px: int = 140,
+    margin_px: int = 20,
+    marker_to_square_ratio: float = 0.7333333333,
 ) -> str:
-    d = cv2.aruco.getPredefinedDictionary(dict_name)
-    board = cv2.aruco.CharucoBoard((squares_x, squares_y), square_length, marker_length, d)
-    img = board.generateImage((dpi_px, int(dpi_px * squares_y / squares_x)))
-    cv2.imwrite(out_png, img)
-    return os.path.abspath(out_png)
+    aruco_dict = cv2.aruco.getPredefinedDictionary(dict_id)
+    board = cv2.aruco.CharucoBoard(
+        (int(cols), int(rows)),
+        1.0,
+        float(marker_to_square_ratio),
+        aruco_dict,
+    )
+    w = int(cols) * int(square_px) + 2 * int(margin_px)
+    h = int(rows) * int(square_px) + 2 * int(margin_px)
+    img = board.generateImage((w, h), marginSize=int(margin_px), borderBits=1)
+    out_path = os.path.join(ARTIFACTS_DIR, f"charuco_{dict_id}_{cols}x{rows}_{square_px}px.png")
+    cv2.imwrite(out_path, img)
+    return out_path
 
+
+def _enhance_gray(gray: np.ndarray) -> np.ndarray:
+    g = gray
+    if g.dtype != np.uint8:
+        g = np.clip(g, 0, 255).astype(np.uint8)
+    g = cv2.GaussianBlur(g, (3, 3), 0)
+    g = cv2.equalizeHist(g)
+    return g
+
+
+def run_intrinsics_calibration(
+    cap,
+    target_frames=25,
+    cooldown_s=0.15,
+    aruco_dict_id=cv2.aruco.DICT_5X5_250,
+    charuco_cols=5,
+    charuco_rows=7,
+    square_len_m=0.030,
+    marker_len_m=0.022,
+    min_charuco_corners=10,
+):
+
+    print("\n=== Intrinsics Calibration (CHARUCO) ===")
+    print("Show a Charuco board (printed OR on phone/tablet).")
+    print("Tip: fill more of the frame, reduce glare, and keep the board in focus.")
+    print("Press SPACE to capture when enough corners are detected.")
+    print("Press 'a' toggle auto-capture.")
+    print("Press 's' solve+save, 'r' reset, 'q' quit.\n")
+
+    try:
+        cb_path = generate_charuco_board_png(
+            dict_id=aruco_dict_id,
+            cols=charuco_cols,
+            rows=charuco_rows,
+            marker_to_square_ratio=(marker_len_m / square_len_m),
+        )
+        print("Generated Charuco board image:", cb_path)
+    except Exception:
+        pass
+
+    aruco_dict, board = _make_charuco(
+        board_cols=charuco_cols,
+        board_rows=charuco_rows,
+        square_len=square_len_m,
+        marker_len=marker_len_m,
+        dict_id=aruco_dict_id,
+    )
+    params = cv2.aruco.DetectorParameters()
+    params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+    params.adaptiveThreshWinSizeMin = 3
+    params.adaptiveThreshWinSizeMax = 53
+    params.adaptiveThreshWinSizeStep = 10
+    params.minMarkerPerimeterRate = 0.02
+    params.maxMarkerPerimeterRate = 4.0
+    detector = cv2.aruco.ArucoDetector(aruco_dict, params)
+
+    all_charuco_corners = []
+    all_charuco_ids = []
+    image_size = None
+
+    good = 0
+    last_capture_t = 0.0
+    mtx = None
+    dist = None
+    auto_capture = False
+
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            return False
+
+        vis = frame.copy()
+        gray0 = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = _enhance_gray(gray0)
+        h, w = gray.shape[:2]
+        image_size = (w, h)
+
+        corners, ids, _rejected = detector.detectMarkers(gray)
+        ok_i = False
+        charuco_corners = None
+        charuco_ids = None
+        status = "ARUCO: none"
+
+        if ids is not None and len(ids) > 0:
+            cv2.aruco.drawDetectedMarkers(vis, corners, ids)
+
+            ok_i, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
+                markerCorners=corners,
+                markerIds=ids,
+                image=gray,
+                board=board,
+            )
+
+            if ok_i and charuco_corners is not None and charuco_ids is not None:
+                if len(charuco_ids) >= int(min_charuco_corners):
+                    cv2.aruco.drawDetectedCornersCharuco(vis, charuco_corners, charuco_ids)
+                    status = f"CHARUCO OK ({len(charuco_ids)} corners)"
+                else:
+                    ok_i = False
+                    status = f"CHARUCO: not enough corners ({len(charuco_ids)}/{min_charuco_corners})"
+            else:
+                ok_i = False
+                status = "CHARUCO: interpolate failed"
+
+        cv2.putText(vis, f"Frames: {good}/{target_frames}", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(vis, "SPACE=capture  a=auto  s=solve+save  r=reset  q=quit", (10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(vis, status, (10, 90),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0) if ok_i else (0, 0, 255), 2, cv2.LINE_AA)
+        cv2.putText(vis, f"auto: {'ON' if auto_capture else 'OFF'}", (10, 120),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2, cv2.LINE_AA)
+
+        if mtx is not None:
+            cv2.putText(vis, "Intrinsics estimated (press s to save again if needed)", (10, 150),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+
+        cv2.imshow("calib.py - Intrinsics (Charuco)", vis)
+        key = cv2.waitKey(1) & 0xFF
+        now = time.time()
+
+        if key == ord("q"):
+            return False
+
+        if key == ord("a"):
+            auto_capture = not auto_capture
+
+        if key == ord("r"):
+            all_charuco_corners.clear()
+            all_charuco_ids.clear()
+            good = 0
+            mtx = None
+            dist = None
+
+        capture_now = (key == ord(" ")) or (auto_capture and ok_i)
+        if capture_now and ok_i:
+            if now - last_capture_t >= float(cooldown_s):
+                all_charuco_corners.append(charuco_corners)
+                all_charuco_ids.append(charuco_ids)
+                good += 1
+                last_capture_t = now
+
+        if key == ord("s"):
+            if len(all_charuco_corners) < 8:
+                continue
+
+            try:
+                ret, mtx, dist, _rvecs, _tvecs = cv2.aruco.calibrateCameraCharuco(
+                    charucoCorners=all_charuco_corners,
+                    charucoIds=all_charuco_ids,
+                    board=board,
+                    imageSize=image_size,
+                    cameraMatrix=None,
+                    distCoeffs=None,
+                )
+            except Exception:
+                continue
+
+            save_intrinsics(mtx, dist, image_size, rms=float(ret), reproj_err=None)
+
+        if good >= int(target_frames) and mtx is not None and dist is not None:
+            return True
 
 
 def _order_quad(pts: np.ndarray) -> np.ndarray:
-    pts = np.array(pts, dtype=np.float32).reshape(4, 2)
+    pts = np.asarray(pts, dtype=np.float64).reshape(4, 2)
     s = pts.sum(axis=1)
-    d = np.diff(pts, axis=1).reshape(-1)
+    d = pts[:, 0] - pts[:, 1]
     tl = pts[np.argmin(s)]
     br = pts[np.argmax(s)]
-    tr = pts[np.argmin(d)]
-    bl = pts[np.argmax(d)]
-    return np.array([tl, tr, br, bl], dtype=np.float32)
+    tr = pts[np.argmax(d)]
+    bl = pts[np.argmin(d)]
+    return np.vstack([tl, tr, br, bl])
 
 
-def detect_largest_rectangle(gray: np.ndarray) -> Optional[np.ndarray]:
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    edges = cv2.Canny(blur, 50, 150)
-    edges = cv2.dilate(edges, None, iterations=2)
+def _find_phone_quad(frame_bgr: np.ndarray, marker_center: Tuple[float, float]) -> Optional[np.ndarray]:
+    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(gray, 40, 120)
+    edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=1)
 
     cnts, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return None
 
+    mcx, mcy = float(marker_center[0]), float(marker_center[1])
     best = None
-    best_area = 0.0
+    best_score = -1.0
+
     for c in cnts:
         area = cv2.contourArea(c)
-        if area < 6000:
+        if area < 20000:
             continue
         peri = cv2.arcLength(c, True)
         approx = cv2.approxPolyDP(c, 0.02 * peri, True)
         if len(approx) != 4:
             continue
-        if not cv2.isContourConvex(approx):
+        pts = approx.reshape(4, 2).astype(np.float64)
+
+        if cv2.pointPolygonTest(approx, (mcx, mcy), False) < 0:
             continue
-        if area > best_area:
-            best_area = area
-            best = approx.reshape(4, 2)
 
-    if best is None:
-        return None
-    return _order_quad(best)
+        rect = cv2.minAreaRect(approx)
+        (w, h) = rect[1]
+        if w <= 1 or h <= 1:
+            continue
+        ar = max(w, h) / (min(w, h) + 1e-9)
+        if ar < 1.5 or ar > 3.0:
+            continue
 
+        score = float(area)
+        if score > best_score:
+            best_score = score
+            best = pts
 
-def detect_any_aruco(gray: np.ndarray, dict_name: int = cv2.aruco.DICT_5X5_250) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-    d = cv2.aruco.getPredefinedDictionary(dict_name)
-    params = cv2.aruco.DetectorParameters()
-    det = cv2.aruco.ArucoDetector(d, params)
-    corners, ids, _rej = det.detectMarkers(gray)
-    if ids is None or len(ids) == 0:
-        return None
-    return corners, ids
+    return None if best is None else _order_quad(best)
 
 
-def marker_center_and_angle(marker_corners: np.ndarray) -> Tuple[np.ndarray, float]:
-    pts = np.array(marker_corners, dtype=np.float32).reshape(4, 2)
-    c = pts.mean(axis=0)
-    v = pts[1] - pts[0]
-    ang = float(np.arctan2(v[1], v[0]))
-    return c, ang
+def run_workspace_calibration_phone(
+    cap,
+    phone_model: str = "s24_ultra",
+    phone_wh_mm: Tuple[float, float] = (79.0, 162.3),
+    aruco_dict_id: int = cv2.aruco.DICT_5X5_250,
+    marker_id_any: bool = True,
+    use_undistort: bool = True,
+):
+    intr = load_intrinsics(INTRINSICS_NPZ) if use_undistort else None
+    mtx = intr["mtx"] if intr is not None else None
+    dist = intr["dist"] if intr is not None else None
 
+    _aruco_dict, detector = _aruco_detector(aruco_dict_id)
 
-def _ang_diff(a: float, b: float) -> float:
-    d = (a - b + np.pi) % (2 * np.pi) - np.pi
-    return float(abs(d))
+    try:
+        mk_path = generate_aruco_marker_png(marker_id=0, dict_id=aruco_dict_id, size_px=600)
+        print("Generated ArUco marker image:", mk_path)
+    except Exception:
+        pass
 
+    print("\n=== Workspace Calibration (PHONE + ArUco) ===")
+    print("1) Put your phone flat on the table (screen up).")
+    print("2) Display the ArUco marker image on the phone screen (or tape a printed marker on it).")
+    print("3) Ensure the full phone outline is visible.")
+    print("Press 'c' compute+save, 'q' quit.\n")
 
-def align_rect_corner_order_to_marker(rect_img: np.ndarray, marker_ang: float) -> np.ndarray:
-    rect = rect_img.copy()
-    top_edge = rect[1] - rect[0]
-    rect_ang = float(np.arctan2(top_edge[1], top_edge[0]))
+    best_H = None
+    best_rvec = None
+    best_tvec = None
+    best_inliers = -1
 
-    best = rect
-    best_score = _ang_diff(marker_ang, rect_ang)
+    w_mm, h_mm = float(phone_wh_mm[0]), float(phone_wh_mm[1])
+    obj_pts = np.array([[0.0, 0.0, 0.0],
+                        [w_mm, 0.0, 0.0],
+                        [w_mm, h_mm, 0.0],
+                        [0.0, h_mm, 0.0]], dtype=np.float64)
 
-    for k in range(1, 4):
-        r = np.roll(rect, -k, axis=0)
-        e = r[1] - r[0]
-        a = float(np.arctan2(e[1], e[0]))
-        s = _ang_diff(marker_ang, a)
-        if s < best_score:
-            best_score = s
-            best = r
-
-    return best
-
-
-def rect_homography_to_workspace(rect_img_4x2: np.ndarray) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-    xmin, xmax = float(val.WORKSPACE_X_MIN), float(val.WORKSPACE_X_MAX)
-    ymin, ymax = float(val.WORKSPACE_Y_MIN), float(val.WORKSPACE_Y_MAX)
-
-    dst = np.array(
-        [
-            [xmin, ymin],
-            [xmax, ymin],
-            [xmax, ymax],
-            [xmin, ymax],
-        ],
-        dtype=np.float32,
-    )
-
-    H, _ = cv2.findHomography(rect_img_4x2.astype(np.float32), dst, method=0)
-    if H is None:
-        return None
-    Hinv = np.linalg.inv(H)
-    return H, Hinv
-
-
-def pose_from_world_to_image_homography(K: np.ndarray, H_w2i: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    K = np.array(K, dtype=np.float64).reshape(3, 3)
-    H = np.array(H_w2i, dtype=np.float64).reshape(3, 3)
-
-    invK = np.linalg.inv(K)
-    B = invK @ H
-    h1 = B[:, 0]
-    h2 = B[:, 1]
-    h3 = B[:, 2]
-
-    lam = 1.0 / (np.linalg.norm(h1) + 1e-12)
-    r1 = lam * h1
-    r2 = lam * h2
-    r3 = np.cross(r1, r2)
-    t = lam * h3.reshape(3, 1)
-
-    R_approx = np.stack([r1, r2, r3], axis=1)
-    U, _, Vt = np.linalg.svd(R_approx)
-    R = U @ Vt
-    if np.linalg.det(R) < 0:
-        U[:, -1] *= -1
-        R = U @ Vt
-
-    return R.astype(np.float64), t.astype(np.float64)
-
-
-
-def calibrate_intrinsics_charuco(
-    cap: cv2.VideoCapture,
-    target_frames: int = 25,
-    dict_name: int = cv2.aruco.DICT_5X5_250,
-    squares_x: int = 7,
-    squares_y: int = 5,
-    square_length: float = 0.04,
-    marker_length: float = 0.02,
-    timeout_s: float = 90.0,
-) -> Dict[str, Any]:
-    d = cv2.aruco.getPredefinedDictionary(dict_name)
-    board = cv2.aruco.CharucoBoard((squares_x, squares_y), square_length, marker_length, d)
-
-    all_corners: List[np.ndarray] = []
-    all_ids: List[np.ndarray] = []
-    img_size = None
-
-    params = cv2.aruco.DetectorParameters()
-    det = cv2.aruco.ArucoDetector(d, params)
-
-    t0 = time.time()
     while True:
         ok, frame = cap.read()
         if not ok:
-            continue
+            return False
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        if img_size is None:
-            img_size = (gray.shape[1], gray.shape[0])
+        if (mtx is not None) and (dist is not None) and use_undistort:
+            frame_u = undistort_frame(frame, mtx, dist)
+        else:
+            frame_u = frame
 
-        corners, ids, _rej = det.detectMarkers(gray)
-        vis = frame.copy()
+        vis = frame_u.copy()
+        gray = _enhance_gray(cv2.cvtColor(frame_u, cv2.COLOR_BGR2GRAY))
 
+        corners, ids, _rej = detector.detectMarkers(gray)
+        marker_center = None
         if ids is not None and len(ids) > 0:
             cv2.aruco.drawDetectedMarkers(vis, corners, ids)
-            ret, ch_corners, ch_ids = cv2.aruco.interpolateCornersCharuco(corners, ids, gray, board)
-            if ret is not None and ch_corners is not None and ch_ids is not None and len(ch_ids) >= 12:
-                all_corners.append(ch_corners)
-                all_ids.append(ch_ids)
-                cv2.putText(vis, f"ChArUco accepted ({len(all_corners)}/{target_frames})",
-                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            ids_list = ids.flatten().tolist()
+            sel_idx = 0
+            if not marker_id_any:
+                if 0 in ids_list:
+                    sel_idx = ids_list.index(0)
+                else:
+                    sel_idx = 0
+            pts = corners[sel_idx][0]
+            marker_center = pts.mean(axis=0)
 
-        cv2.putText(
-            vis,
-            "Intrinsics: show a ChArUco board (print or display). Press 'q' to abort.",
-            (10, vis.shape[0] - 10),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (255, 255, 255),
-            2,
-        )
-        cv2.imshow("Calibration - Intrinsics (ChArUco)", vis)
-        k = cv2.waitKey(1) & 0xFF
-        if k == ord("q"):
-            break
-        if len(all_corners) >= target_frames:
-            break
-        if time.time() - t0 > timeout_s and len(all_corners) >= max(10, target_frames // 2):
-            break
+        phone_quad = None
+        if marker_center is not None:
+            phone_quad = _find_phone_quad(frame_u, marker_center)
 
-    cv2.destroyWindow("Calibration - Intrinsics (ChArUco)")
+        H = None
+        inliers = 0
+        rvec = None
+        tvec = None
 
-    if img_size is None or len(all_corners) < 8:
-        raise RuntimeError("Intrinsics calibration failed: not enough valid ChArUco frames.")
+        if phone_quad is not None:
+            img_pts = phone_quad.astype(np.float64)
+            world_2d = np.array([[0.0, 0.0],
+                                 [w_mm, 0.0],
+                                 [w_mm, h_mm],
+                                 [0.0, h_mm]], dtype=np.float64)
+            H, mask = cv2.findHomography(img_pts, world_2d, method=0)
+            inliers = 4 if H is not None else 0
 
-    flags = 0
-    ret, K, dist, rvecs, tvecs = cv2.aruco.calibrateCameraCharuco(
-        charucoCorners=all_corners,
-        charucoIds=all_ids,
-        board=board,
-        imageSize=img_size,
-        cameraMatrix=None,
-        distCoeffs=None,
-        flags=flags,
-    )
+            cv2.polylines(vis, [img_pts.astype(np.int32)], True, (0, 255, 0), 2, cv2.LINE_AA)
 
-    intr = {
-        "K": np.array(K, dtype=np.float64),
-        "dist": np.array(dist, dtype=np.float64).reshape(-1, 1),
-        "image_w": int(img_size[0]),
-        "image_h": int(img_size[1]),
-        "reproj_error": float(ret),
-    }
-    return intr
+            if (mtx is not None) and (dist is not None) and H is not None:
+                okpnp, rvec, tvec = cv2.solvePnP(
+                    objectPoints=obj_pts,
+                    imagePoints=img_pts,
+                    cameraMatrix=mtx,
+                    distCoeffs=dist,
+                    flags=cv2.SOLVEPNP_ITERATIVE,
+                )
+                if not okpnp:
+                    rvec, tvec = None, None
+
+        if H is not None and inliers > best_inliers:
+            best_inliers = inliers
+            best_H = H
+            best_rvec = rvec
+            best_tvec = tvec
+
+        cv2.putText(vis, f"marker: {'YES' if marker_center is not None else 'NO'}", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(vis, f"phone quad: {'YES' if phone_quad is not None else 'NO'}", (10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(vis, "c=save  q=quit", (10, 90),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+
+        cv2.imshow("calib.py - Workspace (phone)", vis)
+        key = cv2.waitKey(1) & 0xFF
+
+        if key == ord("q"):
+            return False
+
+        if key == ord("c"):
+            if best_H is None:
+                continue
+
+            save_workspace(
+                best_H,
+                workspace_mode="phone",
+                aruco_dict_id=int(aruco_dict_id),
+                marker_world_mm_arr=None,
+                phone_model=str(phone_model),
+                phone_wh_mm=(w_mm, h_mm),
+            )
+
+            if (mtx is not None) and (dist is not None) and (best_rvec is not None) and (best_tvec is not None):
+                R, _ = cv2.Rodrigues(best_rvec)
+                t = best_tvec.reshape(3)
+                save_extrinsics(R=R, t=t, camera_height_mm=float(abs(t[2])), rvec=best_rvec.reshape(3), tvec=t)
+            return True
 
 
+def run_workspace_calibration_markers(
+    cap,
+    marker_world_mm: Dict[int, Tuple[float, float]],
+    aruco_dict_id=cv2.aruco.DICT_5X5_250,
+    use_undistort=True,
+):
+    intr = load_intrinsics(INTRINSICS_NPZ) if use_undistort else None
+    mtx = intr["mtx"] if intr is not None else None
+    dist = intr["dist"] if intr is not None else None
 
-def calibrate_workspace_from_rectangle_and_aruco(
-    cap: cv2.VideoCapture,
-    intr: Optional[Dict[str, Any]],
-    dict_name: int = cv2.aruco.DICT_5X5_250,
-    required_frames: int = 12,
-    timeout_s: float = 60.0,
-) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
-    Hs_img2ws: List[np.ndarray] = []
-    rects: List[np.ndarray] = []
-    marker_ids_seen: List[int] = []
+    aruco_dict = cv2.aruco.getPredefinedDictionary(aruco_dict_id)
+    params = cv2.aruco.DetectorParameters()
+    params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+    detector = cv2.aruco.ArucoDetector(aruco_dict, params)
 
-    t0 = time.time()
+    best_H = None
+    best_inliers = -1
+
+    print("\n=== Workspace Calibration (Aruco Homography) ===")
+    print("Show >=4 configured markers in view.")
+    print("Press 'c' compute+save, 'q' quit.\n")
+    for mid in sorted(marker_world_mm):
+        print(f"  ID {mid} -> {marker_world_mm[mid]} mm")
 
     while True:
         ok, frame = cap.read()
         if not ok:
-            continue
+            return False
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if (mtx is not None) and (dist is not None) and use_undistort:
+            frame_u = undistort_frame(frame, mtx, dist)
+        else:
+            frame_u = frame
 
-        ar = detect_any_aruco(gray, dict_name=dict_name)
-        rect = detect_largest_rectangle(gray)
+        gray = _enhance_gray(cv2.cvtColor(frame_u, cv2.COLOR_BGR2GRAY))
+        corners, ids, _ = detector.detectMarkers(gray)
 
-        vis = frame.copy()
+        found = {}
+        if ids is not None:
+            ids_list = ids.flatten().tolist()
+            for c, mid in zip(corners, ids_list):
+                pts = c[0]
+                center = pts.mean(axis=0)
+                found[int(mid)] = {"corners": pts, "center": center}
 
-        if rect is not None:
-            cv2.polylines(vis, [rect.astype(np.int32)], True, (0, 255, 255), 2)
-
-        if ar is not None:
-            corners, ids = ar
+        vis = frame_u.copy()
+        if ids is not None:
             cv2.aruco.drawDetectedMarkers(vis, corners, ids)
 
-        accepted = False
-        if rect is not None and ar is not None:
-            corners, ids = ar
-            mc, mang = marker_center_and_angle(corners[0])
-            rid = int(ids.flatten()[0])
-            rect_aligned = align_rect_corner_order_to_marker(rect, mang)
-            out = rect_homography_to_workspace(rect_aligned)
-            if out is not None:
-                H, Hinv = out
-                Hs_img2ws.append(H)
-                rects.append(rect_aligned)
-                marker_ids_seen.append(rid)
-                accepted = True
+        img_pts = []
+        world_pts = []
+        for mid, (wx, wy) in marker_world_mm.items():
+            if int(mid) in found:
+                cx, cy = found[int(mid)]["center"]
+                img_pts.append([cx, cy])
+                world_pts.append([wx, wy])
+                cv2.putText(vis, f"ID{mid} -> ({wx:.0f},{wy:.0f})mm", (int(cx) + 8, int(cy) - 8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv2.LINE_AA)
 
-        if accepted:
-            cv2.putText(vis, f"Workspace accepted ({len(Hs_img2ws)}/{required_frames})",
-                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        inliers = 0
+        if len(img_pts) >= 4:
+            img_pts = np.array(img_pts, dtype=np.float64)
+            world_pts = np.array(world_pts, dtype=np.float64)
+            H, mask = cv2.findHomography(img_pts, world_pts, method=cv2.RANSAC, ransacReprojThreshold=3.0)
+            inliers = int(mask.sum()) if mask is not None else 0
+            if H is not None and inliers > best_inliers:
+                best_inliers = inliers
+                best_H = H
 
-        cv2.putText(
-            vis,
-            "Workspace: place ANY rectangle on table with ANY visible ArUco tag. Press 'q' to abort.",
-            (10, vis.shape[0] - 10),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (255, 255, 255),
-            2,
-        )
-        cv2.imshow("Calibration - Workspace (Rectangle + ArUco)", vis)
-        k = cv2.waitKey(1) & 0xFF
-        if k == ord("q"):
-            break
+        cv2.putText(vis, f"Markers found: {len(found)}", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(vis, f"Best inliers: {max(best_inliers, 0)}", (10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(vis, "c=save  q=quit", (10, 90),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
 
-        if len(Hs_img2ws) >= required_frames:
-            break
+        cv2.imshow("calib.py - Workspace (markers)", vis)
+        key = cv2.waitKey(1) & 0xFF
 
-        if time.time() - t0 > timeout_s and len(Hs_img2ws) >= max(5, required_frames // 2):
-            break
+        if key == ord("q"):
+            return False
 
-    cv2.destroyWindow("Calibration - Workspace (Rectangle + ArUco)")
+        if key == ord("c"):
+            if best_H is None:
+                continue
 
-    if len(Hs_img2ws) < 5:
-        raise RuntimeError("Workspace calibration failed: not enough frames with both rectangle and ArUco.")
-
-    H_avg = np.mean(np.stack(Hs_img2ws, axis=0), axis=0)
-    rect_avg = np.mean(np.stack(rects, axis=0), axis=0)
-
-    out = rect_homography_to_workspace(_order_quad(rect_avg))
-    if out is None:
-        raise RuntimeError("Workspace calibration failed: homography could not be computed.")
-    H_img_to_ws, H_ws_to_img = out
-
-    ws = {
-        "H_img_to_ws": np.array(H_img_to_ws, dtype=np.float64),
-        "H_ws_to_img": np.array(H_ws_to_img, dtype=np.float64),
-        "rect_img_corners": np.array(_order_quad(rect_avg), dtype=np.float64),
-        "ws_bounds": [
-            float(val.WORKSPACE_X_MIN),
-            float(val.WORKSPACE_X_MAX),
-            float(val.WORKSPACE_Y_MIN),
-            float(val.WORKSPACE_Y_MAX),
-        ],
-        "table_z": float(val.WORKSPACE_Z_MIN),
-        "marker_ids_seen": marker_ids_seen[-20:],
-    }
-
-    ext = None
-    if intr is not None and "K" in intr and ws.get("H_ws_to_img", None) is not None:
-        R, t = pose_from_world_to_image_homography(np.array(intr["K"], dtype=np.float64), np.array(ws["H_ws_to_img"], dtype=np.float64))
-        ext = {
-            "R": R,
-            "t": t,
-            "world_frame": "workspace_plane_z0",
-            "note": "Recovered from homography: world plane (X,Y,1) -> image, assuming Z=0 plane",
-        }
-
-    return ws, ext
-
+            marker_arr = np.array(
+                [[int(mid), float(marker_world_mm[mid][0]), float(marker_world_mm[mid][1])] for mid in sorted(marker_world_mm)],
+                dtype=np.float64,
+            )
+            save_workspace(
+                best_H,
+                workspace_mode="markers",
+                aruco_dict_id=int(aruco_dict_id),
+                marker_world_mm_arr=marker_arr,
+            )
+            return True
 
 
 def ensure_calibration(
-    cap: cv2.VideoCapture,
-    use_charuco_intrinsics: bool = True,
+    cap,
+    marker_world_mm: Optional[Dict[int, Tuple[float, float]]] = None,
+    aruco_dict_id: int = cv2.aruco.DICT_5X5_250,
     intrinsics_target_frames: int = 25,
-    phone_ids: Tuple[int, int, int, int] = (10, 11, 12, 13),
-) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
-    _ensure_dir()
+    workspace_mode: str = "phone",
+    phone_model: str = "s24_ultra",
+    phone_wh_mm: Tuple[float, float] = (79.0, 162.3),
+    use_charuco_intrinsics: bool = True,
+    phone_ids: Optional[Tuple[int, ...]] = None,
+    **_ignored_kwargs,
+):
+    if marker_world_mm is None:
+        marker_world_mm = {}
 
-    intr = load_intrinsics()
-    ws = load_workspace()
-    ext = load_extrinsics()
+    need_intr = not intrinsics_exists(INTRINSICS_NPZ)
+    need_ws = not workspace_exists(WORKSPACE_NPZ)
+    need_ext = not extrinsics_exists(EXTRINSICS_NPZ)
 
-    if intr is None and use_charuco_intrinsics:
+    if need_intr:
+        ok = run_intrinsics_calibration(
+            cap,
+            target_frames=int(intrinsics_target_frames),
+            aruco_dict_id=int(aruco_dict_id),
+        )
+        if not ok:
+            return None, None, None
+
+    ws_ok = True
+    if need_ws:
+        if str(workspace_mode).lower() == "markers":
+            if len(marker_world_mm) >= 4:
+                ws_ok = run_workspace_calibration_markers(
+                    cap,
+                    marker_world_mm=marker_world_mm,
+                    aruco_dict_id=int(aruco_dict_id),
+                    use_undistort=True,
+                )
+            else:
+                ws_ok = False
+        else:
+            ws_ok = run_workspace_calibration_phone(
+                cap,
+                phone_model=str(phone_model),
+                phone_wh_mm=phone_wh_mm,
+                aruco_dict_id=int(aruco_dict_id),
+                marker_id_any=True,
+                use_undistort=True,
+            )
+
+    intr = load_intrinsics(INTRINSICS_NPZ)
+    ws = load_workspace(WORKSPACE_NPZ) if ws_ok else None
+    ext = load_extrinsics(EXTRINSICS_NPZ) if (need_ext is False or extrinsics_exists(EXTRINSICS_NPZ)) else None
+    return intr, ws, ext
+
+
+def force_recalibration(
+    camera_index: int = 0,
+    marker_world_mm: Optional[Dict[int, Tuple[float, float]]] = None,
+    aruco_dict_id: int = cv2.aruco.DICT_5X5_250,
+    intrinsics_target_frames: int = 25,
+    workspace_mode: str = "phone",
+    phone_model: str = "s24_ultra",
+    phone_wh_mm: Tuple[float, float] = (79.0, 162.3),
+):
+    if marker_world_mm is None:
+        marker_world_mm = {}
+
+    delete_calibration_files()
+
+    cap = cv2.VideoCapture(int(camera_index))
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open webcam at index {camera_index}.")
+
+    try:
+        ok_intr = run_intrinsics_calibration(
+            cap,
+            target_frames=int(intrinsics_target_frames),
+            aruco_dict_id=int(aruco_dict_id),
+        )
+        if not ok_intr:
+            return None, None, None
+
+        ws_ok = True
+        if str(workspace_mode).lower() == "markers":
+            ws_ok = (len(marker_world_mm) >= 4) and run_workspace_calibration_markers(
+                cap,
+                marker_world_mm=marker_world_mm,
+                aruco_dict_id=int(aruco_dict_id),
+                use_undistort=True,
+            )
+        else:
+            ws_ok = run_workspace_calibration_phone(
+                cap,
+                phone_model=str(phone_model),
+                phone_wh_mm=phone_wh_mm,
+                aruco_dict_id=int(aruco_dict_id),
+                marker_id_any=True,
+                use_undistort=True,
+            )
+
+        intr = load_intrinsics(INTRINSICS_NPZ)
+        ws = load_workspace(WORKSPACE_NPZ) if ws_ok else None
+        ext = load_extrinsics(EXTRINSICS_NPZ)
+        return intr, ws, ext
+    finally:
         try:
-            generate_charuco_board_png(out_png=os.path.join(CALIB_DIR, "charuco_board.png"))
+            cap.release()
         except Exception:
             pass
-        intr = calibrate_intrinsics_charuco(
-            cap=cap,
-            target_frames=int(intrinsics_target_frames),
-        )
-        save_intrinsics(intr)
+        try:
+            cv2.destroyAllWindows()
+        except Exception:
+            pass
 
-    if ws is None or (ext is None and intr is not None):
-        ws, ext2 = calibrate_workspace_from_rectangle_and_aruco(
-            cap=cap,
-            intr=intr,
-            required_frames=12,
-        )
-        save_workspace(ws)
-        if ext2 is not None:
-            ext = ext2
-            save_extrinsics(ext)
 
-    return intr, ws, ext
+def _parse_marker_world(s: str) -> Dict[int, Tuple[float, float]]:
+    out: Dict[int, Tuple[float, float]] = {}
+    if not s:
+        return out
+    parts = [p.strip() for p in s.split(",") if p.strip()]
+    for p in parts:
+        a = p.split(":")
+        if len(a) != 2:
+            continue
+        mid = int(a[0].strip())
+        xy = a[1].split("|")
+        if len(xy) != 2:
+            continue
+        out[mid] = (float(xy[0]), float(xy[1]))
+    return out
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Calibration tool (writes into ./calibration_data/).")
+    parser.add_argument("--camera", type=int, default=0, help="Camera index (default 0).")
+    parser.add_argument("--aruco", type=int, default=int(cv2.aruco.DICT_5X5_250), help="cv2.aruco dictionary id.")
+    parser.add_argument("--frames", type=int, default=25, help="Target captures for intrinsics.")
+    parser.add_argument("--workspace_mode", type=str, default="phone", choices=["phone", "markers"], help="Workspace calibration mode.")
+    parser.add_argument("--phone_model", type=str, default="s24_ultra", help="Phone model label (saved only).")
+    parser.add_argument("--phone_w_mm", type=float, default=79.0, help="Phone width in mm.")
+    parser.add_argument("--phone_h_mm", type=float, default=162.3, help="Phone height in mm.")
+    parser.add_argument("--markers", type=str, default="", help="Markers mapping like: 0:0|0,1:200|0,2:200|200,3:0|200 (mm).")
+    args = parser.parse_args()
+
+    marker_world_mm = _parse_marker_world(args.markers)
+
+    intr, ws, ext = force_recalibration(
+        camera_index=int(args.camera),
+        marker_world_mm=marker_world_mm,
+        aruco_dict_id=int(args.aruco),
+        intrinsics_target_frames=int(args.frames),
+        workspace_mode=str(args.workspace_mode),
+        phone_model=str(args.phone_model),
+        phone_wh_mm=(float(args.phone_w_mm), float(args.phone_h_mm)),
+    )
+
+    print("\nCalibration complete.")
+    print("Intrinsics saved:", "YES" if intrinsics_exists() else "NO")
+    print("Workspace saved:", "YES" if workspace_exists() else "NO")
+    print("Extrinsics saved:", "YES" if extrinsics_exists() else "NO")
+    print("Folder:", CALIB_DIR)
