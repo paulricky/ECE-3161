@@ -1,13 +1,16 @@
 from __future__ import annotations
+
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
+
+EPS = 1e-12
 
 def clamp(x: float, lo: float, hi: float) -> float:
     return float(np.clip(x, lo, hi))
 
 
-def clamp01(x: float) -> float:
+def sat01(x: float) -> float:
     return float(np.clip(x, 0.0, 1.0))
 
 
@@ -15,16 +18,50 @@ def lerp(a: float, b: float, t: float) -> float:
     return float(a + (b - a) * t)
 
 
+def inv_lerp(x: float, lo: float, hi: float) -> float:
+    if hi <= lo:
+        return 0.0
+    return sat01((x - lo) / (hi - lo))
+
+
 def ema(prev, new: float, alpha: float) -> float:
     if prev is None:
         return float(new)
-    return float((1.0 - alpha) * prev + alpha * new)
+    return float((1.0 - alpha) * float(prev) + alpha * float(new))
 
 
-def normalize01(x: float, lo: float, hi: float) -> float:
-    if hi <= lo:
-        return 0.0
-    return clamp((x - lo) / (hi - lo), 0.0, 1.0)
+def ema_vec(prev, new, alpha: float):
+    new = np.asarray(new, dtype=np.float64)
+    if prev is None:
+        return new.copy()
+    prev = np.asarray(prev, dtype=np.float64)
+    return (1.0 - alpha) * prev + alpha * new
+
+
+def wrap_pi(a: float) -> float:
+    return float((a + np.pi) % (2.0 * np.pi) - np.pi)
+
+
+def ema_angles(prev, new, alpha: float):
+    new = np.asarray(new, dtype=np.float64)
+    if prev is None:
+        return np.vectorize(wrap_pi)(new)
+    prev = np.asarray(prev, dtype=np.float64)
+    d = np.vectorize(wrap_pi)(new - prev)
+    out = prev + alpha * d
+    return np.vectorize(wrap_pi)(out)
+
+
+def rate_limit_angles(prev, new, max_rate_rad_s: float, dt: float):
+    new = np.asarray(new, dtype=np.float64)
+    if prev is None:
+        return new.copy()
+    prev = np.asarray(prev, dtype=np.float64)
+    max_step = float(max_rate_rad_s) * float(dt)
+    d = np.vectorize(wrap_pi)(new - prev)
+    d = np.clip(d, -max_step, max_step)
+    out = prev + d
+    return np.vectorize(wrap_pi)(out)
 
 
 def dist(a, b) -> float:
@@ -33,139 +70,105 @@ def dist(a, b) -> float:
     return float(np.linalg.norm(a - b))
 
 
-def angle_deg(p1, p2) -> float:
-    p1 = np.asarray(p1, dtype=np.float64)
-    p2 = np.asarray(p2, dtype=np.float64)
-    dx, dy = (p2 - p1)[:2]
-    a = np.degrees(np.arctan2(dy, dx))
-    # normalize to (-180, 180]
-    if a <= -180.0:
-        a += 360.0
-    elif a > 180.0:
-        a -= 360.0
-    return float(a)
-
-
-
-def v3(a, b):
-    a = np.asarray(a, dtype=np.float64)
-    b = np.asarray(b, dtype=np.float64)
-    return (b - a).astype(np.float64)
-
-
-def dot(u, v) -> float:
-    u = np.asarray(u, dtype=np.float64)
+def norm(v) -> float:
     v = np.asarray(v, dtype=np.float64)
-    return float(np.dot(u, v))
+    return float(np.linalg.norm(v))
 
 
-def cross(u, v):
-    u = np.asarray(u, dtype=np.float64)
+def normalize(v, eps: float = EPS):
     v = np.asarray(v, dtype=np.float64)
-    return np.cross(u, v).astype(np.float64)
-
-
-def norm(u) -> float:
-    u = np.asarray(u, dtype=np.float64)
-    return float(np.linalg.norm(u))
-
-
-def normalize(u, eps: float = 1e-12):
-    u = np.asarray(u, dtype=np.float64)
-    n = np.linalg.norm(u)
+    n = np.linalg.norm(v)
     if n < eps:
-        return np.zeros(3, dtype=np.float64)
-    return (u / n).astype(np.float64)
+        return np.zeros_like(v)
+    return v / n
 
 
-def map01_to_limits(t01: float, lim) -> float:
-    lo, hi = float(lim[0]), float(lim[1])
-    return float(lo + (hi - lo) * clamp01(t01))
+def orthonormalize_cols(M):
+    M = np.asarray(M, dtype=np.float64)
+    U, _, Vt = np.linalg.svd(M, full_matrices=False)
+    Rm = U @ Vt
+    if np.linalg.det(Rm) < 0:
+        U[:, -1] *= -1.0
+        Rm = U @ Vt
+    return Rm
 
 
-
-def quat_from_rotm(Rm):
-    Rm = np.asarray(Rm, dtype=np.float64)
-    q = R.from_matrix(Rm).as_quat()  # (x,y,z,w)
+def quat_xyzw_from_rotm(Rm):
+    q = R.from_matrix(np.asarray(Rm, dtype=np.float64)).as_quat()
     return (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
 
 
-def rotm_from_quat(quat_xyzw):
-    q = np.asarray(quat_xyzw, dtype=np.float64)
-    Rm = R.from_quat(q).as_matrix()
-    return Rm.astype(np.float64)
+def rotm_from_quat_xyzw(q_xyzw):
+    Rm = R.from_quat(np.asarray(q_xyzw, dtype=np.float64)).as_matrix()
+    return np.asarray(Rm, dtype=np.float64)
 
 
-def quat_multiply(q1_xyzw, q2_xyzw):
-    q1 = R.from_quat(np.asarray(q1_xyzw, dtype=np.float64))
-    q2 = R.from_quat(np.asarray(q2_xyzw, dtype=np.float64))
-    q = (q1 * q2).as_quat()
+def quat_mul(q1_xyzw, q2_xyzw):
+    q = (R.from_quat(q1_xyzw) * R.from_quat(q2_xyzw)).as_quat()
     return (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
 
 
-def quat_inverse(q_xyzw):
+def quat_inv(q_xyzw):
     q = R.from_quat(np.asarray(q_xyzw, dtype=np.float64)).inv().as_quat()
     return (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
 
 
-def quat_to_euler(quat_xyzw, order: str = "xyz"):
-    q = np.asarray(quat_xyzw, dtype=np.float64)
-    e = R.from_quat(q).as_euler(order, degrees=False)
+def euler_from_quat_xyzw(q_xyzw, order: str = "xyz"):
+    e = R.from_quat(np.asarray(q_xyzw, dtype=np.float64)).as_euler(order, degrees=False)
     return (float(e[0]), float(e[1]), float(e[2]))
 
 
-def euler_to_quat(rpy, order: str = "xyz"):
-    rpy = np.asarray(rpy, dtype=np.float64)
-    q = R.from_euler(order, rpy, degrees=False).as_quat()
+def quat_from_euler(rpy, order: str = "xyz"):
+    q = R.from_euler(order, np.asarray(rpy, dtype=np.float64), degrees=False).as_quat()
     return (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
 
 
-
-def palm_basis_from_landmarks(hand_lms):
-    lm = hand_lms.landmark
-
-    wrist = np.array([lm[0].x, lm[0].y, lm[0].z], dtype=np.float64)
-    idx_mcp = np.array([lm[5].x, lm[5].y, lm[5].z], dtype=np.float64)
-    mid_mcp = np.array([lm[9].x, lm[9].y, lm[9].z], dtype=np.float64)
-    pky_mcp = np.array([lm[17].x, lm[17].y, lm[17].z], dtype=np.float64)
-
-    x_axis = normalize(pky_mcp - idx_mcp)
-    y_axis = normalize(mid_mcp - wrist)
-    z_axis = normalize(np.cross(x_axis, y_axis))
-
-    y_axis = normalize(np.cross(z_axis, x_axis))
-
-    return x_axis, y_axis, z_axis
+def mp_landmark_xyz(hand_lms, idx: int):
+    lm = hand_lms.landmark[idx]
+    return np.array([lm.x, lm.y, lm.z], dtype=np.float64)
 
 
-def cam_to_world_axis(v):
-    v = np.asarray(v, dtype=np.float64)
-    return normalize(np.array([v[0], 0.0, -v[1]], dtype=np.float64))
+def palm_frame_from_landmarks(hand_lms):
+    wrist = mp_landmark_xyz(hand_lms, 0)
+    idx_mcp = mp_landmark_xyz(hand_lms, 5)
+    mid_mcp = mp_landmark_xyz(hand_lms, 9)
+    pky_mcp = mp_landmark_xyz(hand_lms, 17)
+
+    x_cam = normalize(pky_mcp - idx_mcp)      # across palm
+    y_cam = normalize(mid_mcp - wrist)        # forward (wrist -> fingers)
+    z_cam = normalize(np.cross(x_cam, y_cam)) # palm normal
+    y_cam = normalize(np.cross(z_cam, x_cam))
+
+    M = np.stack([x_cam, y_cam, z_cam], axis=1)
+    Rm = orthonormalize_cols(M)
+    return Rm
 
 
-def palm_quat_from_landmarks(hand_lms):
-    x_axis, y_axis, _ = palm_basis_from_landmarks(hand_lms)
+def cam_to_world_vec(v_cam):
+    v_cam = np.asarray(v_cam, dtype=np.float64)
+    return normalize(np.array([v_cam[0], 0.0, -v_cam[1]], dtype=np.float64))
 
-    Xw = cam_to_world_axis(x_axis)
-    Yw = cam_to_world_axis(y_axis)
+
+def palm_quat_world_from_landmarks(hand_lms):
+    R_cam = palm_frame_from_landmarks(hand_lms)
+    Xw = cam_to_world_vec(R_cam[:, 0])
+    Yw = cam_to_world_vec(R_cam[:, 1])
     Zw = normalize(np.cross(Xw, Yw))
     Yw = normalize(np.cross(Zw, Xw))
-
-    Rm = np.stack([Xw, Yw, Zw], axis=1)  # columns are basis vectors
-    q = R.from_matrix(Rm).as_quat()      # (x,y,z,w)
-    return (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
+    Rw = orthonormalize_cols(np.stack([Xw, Yw, Zw], axis=1))
+    return quat_xyzw_from_rotm(Rw)
 
 
-def palm_euler_from_landmarks(hand_lms, pitch_limit_deg: float = 80.0):
-    x_axis, y_axis, z_axis = palm_basis_from_landmarks(hand_lms)
+def hand_center_xy(hand_lms):
+    lm = hand_lms.landmark
+    idxs = [0, 5, 9, 13, 17]
+    x = float(sum(lm[i].x for i in idxs) / len(idxs))
+    y = float(sum(lm[i].y for i in idxs) / len(idxs))
+    return x, y
 
-    ax = float(x_axis[0])
-    ay_up = float(-x_axis[1])
-    fx = float(y_axis[0])
-    fy_up = float(-y_axis[1])
 
-    yaw = float(np.arctan2(fx, fy_up))
-    roll = float(np.arctan2(ay_up, ax))
-
-    pitch = float(clamp(float(z_axis[2]), -1.0, 1.0) * np.deg2rad(pitch_limit_deg))
-    return roll, pitch, yaw
+def hand_size_proxy(hand_lms):
+    wrist = mp_landmark_xyz(hand_lms, 0)
+    idx_mcp = mp_landmark_xyz(hand_lms, 5)
+    d = np.linalg.norm((wrist - idx_mcp)[:2])
+    return float(d)

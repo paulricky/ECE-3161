@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 import os
-import math
+import numpy as np
 import pybullet as p
 import pybullet_data
 
@@ -15,10 +17,6 @@ URDF_CANDIDATES = [
 ]
 
 
-def clamp(x, lo, hi):
-    return lo if x < lo else hi if x > hi else x
-
-
 def find_urdf_path():
     for path in URDF_CANDIDATES:
         if os.path.exists(path):
@@ -27,11 +25,11 @@ def find_urdf_path():
 
 
 def joint_limits_from_info(info):
-    lower = float(info[8])
-    upper = float(info[9])
-    if upper <= lower:
+    lo = float(info[8])
+    hi = float(info[9])
+    if hi <= lo:
         return None
-    return lower, upper
+    return lo, hi
 
 
 def setup_pybullet():
@@ -46,9 +44,7 @@ def setup_pybullet():
 
     urdf_path = find_urdf_path()
     if urdf_path is None:
-        raise FileNotFoundError(
-            "Could not find an SO-ARM100 URDF.\nTried:\n  - " + "\n  - ".join(URDF_CANDIDATES)
-        )
+        raise FileNotFoundError("Could not find SO-ARM100 URDF.\nTried:\n - " + "\n - ".join(URDF_CANDIDATES))
 
     p.setAdditionalSearchPath(os.path.dirname(urdf_path))
 
@@ -65,16 +61,15 @@ def setup_pybullet():
         flags=flags,
     )
 
-    # build joint map
     name_to_idx = {}
     idx_to_info = {}
     for ji in range(p.getNumJoints(robot_id)):
         info = p.getJointInfo(robot_id, ji)
-        jname = info[1].decode("utf-8")
-        name_to_idx[jname] = ji
+        name_to_idx[info[1].decode("utf-8")] = ji
         idx_to_info[ji] = info
 
     lift_robot_to_ground(robot_id)
+    setup_collision_filters(robot_id)
 
     p.resetDebugVisualizerCamera(
         cameraDistance=0.7,
@@ -88,18 +83,26 @@ def setup_pybullet():
 
 def lift_robot_to_ground(robot_id):
     min_z = 1e9
-
     mn, _mx = p.getAABB(robot_id, -1)
     min_z = min(min_z, mn[2])
-
     for j in range(p.getNumJoints(robot_id)):
         mn, _mx = p.getAABB(robot_id, j)
         min_z = min(min_z, mn[2])
-
     if min_z < 0.0:
         lift = -min_z + 0.002
         pos, orn = p.getBasePositionAndOrientation(robot_id)
         p.resetBasePositionAndOrientation(robot_id, [pos[0], pos[1], pos[2] + lift], orn)
+
+
+def setup_collision_filters(robot_id):
+    # Stop “default pose constant collision” by disabling collisions on adjacent links
+    n = p.getNumJoints(robot_id)
+    for i in range(-1, n):
+        for j in range(-1, n):
+            if i == j:
+                continue
+            if abs(i - j) <= 1:
+                p.setCollisionFilterPair(robot_id, robot_id, i, j, enableCollision=0)
 
 
 def dump_joints(robot_id):
@@ -112,19 +115,8 @@ def dump_joints(robot_id):
         lo, hi = float(info[8]), float(info[9])
         link = info[12].decode("utf-8")
         axis = info[13]
-
-        tname = {
-            p.JOINT_REVOLUTE: "REVOLUTE",
-            p.JOINT_PRISMATIC: "PRISMATIC",
-            p.JOINT_FIXED: "FIXED",
-            p.JOINT_SPHERICAL: "SPHERICAL",
-            p.JOINT_PLANAR: "PLANAR",
-        }.get(jtype, str(jtype))
-
-        print(
-            f"{j:2d}  {jname:22s} type={tname:8s} qIndex={qIndex:2d} "
-            f"lim=[{lo:.3f},{hi:.3f}] link={link} axis={axis}"
-        )
+        tname = {p.JOINT_REVOLUTE: "REVOLUTE", p.JOINT_PRISMATIC: "PRISMATIC", p.JOINT_FIXED: "FIXED"}.get(jtype, str(jtype))
+        print(f"{j:2d}  {jname:22s} type={tname:8s} qIndex={qIndex:2d} lim=[{lo:.3f},{hi:.3f}] link={link} axis={axis}")
     print("")
 
 
@@ -154,47 +146,22 @@ def pick_all_joints(name_to_idx, keywords):
 
 def discover_so101_joints(name_to_idx):
     joints = {}
-
-    joints["shoulder_pan"] = pick_joint(
-        name_to_idx, ["shoulder_pan", "base_yaw", "pan", "yaw", "joint1", "j1"]
-    )
-    joints["shoulder_lift"] = pick_joint(
-        name_to_idx, ["shoulder_lift", "lift", "pitch", "joint2", "j2"]
-    )
-    joints["elbow_flex"] = pick_joint(
-        name_to_idx, ["elbow_flex", "elbow", "joint3", "j3"]
-    )
-    joints["wrist_flex"] = pick_joint(
-        name_to_idx, ["wrist_flex", "wrist_pitch", "joint4", "j4"]
-    )
-    joints["wrist_roll"] = pick_joint(
-        name_to_idx, ["wrist_roll", "wrist_rotate", "roll", "rotate", "joint5", "j5"]
-    )
-
-    joints["gripper_all"] = pick_all_joints(
-        name_to_idx, ["finger", "gripper", "claw", "jaw"]
-    )
-
+    joints["shoulder_pan"] = pick_joint(name_to_idx, ["shoulder_pan", "base_yaw", "pan", "yaw", "joint1", "j1"])
+    joints["shoulder_lift"] = pick_joint(name_to_idx, ["shoulder_lift", "lift", "pitch", "joint2", "j2"])
+    joints["elbow_flex"] = pick_joint(name_to_idx, ["elbow_flex", "elbow", "joint3", "j3"])
+    joints["wrist_flex"] = pick_joint(name_to_idx, ["wrist_flex", "wrist_pitch", "joint4", "j4"])
+    joints["wrist_roll"] = pick_joint(name_to_idx, ["wrist_roll", "wrist_rotate", "roll", "rotate", "joint5", "j5"])
+    joints["gripper_all"] = pick_all_joints(name_to_idx, ["finger", "gripper", "claw", "jaw"])
     return joints
 
 
-def find_ee_link_for_ik(robot_id):
-    """
-    Prefer the fixed gripper frame link if present; else fall back to a late wrist/gripper link.
-    """
-    for j in range(p.getNumJoints(robot_id)):
-        info = p.getJointInfo(robot_id, j)
-        jname = info[1].decode("utf-8").lower()
-        link = info[12].decode("utf-8").lower()
-        if "gripper_frame" in jname or "gripper_frame" in link:
-            return j
-
+def find_gripper_link(robot_id):
+    # Prefer the moving jaw/gripper link if present
     for j in range(p.getNumJoints(robot_id) - 1, -1, -1):
         info = p.getJointInfo(robot_id, j)
         link = info[12].decode("utf-8").lower()
-        if "gripper_link" in link or "wrist" in link:
+        if "gripper" in link or "jaw" in link:
             return j
-
     return p.getNumJoints(robot_id) - 1
 
 
@@ -202,7 +169,7 @@ def set_joint_target(robot_id, idx_to_info, jidx, target):
     info = idx_to_info[jidx]
     lim = joint_limits_from_info(info)
     if lim is not None:
-        target = clamp(target, lim[0], lim[1])
+        target = mm.clamp(float(target), lim[0], lim[1])
 
     p.setJointMotorControl2(
         robot_id,
@@ -210,14 +177,14 @@ def set_joint_target(robot_id, idx_to_info, jidx, target):
         p.POSITION_CONTROL,
         targetPosition=float(target),
         force=val.MOTOR_FORCE,
-        maxVelocity=3.0,
+        maxVelocity=2.0,
         positionGain=val.POS_GAIN,
         velocityGain=val.VEL_GAIN,
     )
 
 
 def set_gripper_targets(robot_id, idx_to_info, gripper_joints, open01):
-    open01 = mm.clamp01(open01)
+    open01 = mm.sat01(open01)
     for _name, jidx in gripper_joints:
         info = idx_to_info[jidx]
         lim = joint_limits_from_info(info)
@@ -233,153 +200,87 @@ def set_gripper_targets(robot_id, idx_to_info, gripper_joints, open01):
             p.POSITION_CONTROL,
             targetPosition=float(target),
             force=val.MOTOR_FORCE,
+            maxVelocity=2.0,
             positionGain=val.POS_GAIN,
             velocityGain=val.VEL_GAIN,
         )
 
 
 def spawn_objects():
-    """
-    Spawn simple manipulable objects.
-    """
     ids = []
-    p.setAdditionalSearchPath(pybullet_data.getDataPath())
-
-    cube_col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.02, 0.02, 0.02])
-    cube_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.02, 0.02, 0.02])
-
-    cyl_col = p.createCollisionShape(p.GEOM_CYLINDER, radius=0.015, height=0.05)
-    cyl_vis = p.createVisualShape(p.GEOM_CYLINDER, radius=0.015, length=0.05)
-
-    positions = [
-        [0.15, 0.25, 0.02],
-        [0.10, 0.30, 0.02],
-        [0.20, 0.30, 0.02],
-        [0.18, 0.22, 0.02],
-    ]
-
-    for i, pos in enumerate(positions):
-        if i % 2 == 0:
-            bid = p.createMultiBody(
-                baseMass=0.05,
-                baseCollisionShapeIndex=cube_col,
-                baseVisualShapeIndex=cube_vis,
-                basePosition=pos,
-            )
-        else:
-            bid = p.createMultiBody(
-                baseMass=0.05,
-                baseCollisionShapeIndex=cyl_col,
-                baseVisualShapeIndex=cyl_vis,
-                basePosition=pos,
-            )
-
-        p.changeDynamics(bid, -1, lateralFriction=1.2, spinningFriction=0.1, rollingFriction=0.05)
+    col_box = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.02, 0.02, 0.02])
+    vis_box = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.02, 0.02, 0.02], rgbaColor=[0.9, 0.2, 0.2, 1.0])
+    for k in range(4):
+        x = 0.12 + 0.05 * k
+        y = 0.25
+        z = 0.02
+        bid = p.createMultiBody(baseMass=0.05, baseCollisionShapeIndex=col_box, baseVisualShapeIndex=vis_box, basePosition=[x, y, z])
         ids.append(bid)
-
     return ids
 
 
-def update_grasp(robot_id, gripper_link_idx, grip01, object_ids, state,
-                 close_thresh=0.25, open_thresh=0.55, pick_radius=0.06):
-    """
-    Constraint-based grasp.
-    """
-    held = state.get("held_id", None)
-    cid = state.get("cid", None)
+def hand_to_ee_pose(hand_lms, depth_cal):
+    cx, cy = mm.hand_center_xy(hand_lms)
+    tx = mm.sat01(cx)
+    ty = mm.sat01(1.0 - cy)
 
-    # release
-    if held is not None and grip01 > open_thresh:
-        try:
-            p.removeConstraint(cid)
-        except Exception:
-            pass
-        state["held_id"] = None
-        state["cid"] = None
-        return
+    # depth proxy: inverse hand size (bigger = closer)
+    size = mm.hand_size_proxy(hand_lms)
+    proxy = 1.0 / max(size, 1e-4)
+    depth01 = depth_cal.normalize01(proxy)
 
-    if held is not None:
-        return
+    x = mm.lerp(val.WORKSPACE_X_MIN, val.WORKSPACE_X_MAX, tx)
+    y = mm.lerp(val.WORKSPACE_Y_MIN, val.WORKSPACE_Y_MAX, depth01)
+    z = mm.lerp(val.WORKSPACE_Z_MIN, val.WORKSPACE_Z_MAX, ty)
 
-    # attempt pick
-    if grip01 < close_thresh:
-        ee_pos, _ee_orn = p.getLinkState(robot_id, gripper_link_idx)[:2]
+    # palm orientation in world-ish frame (stable basis + SVD)
+    q = mm.palm_quat_world_from_landmarks(hand_lms)
 
-        best_id = None
-        best_d = 1e9
-        for oid in object_ids:
-            opos, _ = p.getBasePositionAndOrientation(oid)
-            d = math.dist(ee_pos, opos)
-            if d < best_d:
-                best_d = d
-                best_id = oid
+    # open/close based on full hand (not pinch)
+    # 0=open, 1=closed for gripper targets in main logic
+    # We'll output open01 so main can use directly
+    # Use a smoother proxy: average finger curl -> open fraction
+    # (fallback: 2D distance thumb-index if you want)
+    # Here: treat "hand size" + palm normal stability as enough; prefer finger state in handtracking
+    open01 = 0.5
 
-        if best_id is not None and best_d < pick_radius:
-            cid = p.createConstraint(
-                parentBodyUniqueId=robot_id,
-                parentLinkIndex=gripper_link_idx,
-                childBodyUniqueId=best_id,
-                childLinkIndex=-1,
-                jointType=p.JOINT_FIXED,
-                jointAxis=[0, 0, 0],
-                parentFramePosition=[0, 0, 0],
-                childFramePosition=[0, 0, 0],
-            )
-            state["held_id"] = best_id
-            state["cid"] = cid
+    return [x, y, z], q, open01, depth01
 
 
-def solve_ik(robot_id, idx_to_info, ee_link_idx, target_pos, target_orn, rest_pose):
-    """
-    Nullspace IK with joint limits/damping.
-    Uses values.py IK_MAX_ITERS and IK_RESIDUAL_THRESH.
-    """
+def solve_ik(robot_id, idx_to_info, ee_link_idx, target_pos, target_orn=None, rest_pose=None):
     n = p.getNumJoints(robot_id)
 
     lower = []
     upper = []
     ranges = []
-    rest = []
-    damping = []
-
     for j in range(n):
         info = idx_to_info[j]
-        jtype = info[2]
-        qIndex = info[3]
-
-        if qIndex == -1 or jtype == p.JOINT_FIXED:
+        if info[2] in (p.JOINT_REVOLUTE, p.JOINT_PRISMATIC):
+            lim = joint_limits_from_info(info)
+            if lim is None:
+                lo, hi = -3.0, 3.0
+            else:
+                lo, hi = lim
+            lower.append(lo)
+            upper.append(hi)
+            ranges.append(hi - lo)
+        else:
             lower.append(0.0)
             upper.append(0.0)
             ranges.append(0.0)
-            rest.append(0.0)
-            damping.append(0.8)
-            continue
 
-        lim = joint_limits_from_info(info)
-        if lim is None:
-            lo, hi = -math.pi, math.pi
-        else:
-            lo, hi = lim
-
-        lower.append(lo)
-        upper.append(hi)
-        ranges.append(hi - lo)
-
-        rp = rest_pose[j] if j < len(rest_pose) else 0.0
-        rest.append(float(rp))
-
-        damping.append(0.8 if j >= 3 else 0.4)
+    if rest_pose is None:
+        rest_pose = [0.0] * n
 
     if target_orn is None:
         sol = p.calculateInverseKinematics(
             robot_id,
             ee_link_idx,
-            targetPosition=list(target_pos),
+            targetPosition=list(map(float, target_pos)),
             lowerLimits=lower,
             upperLimits=upper,
             jointRanges=ranges,
-            restPoses=rest,
-            jointDamping=damping,
+            restPoses=rest_pose,
             maxNumIterations=val.IK_MAX_ITERS,
             residualThreshold=val.IK_RESIDUAL_THRESH,
         )
@@ -387,65 +288,56 @@ def solve_ik(robot_id, idx_to_info, ee_link_idx, target_pos, target_orn, rest_po
         sol = p.calculateInverseKinematics(
             robot_id,
             ee_link_idx,
-            targetPosition=list(target_pos),
+            targetPosition=list(map(float, target_pos)),
             targetOrientation=target_orn,
             lowerLimits=lower,
             upperLimits=upper,
             jointRanges=ranges,
-            restPoses=rest,
-            jointDamping=damping,
+            restPoses=rest_pose,
             maxNumIterations=val.IK_MAX_ITERS,
             residualThreshold=val.IK_RESIDUAL_THRESH,
         )
 
-    return sol
+    return list(sol)
 
 
-def hand_to_ee_pose(hand_lms, depth_cal):
-    lm = hand_lms.landmark
+def self_collision_contacts(robot_id):
+    pts = p.getContactPoints(bodyA=robot_id, bodyB=robot_id)
+    # ignore trivial/near-zero normal force contacts
+    return [c for c in pts if abs(c[9]) > 1e-6]
 
-    # palm center
-    idxs = [0, 5, 9, 13, 17]
-    cx = sum(lm[i].x for i in idxs) / len(idxs)
-    cy = sum(lm[i].y for i in idxs) / len(idxs)
 
-    # X from screen left/right
-    x01 = mm.clamp01(cx)
-    x = mm.lerp(val.WORKSPACE_X_MIN, val.WORKSPACE_X_MAX, x01)
+def update_grasp(robot_id, gripper_link_idx, grip01, object_ids, state, close_thresh, open_thresh, pick_radius):
+    held = state.get("held_id")
+    cid = state.get("cid")
 
-    # Z from screen up/down (up -> larger z)
-    y01 = mm.clamp01(1.0 - cy)
-    z = mm.lerp(val.WORKSPACE_Z_MIN, val.WORKSPACE_Z_MAX, y01)
+    ee_pos, ee_orn = p.getLinkState(robot_id, gripper_link_idx)[:2]
 
-    # Depth proxy (farther => larger depth01)
-    wrist = (lm[0].x, lm[0].y, lm[0].z)
-    hand_size = math.hypot(lm[0].x - lm[5].x, lm[0].y - lm[5].y)
-    size_proxy = 1.0 / max(hand_size, 1e-4)
-    depth_proxy = 0.6 * size_proxy + 0.4 * wrist[2]
+    if held is None and grip01 < close_thresh:
+        best = None
+        best_d = 1e9
+        for oid in object_ids:
+            op, _ = p.getBasePositionAndOrientation(oid)
+            d = mm.dist(op, ee_pos)
+            if d < best_d:
+                best_d = d
+                best = oid
+        if best is not None and best_d < pick_radius:
+            cid = p.createConstraint(
+                parentBodyUniqueId=robot_id,
+                parentLinkIndex=gripper_link_idx,
+                childBodyUniqueId=best,
+                childLinkIndex=-1,
+                jointType=p.JOINT_FIXED,
+                jointAxis=[0, 0, 0],
+                parentFramePosition=[0, 0, 0],
+                childFramePosition=[0, 0, 0],
+            )
+            state["held_id"] = best
+            state["cid"] = cid
 
-    depth_cal.update(depth_proxy)
-    dmin, dmax = depth_cal.get_minmax()
-    depth01 = mm.clamp01((depth_proxy - dmin) / (dmax - dmin))
-
-    # Y from depth
-    y = mm.lerp(val.WORKSPACE_Y_MIN, val.WORKSPACE_Y_MAX, depth01)
-
-    # Clamp to workspace bounds
-    x = float(mm.clamp(x, val.WORKSPACE_X_MIN, val.WORKSPACE_X_MAX))
-    y = float(mm.clamp(y, val.WORKSPACE_Y_MIN, val.WORKSPACE_Y_MAX))
-    z = float(mm.clamp(z, val.WORKSPACE_Z_MIN, val.WORKSPACE_Z_MAX))
-
-    ee_pos = [x, y, z]
-
-    ee_orn = mm.palm_quat_from_landmarks(hand_lms)
-
-    # Pinch grip (fallback)
-    thumb_tip = (lm[4].x, lm[4].y)
-    index_tip = (lm[8].x, lm[8].y)
-    pinch = mm.dist(thumb_tip, index_tip)
-    grip01 = mm.normalize01(pinch, val.PINCH_MIN, val.PINCH_MAX)
-
-    if val.INVERT_GRIPPER:
-        grip01 = 1.0 - grip01
-
-    return ee_pos, ee_orn, float(grip01), float(depth01)
+    if held is not None and grip01 > open_thresh:
+        if cid is not None:
+            p.removeConstraint(cid)
+        state["held_id"] = None
+        state["cid"] = None
