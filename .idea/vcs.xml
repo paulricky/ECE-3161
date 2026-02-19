@@ -2,5 +2,7 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/SO-ARM100" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/lerobot" vcs="Git" />
   </component>
 </project>

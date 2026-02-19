@@ -1,6 +1,10 @@
 import cv2
+import numpy as np
 import math
+
 from ultralytics import YOLO
+
+import values as val
 
 MARKER_SIZE_MM = 100
 ORIGIN_ID = 0
@@ -14,6 +18,100 @@ aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_250)
 parameters = cv2.aruco.DetectorParameters()
 detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
 
+
+def _order_quad(pts):
+    pts = np.array(pts, dtype=np.float32).reshape(4, 2)
+    s = pts.sum(axis=1)
+    d = np.diff(pts, axis=1).reshape(-1)
+    tl = pts[np.argmin(s)]
+    br = pts[np.argmax(s)]
+    tr = pts[np.argmin(d)]
+    bl = pts[np.argmax(d)]
+    return np.array([tl, tr, br, bl], dtype=np.float32)
+
+def detect_aruco(gray, aruco_dict=cv2.aruco.DICT_5X5_250):
+    d = cv2.aruco.getPredefinedDictionary(aruco_dict)
+    params = cv2.aruco.DetectorParameters()
+    det = cv2.aruco.ArucoDetector(d, params)
+    corners, ids, _rej = det.detectMarkers(gray)
+    if ids is None or len(ids) == 0:
+        return None
+    ids = ids.flatten().tolist()
+    return corners, ids
+
+def marker_pose_from_corners(corners_4x2):
+    pts = np.array(corners_4x2, dtype=np.float32).reshape(4, 2)
+    c = pts.mean(axis=0)
+    v = pts[1] - pts[0]  # top edge direction
+    ang = math.atan2(v[1], v[0])
+    return (float(c[0]), float(c[1])), float(ang)
+
+def detect_largest_rectangle(gray):
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blur, 50, 150)
+    edges = cv2.dilate(edges, None, iterations=2)
+
+    cnts, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    best = None
+    best_area = 0.0
+
+    for c in cnts:
+        area = cv2.contourArea(c)
+        if area < 5000:
+            continue
+        peri = cv2.arcLength(c, True)
+        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+        if len(approx) != 4:
+            continue
+        if not cv2.isContourConvex(approx):
+            continue
+        if area > best_area:
+            best_area = area
+            best = approx.reshape(4, 2)
+
+    if best is None:
+        return None
+    return _order_quad(best)
+
+def rect_homography_to_workspace(rect_img_4x2):
+    xmin, xmax = val.WORKSPACE_X_MIN, val.WORKSPACE_X_MAX
+    ymin, ymax = val.WORKSPACE_Y_MIN, val.WORKSPACE_Y_MAX
+
+    dst = np.array([
+        [xmin, ymin],
+        [xmax, ymin],
+        [xmax, ymax],
+        [xmin, ymax],
+    ], dtype=np.float32)
+
+    H, _ = cv2.findHomography(rect_img_4x2.astype(np.float32), dst, method=0)
+    if H is None:
+        return None
+    Hinv = np.linalg.inv(H)
+    return H, Hinv
+
+def maybe_rotate_rect_using_marker(rect_img_4x2, marker_center, marker_angle):
+    rect = rect_img_4x2.copy()
+    top_edge = rect[1] - rect[0]
+    rect_ang = math.atan2(float(top_edge[1]), float(top_edge[0]))
+
+    def angdiff(a, b):
+        d = (a - b + math.pi) % (2 * math.pi) - math.pi
+        return abs(d)
+
+    best = rect
+    best_score = angdiff(marker_angle, rect_ang)
+
+    # Try rotating the corner list (TL,TR,BR,BL) -> (TR,BR,BL,TL) etc.
+    for k in range(1, 4):
+        r = np.roll(rect, -k, axis=0)
+        ang = math.atan2(float((r[1]-r[0])[1]), float((r[1]-r[0])[0]))
+        score = angdiff(marker_angle, ang)
+        if score < best_score:
+            best_score = score
+            best = r
+
+    return best
 def get_marker_properties(corners):
     pts = corners[0]
     cx = int(pts[:, 0].sum() / 4)
