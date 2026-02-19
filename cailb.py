@@ -42,10 +42,81 @@ def delete_calibration_files() -> None:
             pass
 
 
+def _npz_has_keys(path: str, keys: Tuple[str, ...]) -> bool:
+    if not os.path.exists(path):
+        return False
+    try:
+        data = np.load(path, allow_pickle=True)
+        return all(k in data for k in keys)
+    except Exception:
+        return False
+
+
+def _validate_intrinsics_dict(intr) -> Tuple[bool, str]:
+    if intr is None:
+        return False, "intr is None"
+    if "mtx" not in intr or "dist" not in intr:
+        return False, "missing mtx/dist"
+    mtx = np.asarray(intr["mtx"])
+    dist = np.asarray(intr["dist"])
+    if mtx.shape != (3, 3):
+        return False, f"mtx shape {mtx.shape} != (3,3)"
+    if dist.size < 4:
+        return False, f"dist size {dist.size} < 4"
+    if not np.isfinite(mtx).all() or not np.isfinite(dist).all():
+        return False, "non-finite values in mtx/dist"
+    fx = float(mtx[0, 0])
+    fy = float(mtx[1, 1])
+    if fx <= 0 or fy <= 0:
+        return False, f"fx/fy not positive (fx={fx}, fy={fy})"
+    return True, "ok"
+
+
+def _validate_workspace_dict(ws) -> Tuple[bool, str]:
+    if ws is None:
+        return False, "ws is None"
+    if "H" not in ws:
+        return False, "missing H"
+    H = np.asarray(ws["H"])
+    if H.shape != (3, 3):
+        return False, f"H shape {H.shape} != (3,3)"
+    if not np.isfinite(H).all():
+        return False, "non-finite values in H"
+    if abs(float(H[2, 2])) < 1e-9:
+        return False, "H[2,2] too small"
+    return True, "ok"
+
+
+def _validate_extrinsics_dict(ext) -> Tuple[bool, str]:
+    if ext is None:
+        return False, "ext is None"
+    if "R" not in ext or "t" not in ext:
+        return False, "missing R/t"
+    R = np.asarray(ext["R"])
+    t = np.asarray(ext["t"])
+    if R.shape != (3, 3):
+        return False, f"R shape {R.shape} != (3,3)"
+    if t.reshape(-1).size != 3:
+        return False, f"t size {t.reshape(-1).size} != 3"
+    if not np.isfinite(R).all() or not np.isfinite(t).all():
+        return False, "non-finite values in R/t"
+    return True, "ok"
+
+
+def _print_calib_status(prefix: str = "") -> None:
+    print(f"{prefix}Calibration folder: {CALIB_DIR}")
+    print(f"{prefix}Intrinsics file:  {INTRINSICS_NPZ}  exists={intrinsics_exists()}")
+    print(f"{prefix}Workspace file:   {WORKSPACE_NPZ}  exists={workspace_exists()}")
+    print(f"{prefix}Extrinsics file:  {EXTRINSICS_NPZ}  exists={extrinsics_exists()}")
+
+
 def load_intrinsics(path: str = INTRINSICS_NPZ):
     if not os.path.exists(path):
         return None
-    data = np.load(path, allow_pickle=True)
+    try:
+        data = np.load(path, allow_pickle=True)
+    except Exception:
+        return None
     if "mtx" not in data or "dist" not in data:
         return None
     out = {
@@ -64,7 +135,10 @@ def load_intrinsics(path: str = INTRINSICS_NPZ):
 def load_workspace(path: str = WORKSPACE_NPZ):
     if not os.path.exists(path):
         return None
-    data = np.load(path, allow_pickle=True)
+    try:
+        data = np.load(path, allow_pickle=True)
+    except Exception:
+        return None
     if "H" not in data:
         return None
     out = {"H": data["H"].astype(np.float64)}
@@ -84,7 +158,10 @@ def load_workspace(path: str = WORKSPACE_NPZ):
 def load_extrinsics(path: str = EXTRINSICS_NPZ):
     if not os.path.exists(path):
         return None
-    data = np.load(path, allow_pickle=True)
+    try:
+        data = np.load(path, allow_pickle=True)
+    except Exception:
+        return None
     if "R" not in data or "t" not in data:
         return None
     out = {
@@ -225,10 +302,8 @@ def run_intrinsics_calibration(
 
     print("\n=== Intrinsics Calibration (CHARUCO) ===")
     print("Show a Charuco board (printed OR on phone/tablet).")
-    print("Tip: fill more of the frame, reduce glare, and keep the board in focus.")
-    print("Press SPACE to capture when enough corners are detected.")
-    print("Press 'a' toggle auto-capture.")
-    print("Press 's' solve+save, 'r' reset, 'q' quit.\n")
+    print("Press SPACE to capture, 'a' auto, 'r' reset, 'q' quit.\n")
+    print("NOTE: This script will AUTO-SOLVE + SAVE once enough frames are collected.\n")
 
     try:
         cb_path = generate_charuco_board_png(
@@ -263,8 +338,6 @@ def run_intrinsics_calibration(
 
     good = 0
     last_capture_t = 0.0
-    mtx = None
-    dist = None
     auto_capture = False
 
     while True:
@@ -307,16 +380,12 @@ def run_intrinsics_calibration(
 
         cv2.putText(vis, f"Frames: {good}/{target_frames}", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
-        cv2.putText(vis, "SPACE=capture  a=auto  s=solve+save  r=reset  q=quit", (10, 60),
+        cv2.putText(vis, "SPACE=capture  a=auto  r=reset  q=quit", (10, 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
         cv2.putText(vis, status, (10, 90),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0) if ok_i else (0, 0, 255), 2, cv2.LINE_AA)
         cv2.putText(vis, f"auto: {'ON' if auto_capture else 'OFF'}", (10, 120),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2, cv2.LINE_AA)
-
-        if mtx is not None:
-            cv2.putText(vis, "Intrinsics estimated (press s to save again if needed)", (10, 150),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
 
         cv2.imshow("calib.py - Intrinsics (Charuco)", vis)
         key = cv2.waitKey(1) & 0xFF
@@ -332,8 +401,6 @@ def run_intrinsics_calibration(
             all_charuco_corners.clear()
             all_charuco_ids.clear()
             good = 0
-            mtx = None
-            dist = None
 
         capture_now = (key == ord(" ")) or (auto_capture and ok_i)
         if capture_now and ok_i:
@@ -343,10 +410,9 @@ def run_intrinsics_calibration(
                 good += 1
                 last_capture_t = now
 
-        if key == ord("s"):
+        if good >= int(target_frames):
             if len(all_charuco_corners) < 8:
                 continue
-
             try:
                 ret, mtx, dist, _rvecs, _tvecs = cv2.aruco.calibrateCameraCharuco(
                     charucoCorners=all_charuco_corners,
@@ -361,8 +427,11 @@ def run_intrinsics_calibration(
 
             save_intrinsics(mtx, dist, image_size, rms=float(ret), reproj_err=None)
 
-        if good >= int(target_frames) and mtx is not None and dist is not None:
-            return True
+            intr = load_intrinsics(INTRINSICS_NPZ)
+            okv, msg = _validate_intrinsics_dict(intr)
+            print("\n[calib] Saved intrinsics:", INTRINSICS_NPZ)
+            print("[calib] Intrinsics validation:", "OK" if okv else f"FAIL ({msg})")
+            return okv
 
 
 def _order_quad(pts: np.ndarray) -> np.ndarray:
@@ -440,9 +509,6 @@ def run_workspace_calibration_phone(
         pass
 
     print("\n=== Workspace Calibration (PHONE + ArUco) ===")
-    print("1) Put your phone flat on the table (screen up).")
-    print("2) Display the ArUco marker image on the phone screen (or tape a printed marker on it).")
-    print("3) Ensure the full phone outline is visible.")
     print("Press 'c' compute+save, 'q' quit.\n")
 
     best_H = None
@@ -478,8 +544,6 @@ def run_workspace_calibration_phone(
             if not marker_id_any:
                 if 0 in ids_list:
                     sel_idx = ids_list.index(0)
-                else:
-                    sel_idx = 0
             pts = corners[sel_idx][0]
             marker_center = pts.mean(axis=0)
 
@@ -520,11 +584,9 @@ def run_workspace_calibration_phone(
             best_rvec = rvec
             best_tvec = tvec
 
-        cv2.putText(vis, f"marker: {'YES' if marker_center is not None else 'NO'}", (10, 30),
+        cv2.putText(vis, f"phone quad: {'YES' if phone_quad is not None else 'NO'}", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
-        cv2.putText(vis, f"phone quad: {'YES' if phone_quad is not None else 'NO'}", (10, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
-        cv2.putText(vis, "c=save  q=quit", (10, 90),
+        cv2.putText(vis, "c=save  q=quit", (10, 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
 
         cv2.imshow("calib.py - Workspace (phone)", vis)
@@ -546,11 +608,22 @@ def run_workspace_calibration_phone(
                 phone_wh_mm=(w_mm, h_mm),
             )
 
+            ws = load_workspace(WORKSPACE_NPZ)
+            okv, msg = _validate_workspace_dict(ws)
+            print("\n[calib] Saved workspace:", WORKSPACE_NPZ)
+            print("[calib] Workspace validation:", "OK" if okv else f"FAIL ({msg})")
+
             if (mtx is not None) and (dist is not None) and (best_rvec is not None) and (best_tvec is not None):
                 R, _ = cv2.Rodrigues(best_rvec)
                 t = best_tvec.reshape(3)
                 save_extrinsics(R=R, t=t, camera_height_mm=float(abs(t[2])), rvec=best_rvec.reshape(3), tvec=t)
-            return True
+
+                ext = load_extrinsics(EXTRINSICS_NPZ)
+                okx, msgx = _validate_extrinsics_dict(ext)
+                print("[calib] Saved extrinsics:", EXTRINSICS_NPZ)
+                print("[calib] Extrinsics validation:", "OK" if okx else f"FAIL ({msgx})")
+
+            return okv
 
 
 def run_workspace_calibration_markers(
@@ -572,10 +645,7 @@ def run_workspace_calibration_markers(
     best_inliers = -1
 
     print("\n=== Workspace Calibration (Aruco Homography) ===")
-    print("Show >=4 configured markers in view.")
     print("Press 'c' compute+save, 'q' quit.\n")
-    for mid in sorted(marker_world_mm):
-        print(f"  ID {mid} -> {marker_world_mm[mid]} mm")
 
     while True:
         ok, frame = cap.read()
@@ -609,8 +679,6 @@ def run_workspace_calibration_markers(
                 cx, cy = found[int(mid)]["center"]
                 img_pts.append([cx, cy])
                 world_pts.append([wx, wy])
-                cv2.putText(vis, f"ID{mid} -> ({wx:.0f},{wy:.0f})mm", (int(cx) + 8, int(cy) - 8),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv2.LINE_AA)
 
         inliers = 0
         if len(img_pts) >= 4:
@@ -649,11 +717,16 @@ def run_workspace_calibration_markers(
                 aruco_dict_id=int(aruco_dict_id),
                 marker_world_mm_arr=marker_arr,
             )
-            return True
+
+            ws = load_workspace(WORKSPACE_NPZ)
+            okv, msg = _validate_workspace_dict(ws)
+            print("\n[calib] Saved workspace:", WORKSPACE_NPZ)
+            print("[calib] Workspace validation:", "OK" if okv else f"FAIL ({msg})")
+            return okv
 
 
 def ensure_calibration(
-    cap,
+    cap=None,
     marker_world_mm: Optional[Dict[int, Tuple[float, float]]] = None,
     aruco_dict_id: int = cv2.aruco.DICT_5X5_250,
     intrinsics_target_frames: int = 25,
@@ -662,50 +735,32 @@ def ensure_calibration(
     phone_wh_mm: Tuple[float, float] = (79.0, 162.3),
     use_charuco_intrinsics: bool = True,
     phone_ids: Optional[Tuple[int, ...]] = None,
+    verbose: bool = True,
     **_ignored_kwargs,
 ):
-    if marker_world_mm is None:
-        marker_world_mm = {}
-
-    need_intr = not intrinsics_exists(INTRINSICS_NPZ)
-    need_ws = not workspace_exists(WORKSPACE_NPZ)
-    need_ext = not extrinsics_exists(EXTRINSICS_NPZ)
-
-    if need_intr:
-        ok = run_intrinsics_calibration(
-            cap,
-            target_frames=int(intrinsics_target_frames),
-            aruco_dict_id=int(aruco_dict_id),
-        )
-        if not ok:
-            return None, None, None
-
-    ws_ok = True
-    if need_ws:
-        if str(workspace_mode).lower() == "markers":
-            if len(marker_world_mm) >= 4:
-                ws_ok = run_workspace_calibration_markers(
-                    cap,
-                    marker_world_mm=marker_world_mm,
-                    aruco_dict_id=int(aruco_dict_id),
-                    use_undistort=True,
-                )
-            else:
-                ws_ok = False
-        else:
-            ws_ok = run_workspace_calibration_phone(
-                cap,
-                phone_model=str(phone_model),
-                phone_wh_mm=phone_wh_mm,
-                aruco_dict_id=int(aruco_dict_id),
-                marker_id_any=True,
-                use_undistort=True,
-            )
-
     intr = load_intrinsics(INTRINSICS_NPZ)
-    ws = load_workspace(WORKSPACE_NPZ) if ws_ok else None
-    ext = load_extrinsics(EXTRINSICS_NPZ) if (need_ext is False or extrinsics_exists(EXTRINSICS_NPZ)) else None
-    return intr, ws, ext
+    ws = load_workspace(WORKSPACE_NPZ)
+    ext = load_extrinsics(EXTRINSICS_NPZ)
+
+    ok_i, msg_i = _validate_intrinsics_dict(intr)
+    ok_w, msg_w = _validate_workspace_dict(ws)
+    ok_e, msg_e = _validate_extrinsics_dict(ext)
+
+    if verbose:
+        _print_calib_status(prefix="[calib] ")
+        print(f"[calib] Intrinsics validation: {'OK' if ok_i else f'FAIL ({msg_i})'}")
+        print(f"[calib] Workspace  validation: {'OK' if ok_w else f'FAIL ({msg_w})'}")
+        print(f"[calib] Extrinsics validation: {'OK' if ok_e else f'FAIL ({msg_e})'}")
+
+    if not ok_i or not ok_w:
+        raise RuntimeError(
+            "Calibration data not found or invalid.\n"
+            f"  intrinsics: {INTRINSICS_NPZ} -> {'OK' if ok_i else 'FAIL'} ({msg_i})\n"
+            f"  workspace:  {WORKSPACE_NPZ} -> {'OK' if ok_w else 'FAIL'} ({msg_w})\n"
+            "Run calib.py directly to regenerate calibration_data/*.npz."
+        )
+
+    return intr, ws, (ext if ok_e else None)
 
 
 def force_recalibration(
@@ -735,7 +790,6 @@ def force_recalibration(
         if not ok_intr:
             return None, None, None
 
-        ws_ok = True
         if str(workspace_mode).lower() == "markers":
             ws_ok = (len(marker_world_mm) >= 4) and run_workspace_calibration_markers(
                 cap,
@@ -756,6 +810,17 @@ def force_recalibration(
         intr = load_intrinsics(INTRINSICS_NPZ)
         ws = load_workspace(WORKSPACE_NPZ) if ws_ok else None
         ext = load_extrinsics(EXTRINSICS_NPZ)
+
+        ok_i, msg_i = _validate_intrinsics_dict(intr)
+        ok_w, msg_w = _validate_workspace_dict(ws)
+        ok_e, msg_e = _validate_extrinsics_dict(ext)
+
+        print("\n[calib] FINAL SAVE CHECK")
+        _print_calib_status(prefix="[calib] ")
+        print(f"[calib] Intrinsics validation: {'OK' if ok_i else f'FAIL ({msg_i})'}")
+        print(f"[calib] Workspace  validation: {'OK' if ok_w else f'FAIL ({msg_w})'}")
+        print(f"[calib] Extrinsics validation: {'OK' if ok_e else f'FAIL ({msg_e})'}")
+
         return intr, ws, ext
     finally:
         try:
@@ -810,7 +875,4 @@ if __name__ == "__main__":
     )
 
     print("\nCalibration complete.")
-    print("Intrinsics saved:", "YES" if intrinsics_exists() else "NO")
-    print("Workspace saved:", "YES" if workspace_exists() else "NO")
-    print("Extrinsics saved:", "YES" if extrinsics_exists() else "NO")
     print("Folder:", CALIB_DIR)
