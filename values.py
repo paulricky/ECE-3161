@@ -95,7 +95,8 @@ ARUCO_WORKSPACE_MAX = (0.18, 0.18, 0.28)
 
 HAND_CMD_SMOOTHING = 0.25
 
-LEROBOT_CALIBRATION_FILE = ""
+#replace with your own calibration path if you have one
+LEROBOT_CALIBRATION_FILE = "/Users/ricky/.cache/huggingface/lerobot/calibration/robots/so101_follower/my_awesome_follower_arm.json"
 
 # Fine tuning offsets for the physical arm after calibration.
 # Order: shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll

@@ -425,9 +425,24 @@ class HandTracker:
         self.lerobot_calibration = self._load_lerobot_calibration()
 
     def _load_lerobot_calibration(self):
-        path = getattr(val, "LEROBOT_CALIBRATION_FILE", "")
-        if not path or not os.path.exists(path):
+        path = getattr(val, "LEROBOT_CALIBRATION_FILE", "").strip()
+        if not path:
+            robot_id = getattr(val, "REAL_ROBOT_ID", "my_awesome_follower_arm")
+            home = os.path.expanduser("~")
+            path = os.path.join(
+                home,
+                ".cache",
+                "huggingface",
+                "lerobot",
+                "calibration",
+                "robots",
+                "so101_follower",
+                f"{robot_id}.json",
+            )
+
+        if not os.path.exists(path):
             return None
+
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
 

@@ -5,7 +5,6 @@ import values as val
 from robot_controller import SOArmHardwareController, JointCommand
 from handtracking import HandTracker
 
-
 def main():
 
     cap = cv2.VideoCapture(0)
@@ -13,7 +12,6 @@ def main():
         raise RuntimeError("Could not open camera")
 
     tracker = HandTracker()
-
 
     robot = SOArmHardwareController()
 
@@ -28,7 +26,6 @@ def main():
         print("[main] Real robot disabled")
         return
 
-
     last_time = time.time()
 
     while True:
@@ -36,9 +33,7 @@ def main():
         if not ret:
             break
 
-
         frame = cv2.flip(frame, 1)
-
 
         hand_data = tracker.process(frame)
 
@@ -55,7 +50,6 @@ def main():
 
             robot.send_if_due(cmd)
 
-
         cv2.imshow("Hand Tracking", frame)
 
         if cv2.waitKey(1) & 0xFF == 27:
@@ -68,10 +62,8 @@ def main():
             time.sleep((1.0 / val.REAL_ROBOT_HZ) - dt)
         last_time = now
 
-
     cap.release()
     cv2.destroyAllWindows()
-
 
 if __name__ == "__main__":
     main()
