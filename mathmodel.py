@@ -1,174 +1,283 @@
 from __future__ import annotations
 
+import math
+from typing import Any
+
 import numpy as np
-from scipy.spatial.transform import Rotation as R
 
-
-EPS = 1e-12
-
-def clamp(x: float, lo: float, hi: float) -> float:
-    return float(np.clip(x, lo, hi))
-
-
-def sat01(x: float) -> float:
-    return float(np.clip(x, 0.0, 1.0))
-
-
-def lerp(a: float, b: float, t: float) -> float:
-    return float(a + (b - a) * t)
-
-
-def inv_lerp(x: float, lo: float, hi: float) -> float:
-    if hi <= lo:
-        return 0.0
-    return sat01((x - lo) / (hi - lo))
-
-
-def ema(prev, new: float, alpha: float) -> float:
-    if prev is None:
-        return float(new)
-    return float((1.0 - alpha) * float(prev) + alpha * float(new))
-
-
-def ema_vec(prev, new, alpha: float):
-    new = np.asarray(new, dtype=np.float64)
-    if prev is None:
-        return new.copy()
-    prev = np.asarray(prev, dtype=np.float64)
-    return (1.0 - alpha) * prev + alpha * new
-
-
-def wrap_pi(a: float) -> float:
-    return float((a + np.pi) % (2.0 * np.pi) - np.pi)
-
-
-def ema_angles(prev, new, alpha: float):
-    new = np.asarray(new, dtype=np.float64)
-    if prev is None:
-        return np.vectorize(wrap_pi)(new)
-    prev = np.asarray(prev, dtype=np.float64)
-    d = np.vectorize(wrap_pi)(new - prev)
-    out = prev + alpha * d
-    return np.vectorize(wrap_pi)(out)
-
-
-def rate_limit_angles(prev, new, max_rate_rad_s: float, dt: float):
-    new = np.asarray(new, dtype=np.float64)
-    if prev is None:
-        return new.copy()
-    prev = np.asarray(prev, dtype=np.float64)
-    max_step = float(max_rate_rad_s) * float(dt)
-    d = np.vectorize(wrap_pi)(new - prev)
-    d = np.clip(d, -max_step, max_step)
-    out = prev + d
-    return np.vectorize(wrap_pi)(out)
+import values as val
 
 
 def dist(a, b) -> float:
-    a = np.asarray(a, dtype=np.float64)
-    b = np.asarray(b, dtype=np.float64)
-    return float(np.linalg.norm(a - b))
-
-
-def norm(v) -> float:
-    v = np.asarray(v, dtype=np.float64)
-    return float(np.linalg.norm(v))
-
-
-def normalize(v, eps: float = EPS):
-    v = np.asarray(v, dtype=np.float64)
-    n = np.linalg.norm(v)
-    if n < eps:
-        return np.zeros_like(v)
-    return v / n
-
-
-def orthonormalize_cols(M):
-    M = np.asarray(M, dtype=np.float64)
-    U, _, Vt = np.linalg.svd(M, full_matrices=False)
-    Rm = U @ Vt
-    if np.linalg.det(Rm) < 0:
-        U[:, -1] *= -1.0
-        Rm = U @ Vt
-    return Rm
-
-
-def quat_xyzw_from_rotm(Rm):
-    q = R.from_matrix(np.asarray(Rm, dtype=np.float64)).as_quat()
-    return (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
-
-
-def rotm_from_quat_xyzw(q_xyzw):
-    Rm = R.from_quat(np.asarray(q_xyzw, dtype=np.float64)).as_matrix()
-    return np.asarray(Rm, dtype=np.float64)
-
-
-def quat_mul(q1_xyzw, q2_xyzw):
-    q = (R.from_quat(q1_xyzw) * R.from_quat(q2_xyzw)).as_quat()
-    return (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
-
-
-def quat_inv(q_xyzw):
-    q = R.from_quat(np.asarray(q_xyzw, dtype=np.float64)).inv().as_quat()
-    return (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
-
-
-def euler_from_quat_xyzw(q_xyzw, order: str = "xyz"):
-    e = R.from_quat(np.asarray(q_xyzw, dtype=np.float64)).as_euler(order, degrees=False)
-    return (float(e[0]), float(e[1]), float(e[2]))
-
-
-def quat_from_euler(rpy, order: str = "xyz"):
-    q = R.from_euler(order, np.asarray(rpy, dtype=np.float64), degrees=False).as_quat()
-    return (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
-
-
-def mp_landmark_xyz(hand_lms, idx: int):
-    lm = hand_lms.landmark[idx]
-    return np.array([lm.x, lm.y, lm.z], dtype=np.float64)
-
-
-def palm_frame_from_landmarks(hand_lms):
-    wrist = mp_landmark_xyz(hand_lms, 0)
-    idx_mcp = mp_landmark_xyz(hand_lms, 5)
-    mid_mcp = mp_landmark_xyz(hand_lms, 9)
-    pky_mcp = mp_landmark_xyz(hand_lms, 17)
-
-    x_cam = normalize(pky_mcp - idx_mcp)      # across palm
-    y_cam = normalize(mid_mcp - wrist)        # forward (wrist -> fingers)
-    z_cam = normalize(np.cross(x_cam, y_cam)) # palm normal
-    y_cam = normalize(np.cross(z_cam, x_cam))
-
-    M = np.stack([x_cam, y_cam, z_cam], axis=1)
-    Rm = orthonormalize_cols(M)
-    return Rm
-
-
-def cam_to_world_vec(v_cam):
-    v_cam = np.asarray(v_cam, dtype=np.float64)
-    return normalize(np.array([v_cam[0], 0.0, -v_cam[1]], dtype=np.float64))
-
-
-def palm_quat_world_from_landmarks(hand_lms):
-    R_cam = palm_frame_from_landmarks(hand_lms)
-    Xw = cam_to_world_vec(R_cam[:, 0])
-    Yw = cam_to_world_vec(R_cam[:, 1])
-    Zw = normalize(np.cross(Xw, Yw))
-    Yw = normalize(np.cross(Zw, Xw))
-    Rw = orthonormalize_cols(np.stack([Xw, Yw, Zw], axis=1))
-    return quat_xyzw_from_rotm(Rw)
+    ax, ay = float(a[0]), float(a[1])
+    bx, by = float(b[0]), float(b[1])
+    return math.hypot(ax - bx, ay - by)
 
 
 def hand_center_xy(hand_lms):
     lm = hand_lms.landmark
-    idxs = [0, 5, 9, 13, 17]
-    x = float(sum(lm[i].x for i in idxs) / len(idxs))
-    y = float(sum(lm[i].y for i in idxs) / len(idxs))
-    return x, y
+    pts = [
+        (lm[0].x, lm[0].y),
+        (lm[5].x, lm[5].y),
+        (lm[9].x, lm[9].y),
+        (lm[13].x, lm[13].y),
+        (lm[17].x, lm[17].y),
+    ]
+    cx = sum(p[0] for p in pts) / len(pts)
+    cy = sum(p[1] for p in pts) / len(pts)
+    return (cx, cy)
 
 
-def hand_size_proxy(hand_lms):
-    wrist = mp_landmark_xyz(hand_lms, 0)
-    idx_mcp = mp_landmark_xyz(hand_lms, 5)
-    d = np.linalg.norm((wrist - idx_mcp)[:2])
-    return float(d)
+def _clip(x: float, lo: float, hi: float) -> float:
+    if x < lo:
+        return lo
+    if x > hi:
+        return hi
+    return x
+
+
+def _get_value(name: str, default: float) -> float:
+    return float(getattr(val, name, default))
+
+
+def _get_joint_limits():
+    return {
+        "shoulder_pan": (
+            _get_value("BASE_PAN_MIN", -1.2),
+            _get_value("BASE_PAN_MAX", 1.2),
+        ),
+        "shoulder_lift": (
+            _get_value("SHOULDER_LIFT_MIN", -0.8),
+            _get_value("SHOULDER_LIFT_MAX", 1.0),
+        ),
+        "elbow_flex": (
+            _get_value("ELBOW_MIN", -0.9),
+            _get_value("ELBOW_MAX", 1.2),
+        ),
+        "wrist_flex": (
+            _get_value("WRIST_FLEX_MIN", -0.9),
+            _get_value("WRIST_FLEX_MAX", 0.9),
+        ),
+        "wrist_roll": (
+            _get_value("WRIST_ROLL_MIN", -1.5),
+            _get_value("WRIST_ROLL_MAX", 1.5),
+        ),
+    }
+
+
+def _extract_numeric(obj: Any, *keys: str):
+    if isinstance(obj, dict):
+        for k in keys:
+            if k in obj and isinstance(obj[k], (int, float)):
+                return float(obj[k])
+    return None
+
+
+def _extract_limits_from_lerobot_calibration(lerobot_calibration):
+    if not isinstance(lerobot_calibration, dict):
+        return None
+
+    out = {}
+    names = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
+
+    for name in names:
+        lo = None
+        hi = None
+
+        direct = lerobot_calibration.get(name)
+        if isinstance(direct, dict):
+            lo = _extract_numeric(direct, "min_rad", "min", "lower", "low")
+            hi = _extract_numeric(direct, "max_rad", "max", "upper", "high")
+
+        motors = lerobot_calibration.get("motors")
+        if (lo is None or hi is None) and isinstance(motors, dict):
+            m = motors.get(name)
+            if isinstance(m, dict):
+                lo = _extract_numeric(m, "min_rad", "min", "lower", "low")
+                hi = _extract_numeric(m, "max_rad", "max", "upper", "high")
+
+        limits = lerobot_calibration.get("limits")
+        if (lo is None or hi is None) and isinstance(limits, dict):
+            m = limits.get(name)
+            if isinstance(m, dict):
+                lo = _extract_numeric(m, "min_rad", "min", "lower", "low")
+                hi = _extract_numeric(m, "max_rad", "max", "upper", "high")
+
+        if lo is not None and hi is not None and hi > lo:
+            out[name] = (float(lo), float(hi))
+
+    return out if out else None
+
+
+def _merge_limits(base_limits, lerobot_calibration):
+    merged = dict(base_limits)
+    extra = _extract_limits_from_lerobot_calibration(lerobot_calibration)
+    if extra is not None:
+        for k, v in extra.items():
+            if k in merged:
+                merged[k] = v
+    return merged
+
+
+def _joint_mid(lo: float, hi: float) -> float:
+    return 0.5 * (lo + hi)
+
+
+def _joint_span(lo: float, hi: float) -> float:
+    return hi - lo
+
+
+def _clamp_to_joint(name: str, x: float, limits) -> float:
+    lo, hi = limits[name]
+    return _clip(float(x), float(lo), float(hi))
+
+
+def _workspace_min_max():
+    wmin = np.array(getattr(val, "ARUCO_WORKSPACE_MIN", (-0.18, -0.12, 0.02)), dtype=np.float64)
+    wmax = np.array(getattr(val, "ARUCO_WORKSPACE_MAX", (0.18, 0.18, 0.28)), dtype=np.float64)
+    return wmin, wmax
+
+
+def _normalize_workspace_xyz(xyz):
+    xyz = np.asarray(xyz, dtype=np.float64).reshape(3)
+    wmin, wmax = _workspace_min_max()
+    denom = wmax - wmin
+    denom = np.where(np.abs(denom) < 1e-9, 1.0, denom)
+    z = (xyz - wmin) / denom
+    return np.clip(z, 0.0, 1.0)
+
+
+def _ee_geom():
+    return {
+        "base_height": _get_value("IK_BASE_HEIGHT_M", 0.06),
+        "upper_arm": _get_value("IK_LINK1_M", 0.115),
+        "forearm": _get_value("IK_LINK2_M", 0.115),
+        "tool": _get_value("IK_TOOL_M", 0.05),
+        "r_min": _get_value("IK_RADIAL_MIN_M", 0.04),
+    }
+
+
+def _safe_acos(x: float) -> float:
+    return math.acos(_clip(x, -1.0, 1.0))
+
+
+def _solve_planar_2link(r: float, z: float, l1: float, l2: float):
+    rr = float(r)
+    zz = float(z)
+    d2 = rr * rr + zz * zz
+    c2 = (d2 - l1 * l1 - l2 * l2) / (2.0 * l1 * l2)
+    q2 = _safe_acos(c2)
+    k1 = l1 + l2 * math.cos(q2)
+    k2 = l2 * math.sin(q2)
+    q1 = math.atan2(zz, rr) - math.atan2(k2, k1)
+    return q1, q2
+
+
+def _map_rpy_to_wrist(target_rpy):
+    if target_rpy is None:
+        return 0.0, 0.0
+
+    rpy = np.asarray(target_rpy, dtype=np.float64).reshape(-1)
+    if rpy.size < 3:
+        return 0.0, 0.0
+
+    roll = float(rpy[0])
+    pitch = float(rpy[1])
+    yaw = float(rpy[2])
+
+    wrist_flex = pitch
+    wrist_roll = yaw
+
+    alt = 0.5 * (roll + yaw)
+    if abs(alt) > abs(wrist_roll):
+        wrist_roll = alt
+
+    return wrist_flex, wrist_roll
+
+
+def _fallback_joint_mapping_from_workspace(target_xyz, target_rpy, gripper_open01, limits):
+    xyz_norm = _normalize_workspace_xyz(target_xyz)
+    shoulder_pan = _joint_mid(*limits["shoulder_pan"]) + (0.5 - xyz_norm[0]) * _joint_span(*limits["shoulder_pan"])
+    shoulder_lift = limits["shoulder_lift"][0] + xyz_norm[1] * _joint_span(*limits["shoulder_lift"])
+    elbow_flex = limits["elbow_flex"][0] + xyz_norm[2] * _joint_span(*limits["elbow_flex"])
+
+    wrist_flex, wrist_roll = _map_rpy_to_wrist(target_rpy)
+
+    return {
+        "shoulder_pan": _clamp_to_joint("shoulder_pan", shoulder_pan, limits),
+        "shoulder_lift": _clamp_to_joint("shoulder_lift", shoulder_lift, limits),
+        "elbow_flex": _clamp_to_joint("elbow_flex", elbow_flex, limits),
+        "wrist_flex": _clamp_to_joint("wrist_flex", wrist_flex, limits),
+        "wrist_roll": _clamp_to_joint("wrist_roll", wrist_roll, limits),
+        "gripper_open01": _clip(float(gripper_open01), 0.0, 1.0),
+    }
+
+
+def solve_ik_from_target(
+    target_xyz,
+    target_rpy=None,
+    gripper_open01: float = 1.0,
+    lerobot_calibration=None,
+):
+    limits = _merge_limits(_get_joint_limits(), lerobot_calibration)
+
+    try:
+        xyz = np.asarray(target_xyz, dtype=np.float64).reshape(3)
+    except Exception:
+        return _fallback_joint_mapping_from_workspace((0.0, 0.0, 0.1), target_rpy, gripper_open01, limits)
+
+    geom = _ee_geom()
+
+    x = float(xyz[0])
+    y = float(xyz[1])
+    z = float(xyz[2])
+
+    base_height = geom["base_height"]
+    l1 = geom["upper_arm"]
+    l2 = geom["forearm"]
+    tool = geom["tool"]
+    r_min = geom["r_min"]
+
+    wrist_flex_seed, wrist_roll = _map_rpy_to_wrist(target_rpy)
+
+    shoulder_pan = math.atan2(y, x)
+
+    planar_r = math.hypot(x, y)
+    wrist_target_r = max(r_min, planar_r - tool)
+    wrist_target_z = z - base_height
+
+    max_reach = max(1e-6, l1 + l2 - 1e-4)
+    min_reach = max(1e-6, abs(l1 - l2) + 1e-4)
+
+    reach = math.hypot(wrist_target_r, wrist_target_z)
+    if reach > max_reach:
+        s = max_reach / reach
+        wrist_target_r *= s
+        wrist_target_z *= s
+    elif reach < min_reach:
+        s = min_reach / max(reach, 1e-9)
+        wrist_target_r *= s
+        wrist_target_z *= s
+
+    shoulder_lift, elbow_geom = _solve_planar_2link(wrist_target_r, wrist_target_z, l1, l2)
+
+    elbow_flex = -elbow_geom
+
+    pitch_target = 0.0
+    if target_rpy is not None:
+        rpy = np.asarray(target_rpy, dtype=np.float64).reshape(-1)
+        if rpy.size >= 2:
+            pitch_target = float(rpy[1])
+
+    wrist_flex = pitch_target - shoulder_lift - elbow_flex
+
+    solved = {
+        "shoulder_pan": _clamp_to_joint("shoulder_pan", shoulder_pan, limits),
+        "shoulder_lift": _clamp_to_joint("shoulder_lift", shoulder_lift, limits),
+        "elbow_flex": _clamp_to_joint("elbow_flex", elbow_flex, limits),
+        "wrist_flex": _clamp_to_joint("wrist_flex", wrist_flex if math.isfinite(wrist_flex) else wrist_flex_seed, limits),
+        "wrist_roll": _clamp_to_joint("wrist_roll", wrist_roll, limits),
+        "gripper_open01": _clip(float(gripper_open01), 0.0, 1.0),
+    }
+
+    return solved

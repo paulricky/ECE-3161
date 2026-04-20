@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 import math
+import os
 import time
 from collections import deque
 
 import cv2
 import mediapipe as mp
+import numpy as np
 
 import mathmodel as mm
 import values as val
@@ -27,7 +30,6 @@ _clap_cooldown_until = 0.0
 mp_hands = mp.solutions.hands
 mp_draw = mp.solutions.drawing_utils
 mp_styles = mp.solutions.drawing_styles
-
 
 hands = mp_hands.Hands(
     static_image_mode=False,
@@ -93,10 +95,7 @@ def openness_from_fingertips(hand_lms, label: str):
         open01 = 0.0 if st else 1.0
     else:
         open01 = (spread - val.CLOSED_TIPS_ON) / denom
-        if open01 < 0.0:
-            open01 = 0.0
-        if open01 > 1.0:
-            open01 = 1.0
+        open01 = max(0.0, min(1.0, open01))
 
     return st, open01, spread
 
@@ -221,6 +220,194 @@ def _angle_2d(a, b) -> float:
     return math.atan2(b[1] - a[1], b[0] - a[0])
 
 
+def _rvec_tvec_to_T(rvec, tvec):
+    R, _ = cv2.Rodrigues(np.asarray(rvec, dtype=np.float64).reshape(3, 1))
+    t = np.asarray(tvec, dtype=np.float64).reshape(3, 1)
+    T = np.eye(4, dtype=np.float64)
+    T[:3, :3] = R
+    T[:3, 3:] = t
+    return T
+
+
+def _T_inv(T):
+    R = T[:3, :3]
+    t = T[:3, 3]
+    out = np.eye(4, dtype=np.float64)
+    out[:3, :3] = R.T
+    out[:3, 3] = -R.T @ t
+    return out
+
+
+def _T_apply(T, p):
+    ph = np.array([p[0], p[1], p[2], 1.0], dtype=np.float64)
+    q = T @ ph
+    return q[:3]
+
+
+def _rot_to_rpy(R):
+    sy = math.sqrt(R[0, 0] * R[0, 0] + R[1, 0] * R[1, 0])
+    singular = sy < 1e-6
+    if not singular:
+        roll = math.atan2(R[2, 1], R[2, 2])
+        pitch = math.atan2(-R[2, 0], sy)
+        yaw = math.atan2(R[1, 0], R[0, 0])
+    else:
+        roll = math.atan2(-R[1, 2], R[1, 1])
+        pitch = math.atan2(-R[2, 0], sy)
+        yaw = 0.0
+    return np.array([roll, pitch, yaw], dtype=np.float64)
+
+
+def _safe_npz_value(d, keys, default=None):
+    for k in keys:
+        if k in d:
+            return d[k]
+    return default
+
+
+class ArucoGloveTracker:
+    def __init__(self):
+        self.enabled = bool(getattr(val, "ARUCO_GLOVE_ENABLED", True))
+        self.marker_size_m = float(getattr(val, "ARUCO_MARKER_SIZE_M", 0.03))
+        self.front_id = int(getattr(val, "ARUCO_GLOVE_FRONT_ID", 10))
+        self.back_id = int(getattr(val, "ARUCO_GLOVE_BACK_ID", 11))
+        self.camera_matrix = None
+        self.dist_coeffs = None
+        self.T_workspace_from_camera = None
+        self.workspace_min = np.array(getattr(val, "ARUCO_WORKSPACE_MIN", (-0.18, -0.12, 0.02)), dtype=np.float64)
+        self.workspace_max = np.array(getattr(val, "ARUCO_WORKSPACE_MAX", (0.18, 0.18, 0.28)), dtype=np.float64)
+
+        if not self.enabled:
+            self.detector = None
+            return
+
+        dict_name = getattr(val, "ARUCO_DICT_NAME", "DICT_4X4_50")
+        dict_id = getattr(cv2.aruco, dict_name)
+        dictionary = cv2.aruco.getPredefinedDictionary(dict_id)
+        params = cv2.aruco.DetectorParameters()
+        self.detector = cv2.aruco.ArucoDetector(dictionary, params)
+
+        self._load_intrinsics()
+        self._load_extrinsics()
+        self._load_workspace_bounds()
+
+    def _load_intrinsics(self):
+        path = getattr(val, "CALIB_INTRINSICS_FILE", "")
+        if not path or not os.path.exists(path):
+            return
+        d = np.load(path, allow_pickle=True)
+        K = _safe_npz_value(d, ["camera_matrix", "K", "mtx"])
+        dist = _safe_npz_value(d, ["dist_coeffs", "dist", "distortion_coefficients"])
+        if K is None or dist is None:
+            return
+        self.camera_matrix = np.asarray(K, dtype=np.float64)
+        self.dist_coeffs = np.asarray(dist, dtype=np.float64).reshape(-1, 1)
+
+    def _load_extrinsics(self):
+        path = getattr(val, "CALIB_EXTRINSICS_FILE", "")
+        if not path or not os.path.exists(path):
+            return
+        d = np.load(path, allow_pickle=True)
+
+        mode = getattr(val, "EXTRINSICS_MODE", "workspace_to_camera")
+
+        R = _safe_npz_value(d, ["R"])
+        t = _safe_npz_value(d, ["t", "T"])
+        rvec = _safe_npz_value(d, ["rvec"])
+        tvec = _safe_npz_value(d, ["tvec"])
+
+        if R is not None and t is not None:
+            T = np.eye(4, dtype=np.float64)
+            T[:3, :3] = np.asarray(R, dtype=np.float64).reshape(3, 3)
+            T[:3, 3] = np.asarray(t, dtype=np.float64).reshape(3)
+        elif rvec is not None and tvec is not None:
+            T = _rvec_tvec_to_T(rvec, tvec)
+        else:
+            return
+
+        if mode == "workspace_to_camera":
+            self.T_workspace_from_camera = _T_inv(T)
+        else:
+            self.T_workspace_from_camera = T
+
+    def _load_workspace_bounds(self):
+        path = getattr(val, "CALIB_WORKSPACE_FILE", "")
+        if not path or not os.path.exists(path):
+            return
+        d = np.load(path, allow_pickle=True)
+        mn = _safe_npz_value(d, ["workspace_min", "xyz_min", "min_xyz"])
+        mx = _safe_npz_value(d, ["workspace_max", "xyz_max", "max_xyz"])
+        if mn is not None and mx is not None:
+            self.workspace_min = np.asarray(mn, dtype=np.float64).reshape(3)
+            self.workspace_max = np.asarray(mx, dtype=np.float64).reshape(3)
+
+    def _marker_object_points(self):
+        s = self.marker_size_m / 2.0
+        return np.array(
+            [
+                [-s, s, 0.0],
+                [s, s, 0.0],
+                [s, -s, 0.0],
+                [-s, -s, 0.0],
+            ],
+            dtype=np.float64,
+        )
+
+    def detect(self, frame):
+        if self.detector is None or self.camera_matrix is None or self.dist_coeffs is None or self.T_workspace_from_camera is None:
+            return None
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        corners, ids, _ = self.detector.detectMarkers(gray)
+        if ids is None or len(ids) == 0:
+            return None
+
+        ids = ids.flatten().tolist()
+        chosen_idx = None
+        chosen_id = None
+
+        for candidate in (self.front_id, self.back_id):
+            if candidate in ids:
+                chosen_idx = ids.index(candidate)
+                chosen_id = candidate
+                break
+
+        if chosen_idx is None:
+            return None
+
+        image_points = np.asarray(corners[chosen_idx], dtype=np.float64).reshape(4, 2)
+        ok, rvec, tvec = cv2.solvePnP(
+            self._marker_object_points(),
+            image_points,
+            self.camera_matrix,
+            self.dist_coeffs,
+            flags=cv2.SOLVEPNP_IPPE_SQUARE,
+        )
+        if not ok:
+            return None
+
+        T_camera_from_marker = _rvec_tvec_to_T(rvec, tvec)
+        marker_origin_camera = T_camera_from_marker[:3, 3]
+        marker_origin_workspace = _T_apply(self.T_workspace_from_camera, marker_origin_camera)
+
+        R_marker_camera = T_camera_from_marker[:3, :3]
+        R_workspace_marker = self.T_workspace_from_camera[:3, :3] @ R_marker_camera
+        workspace_rpy = _rot_to_rpy(R_workspace_marker)
+
+        return {
+            "marker_id": int(chosen_id),
+            "workspace_xyz": marker_origin_workspace,
+            "workspace_rpy": workspace_rpy,
+            "image_corners": image_points,
+        }
+
+    def normalize_workspace_xyz(self, xyz):
+        denom = self.workspace_max - self.workspace_min
+        denom = np.where(np.abs(denom) < 1e-9, 1.0, denom)
+        z = (np.asarray(xyz, dtype=np.float64) - self.workspace_min) / denom
+        return np.clip(z, 0.0, 1.0)
+
+
 class HandTracker:
     def __init__(self):
         self.prev_time = time.time()
@@ -232,7 +419,17 @@ class HandTracker:
             "wrist_roll": 0.0,
             "gripper_open01": 1.0,
         }
+        self._last_open01 = 1.0
         self._alpha = float(getattr(val, "HAND_CMD_SMOOTHING", 0.25))
+        self.aruco = ArucoGloveTracker()
+        self.lerobot_calibration = self._load_lerobot_calibration()
+
+    def _load_lerobot_calibration(self):
+        path = getattr(val, "LEROBOT_CALIBRATION_FILE", "")
+        if not path or not os.path.exists(path):
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
 
     def process(self, frame):
         now = time.time()
@@ -247,22 +444,116 @@ class HandTracker:
 
         draw_and_update_gestures(frame, detected_hands, now, dt)
 
+        aruco_pose = self.aruco.detect(frame)
+        if aruco_pose is not None:
+            open01 = self._estimate_gripper_open01(detected_hands)
+            cmd = self._aruco_pose_to_command(aruco_pose, open01)
+            if cmd is not None:
+                out = self._smooth_command(cmd)
+                out["mode"] = "aruco"
+                out["ee_target_xyz"] = aruco_pose["workspace_xyz"].tolist()
+                self._draw_command_overlay(frame, out)
+                self._draw_aruco_overlay(frame, aruco_pose)
+                return out
+
         driver = choose_driver(detected_hands)
         if driver is None:
             return None
 
         hand_lms, label, _score = driver
         cmd = self._landmarks_to_command(hand_lms, label)
+        out = self._smooth_command(cmd)
+        out["mode"] = "mediapipe"
+        self._draw_command_overlay(frame, out)
+        return out
 
+    def _smooth_command(self, cmd):
         for k in self._last_cmd:
-            self._last_cmd[k] = _lerp(self._last_cmd[k], cmd[k], self._alpha)
+            self._last_cmd[k] = _lerp(self._last_cmd[k], float(cmd[k]), self._alpha)
+        return dict(self._last_cmd)
 
-        out = dict(self._last_cmd)
+    def _estimate_gripper_open01(self, detected_hands):
+        driver = choose_driver(detected_hands)
+        if driver is None:
+            return self._last_open01
+        hand_lms, label, _score = driver
+        is_closed, open01, _spread = openness_from_fingertips(hand_lms, label)
+        if is_closed:
+            open01 = 0.0
+        self._last_open01 = open01
+        return open01
 
-        h_img, w_img = frame.shape[:2]
+    def _aruco_pose_to_command(self, aruco_pose, open01):
+        xyz = np.asarray(aruco_pose["workspace_xyz"], dtype=np.float64)
+        rpy = np.asarray(aruco_pose["workspace_rpy"], dtype=np.float64)
+        xyz_norm = self.aruco.normalize_workspace_xyz(xyz)
+
+        if hasattr(mm, "solve_ik_from_target"):
+            try:
+                solved = mm.solve_ik_from_target(
+                    target_xyz=xyz,
+                    target_rpy=rpy,
+                    gripper_open01=float(open01),
+                    lerobot_calibration=self.lerobot_calibration,
+                )
+                if isinstance(solved, dict):
+                    return {
+                        "shoulder_pan": float(solved["shoulder_pan"]),
+                        "shoulder_lift": float(solved["shoulder_lift"]),
+                        "elbow_flex": float(solved["elbow_flex"]),
+                        "wrist_flex": float(solved["wrist_flex"]),
+                        "wrist_roll": float(solved["wrist_roll"]),
+                        "gripper_open01": float(solved["gripper_open01"]),
+                    }
+                if isinstance(solved, (list, tuple)) and len(solved) >= 5:
+                    return {
+                        "shoulder_pan": float(solved[0]),
+                        "shoulder_lift": float(solved[1]),
+                        "elbow_flex": float(solved[2]),
+                        "wrist_flex": float(solved[3]),
+                        "wrist_roll": float(solved[4]),
+                        "gripper_open01": float(open01),
+                    }
+            except Exception:
+                pass
+
+        pan_lo, pan_hi = _get_limit("BASE_PAN", -1.2, 1.2)
+        lift_lo, lift_hi = _get_limit("SHOULDER_LIFT", -0.8, 1.0)
+        elbow_lo, elbow_hi = _get_limit("ELBOW", -0.9, 1.2)
+        wflex_lo, wflex_hi = _get_limit("WRIST_FLEX", -0.9, 0.9)
+        wroll_lo, wroll_hi = _get_limit("WRIST_ROLL", -1.5, 1.5)
+
+        shoulder_pan = _norm_to_range(1.0 - xyz_norm[0], pan_lo, pan_hi)
+        shoulder_lift = _norm_to_range(1.0 - xyz_norm[1], lift_lo, lift_hi)
+        elbow_flex = _norm_to_range(xyz_norm[2], elbow_lo, elbow_hi)
+
+        pitch_norm = _clip((rpy[1] + math.pi / 2.0) / math.pi, 0.0, 1.0)
+        roll_norm = _clip((rpy[0] + math.pi) / (2.0 * math.pi), 0.0, 1.0)
+
+        wrist_flex = _norm_to_range(pitch_norm, wflex_lo, wflex_hi)
+        wrist_roll = _norm_to_range(roll_norm, wroll_lo, wroll_hi)
+
+        return {
+            "shoulder_pan": float(shoulder_pan),
+            "shoulder_lift": float(shoulder_lift),
+            "elbow_flex": float(elbow_flex),
+            "wrist_flex": float(wrist_flex),
+            "wrist_roll": float(wrist_roll),
+            "gripper_open01": float(open01),
+        }
+
+    def _draw_aruco_overlay(self, frame, aruco_pose):
+        c = np.asarray(aruco_pose["image_corners"], dtype=np.int32)
+        cv2.polylines(frame, [c.reshape(-1, 1, 2)], True, (0, 255, 0), 2)
+        xyz = aruco_pose["workspace_xyz"]
+        text = f"ARUCO xyz=({xyz[0]:.3f},{xyz[1]:.3f},{xyz[2]:.3f})"
+        cv2.putText(frame, text, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv2.LINE_AA)
+
+    def _draw_command_overlay(self, frame, out):
+        h_img, _ = frame.shape[:2]
         cv2.putText(
             frame,
-            f"CMD pan={out['shoulder_pan']:.2f} lift={out['shoulder_lift']:.2f} elbow={out['elbow_flex']:.2f}",
+            f"{out.get('mode', 'unknown')} pan={out['shoulder_pan']:.2f} lift={out['shoulder_lift']:.2f} elbow={out['elbow_flex']:.2f}",
             (10, h_img - 40),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,
@@ -280,8 +571,6 @@ class HandTracker:
             2,
             cv2.LINE_AA,
         )
-
-        return out
 
     def _landmarks_to_command(self, hand_lms, label: str):
         lm = hand_lms.landmark
@@ -343,6 +632,8 @@ class HandTracker:
         gripper_open01 = min(open01, pinch_open01)
         if is_closed:
             gripper_open01 = 0.0
+
+        self._last_open01 = gripper_open01
 
         return {
             "shoulder_pan": shoulder_pan,

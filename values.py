@@ -78,6 +78,25 @@ REAL_ROBOT_ACTION_DEADBAND_DEG = 0.5
 REAL_ROBOT_JOINT_OFFSETS_DEG = [0, 0, 0, 0, 0]
 REAL_ROBOT_ID = "my_awesome_follower_arm"
 
+ARUCO_GLOVE_ENABLED = True
+ARUCO_DICT_NAME = "DICT_4X4_50"
+ARUCO_GLOVE_FRONT_ID = 10
+ARUCO_GLOVE_BACK_ID = 11
+ARUCO_MARKER_SIZE_M = 0.03
+
+CALIB_INTRINSICS_FILE = "calibration_data/calibration_intrinsics.npz"
+CALIB_EXTRINSICS_FILE = "calibration_data/calibration_extrinsics.npz"
+CALIB_WORKSPACE_FILE = "calibration_data/calibration_workspace.npz"
+
+EXTRINSICS_MODE = "workspace_to_camera"
+
+ARUCO_WORKSPACE_MIN = (-0.18, -0.12, 0.02)
+ARUCO_WORKSPACE_MAX = (0.18, 0.18, 0.28)
+
+HAND_CMD_SMOOTHING = 0.25
+
+LEROBOT_CALIBRATION_FILE = ""
+
 # Fine tuning offsets for the physical arm after calibration.
 # Order: shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll
 REAL_ROBOT_JOINT_OFFSETS_DEG = [0.0, 0.0, 0.0, 0.0, 0.0]
