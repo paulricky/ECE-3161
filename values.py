@@ -65,4 +65,19 @@ CLOSED_TIPS_ON = 0.060
 CLOSED_TIPS_OFF = 0.090
 
 #replace with your own file path
-URDF_PATH = "/Users/ricky/PycharmProjects/ECE 3161/SO-ARM100"
+URDF_PATH = "/Users/ricky/PycharmProjects/ECE3161/SO-ARM100"
+
+
+# Real robot control
+ENABLE_REAL_ROBOT = True
+REAL_ROBOT_PORT = ""
+REAL_ROBOT_HZ = 20.0
+REAL_ROBOT_AUTO_CALIBRATE = True
+REAL_ROBOT_MAX_RELATIVE_TARGET_DEG = 10
+REAL_ROBOT_ACTION_DEADBAND_DEG = 0.5
+REAL_ROBOT_JOINT_OFFSETS_DEG = [0, 0, 0, 0, 0]
+REAL_ROBOT_ID = "my_awesome_follower_arm"
+
+# Fine tuning offsets for the physical arm after calibration.
+# Order: shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll
+REAL_ROBOT_JOINT_OFFSETS_DEG = [0.0, 0.0, 0.0, 0.0, 0.0]
