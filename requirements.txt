@@ -1,5 +1,9 @@
-mediapipe==0.10.32
-numpy==2.4.2
-pybullet==3.2.7
-scipy==1.17.0
-ultralytics==8.4.13
+mediapipe==0.10.11
+numpy==1.26.4
+scipy==1.11.4
+pyserial==3.5
+opencv-python==4.9.0.80
+lerobot==0.3.3
+torch==2.2.2
+torchvision==0.17.2
+ultralytics==8.2.0
