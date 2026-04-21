@@ -1,5 +1,6 @@
 import time
 import cv2
+import numpy as np
 
 import values as val
 from robot_controller import SOArmHardwareController, JointCommand
@@ -39,10 +40,14 @@ def main():
 
         if hand_data is not None:
 
+            panned = np.interp(hand_data["shoulder_pan"], [-1, 1], [val.BASE_PAN_MIN, val.BASE_PAN_MAX])
+            lifted = np.interp(hand_data["shoulder_lift"], [-1, 1], [val.SHOULDER_LIFT_MIN, val.SHOULDER_LIFT_MAX])
+            elbowed = np.interp(hand_data["elbow_flex"], [-1, 1], [val.ELBOW_MIN, val.ELBOW_MAX])
+
             cmd = JointCommand(
-                shoulder_pan=hand_data["shoulder_pan"],
-                shoulder_lift=hand_data["shoulder_lift"],
-                elbow_flex=hand_data["elbow_flex"],
+                shoulder_pan=panned,  # Use the stretched value
+                shoulder_lift=lifted,  # Use the stretched value
+                elbow_flex=elbowed,  # Use the stretched value
                 wrist_flex=hand_data["wrist_flex"],
                 wrist_roll=hand_data["wrist_roll"],
                 gripper_open01=hand_data["gripper_open01"],
