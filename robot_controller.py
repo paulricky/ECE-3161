@@ -6,7 +6,6 @@ import time
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional
 
-
 import numpy as np
 from serial.tools import list_ports
 
@@ -33,6 +32,15 @@ class SOArmHardwareController:
         self.last_send_time = 0.0
         self.connected = False
         self._last_action = None
+        self._last_limited_action = None
+        self._last_velocity = {
+            "shoulder_pan.pos": 0.0,
+            "shoulder_lift.pos": 0.0,
+            "elbow_flex.pos": 0.0,
+            "wrist_flex.pos": 0.0,
+            "wrist_roll.pos": 0.0,
+            "gripper.pos": 0.0,
+        }
 
     def _find_candidate_ports(self) -> List[str]:
         ports = list(list_ports.comports())
@@ -136,13 +144,21 @@ class SOArmHardwareController:
         cfg = SO101FollowerConfig(
             port=port,
             id=robot_id,
+            use_degrees=True,
+            max_relative_target=float(getattr(val, "REAL_ROBOT_MAX_RELATIVE_TARGET_DEG", 2.0)),
         )
 
         self.robot = SO101Follower(cfg)
-        self.robot.connect(calibrate=getattr(val, "REAL_ROBOT_AUTO_CALIBRATE", True))
+        self.robot.connect(calibrate=getattr(val, "REAL_ROBOT_AUTO_CALIBRATE", False))
         self.connected = True
         self.last_send_time = 0.0
         self._last_action = None
+        self._last_limited_action = None
+        for k in self._last_velocity:
+            self._last_velocity[k] = 0.0
+
+        self._apply_torque_limits()
+
         print(f"[robot_controller] connected on {port} with id={robot_id}")
 
     def disconnect(self):
@@ -153,6 +169,62 @@ class SOArmHardwareController:
                 print(f"[robot_controller] disconnect warning: {e}")
         self.connected = False
         self.robot = None
+
+    def _apply_torque_limits(self):
+        if not getattr(val, "REAL_ROBOT_ENABLE_TORQUE_LIMIT", True):
+            return
+        if self.robot is None:
+            return
+
+        percent = float(getattr(val, "REAL_ROBOT_TORQUE_LIMIT_PERCENT", 20.0))
+        percent = max(1.0, min(100.0, percent))
+
+        motor_names = [
+            "shoulder_pan",
+            "shoulder_lift",
+            "elbow_flex",
+            "wrist_flex",
+            "wrist_roll",
+            "gripper",
+        ]
+
+        register_candidates = [
+            "Torque_Limit",
+            "Max_Torque",
+        ]
+
+        value_candidates = [
+            int(round(percent)),
+            int(round(percent * 10.23)),
+        ]
+
+        applied = False
+
+        bus = getattr(self.robot, "bus", None)
+        if bus is None:
+            print("[robot_controller] torque limit skipped: no robot.bus")
+            return
+
+        for register_name in register_candidates:
+            for value in value_candidates:
+                try:
+                    ids_values = {name: value for name in motor_names}
+                    if hasattr(bus, "write"):
+                        bus.write(register_name, ids_values)
+                    elif hasattr(bus, "sync_write"):
+                        bus.sync_write(register_name, ids_values)
+                    else:
+                        continue
+                    print(f"[robot_controller] torque limit applied using {register_name} = {value}")
+                    applied = True
+                    break
+                except Exception:
+                    continue
+            if applied:
+                break
+
+        if not applied:
+            print("[robot_controller] torque limit register not applied; using motion limits only")
 
     def ready_to_send(self) -> bool:
         now = time.time()
@@ -167,23 +239,70 @@ class SOArmHardwareController:
         if not self.ready_to_send():
             return None
 
-        action = self._joint_command_to_action(cmd)
-        print(f"[robot_controller] action = {action}")
+        raw_action = self._joint_command_to_action(cmd)
+        limited_action = self._apply_velocity_and_acceleration_limits(raw_action)
+
+        print(f"[robot_controller] raw_action = {raw_action}")
+        print(f"[robot_controller] limited_action = {limited_action}")
 
         if self._last_action is not None:
             deadband = float(getattr(val, "REAL_ROBOT_ACTION_DEADBAND_DEG", 0.5))
             moved = any(
-                abs(float(action[k]) - float(self._last_action[k])) >= deadband
-                for k in action
+                abs(float(limited_action[k]) - float(self._last_action[k])) >= deadband
+                for k in limited_action
             )
             if not moved:
                 return None
 
-        sent = self.robot.send_action(action)
+        sent = self.robot.send_action(limited_action)
         print(f"[robot_controller] sent = {sent}")
         self._last_action = dict(sent)
         self.last_send_time = time.time()
         return sent
+
+    def _apply_velocity_and_acceleration_limits(self, action: Dict[str, float]) -> Dict[str, float]:
+        if self._last_limited_action is None:
+            self._last_limited_action = {
+                "shoulder_pan.pos": 0.0,
+                "shoulder_lift.pos": 0.0,
+                "elbow_flex.pos": 0.0,
+                "wrist_flex.pos": 0.0,
+                "wrist_roll.pos": 0.0,
+                "gripper.pos": 50.0,
+            }
+            return self._apply_velocity_and_acceleration_limits(action)
+
+        dt = 1.0 / max(float(getattr(val, "REAL_ROBOT_HZ", 20.0)), 1e-6)
+        vmax = float(getattr(val, "REAL_ROBOT_MAX_VELOCITY_DEG", 25.0))
+        amax = float(getattr(val, "REAL_ROBOT_MAX_ACCELERATION_DEG", 20.0))
+
+        out = dict(self._last_limited_action)
+
+        for key, target in action.items():
+            prev_pos = float(self._last_limited_action[key])
+            prev_vel = float(self._last_velocity.get(key, 0.0))
+
+            desired_vel = (float(target) - prev_pos) / dt
+            desired_vel = max(-vmax, min(vmax, desired_vel))
+
+            accel = (desired_vel - prev_vel) / dt
+            accel = max(-amax, min(amax, accel))
+
+            new_vel = prev_vel + accel * dt
+            new_vel = max(-vmax, min(vmax, new_vel))
+
+            new_pos = prev_pos + new_vel * dt
+
+            if (target - prev_pos) > 0.0:
+                new_pos = min(new_pos, float(target))
+            else:
+                new_pos = max(new_pos, float(target))
+
+            out[key] = float(new_pos)
+            self._last_velocity[key] = float(new_vel)
+
+        self._last_limited_action = dict(out)
+        return out
 
     def _joint_command_to_action(self, cmd: JointCommand) -> Dict[str, float]:
         return {

@@ -76,123 +76,6 @@ def fingertips_spread(hand_lms) -> float:
     return sum(mm.dist(p, c) for p in tips) / 5.0
 
 
-def openness_from_fingertips(hand_lms, label: str):
-    global _hand_closed_bool
-
-    spread = fingertips_spread(hand_lms)
-
-    st = _hand_closed_bool[label]
-    if st:
-        if spread > val.CLOSED_TIPS_OFF:
-            st = False
-    else:
-        if spread < val.CLOSED_TIPS_ON:
-            st = True
-    _hand_closed_bool[label] = st
-
-    denom = val.CLOSED_TIPS_OFF - val.CLOSED_TIPS_ON
-    if denom <= 1e-9:
-        open01 = 0.0 if st else 1.0
-    else:
-        open01 = (spread - val.CLOSED_TIPS_ON) / denom
-        open01 = max(0.0, min(1.0, open01))
-
-    return st, open01, spread
-
-
-def update_snap_and_open_state(hand_lms, label: str, now: float, dt: float):
-    lm = hand_lms.landmark
-    thumb_tip = (lm[4].x, lm[4].y)
-    middle_tip = (lm[12].x, lm[12].y)
-
-    d_tm = mm.dist(thumb_tip, middle_tip)
-    st = _snap_state[label]
-    snap_event = False
-
-    if now > st["cooldown_until"]:
-        pinch_on = d_tm < val.SNAP_PINCH_ON
-        pinch_off = d_tm > val.SNAP_PINCH_OFF
-        opening_speed = (d_tm - st["prev_d"]) / dt if st["prev_d"] is not None and dt > 1e-9 else 0.0
-
-        if not st["pinched"]:
-            if pinch_on:
-                st["pinched"] = True
-        else:
-            if pinch_off and opening_speed > val.SNAP_FAST_RELEASE:
-                snap_event = True
-                st["pinched"] = False
-                st["cooldown_until"] = now + val.SNAP_COOLDOWN_S
-                log_event(f"{label} SNAP")
-            elif pinch_off:
-                st["pinched"] = False
-
-    st["prev_d"] = d_tm
-
-    is_closed, open01, _spread = openness_from_fingertips(hand_lms, label)
-    state = "CLOSED" if is_closed else ("OPEN" if open01 > 0.8 else "PARTIAL")
-
-    if _hand_open_state[label] != state:
-        _hand_open_state[label] = state
-        log_event(f"{label} {state}")
-
-    return state, open01, snap_event
-
-
-def detect_clap(detected_hands, now: float, dt: float):
-    global _prev_hands_dist, _clap_cooldown_until
-    clap_event = False
-
-    if len(detected_hands) == 2:
-        c0 = mm.hand_center_xy(detected_hands[0][0])
-        c1 = mm.hand_center_xy(detected_hands[1][0])
-        d = mm.dist(c0, c1)
-
-        if _prev_hands_dist is not None and dt > 1e-9:
-            closing_speed = (_prev_hands_dist - d) / dt
-            if now > _clap_cooldown_until and d < val.CLAP_CLOSE_ENOUGH and closing_speed > val.CLAP_FAST_CLOSING:
-                clap_event = True
-                _clap_cooldown_until = now + val.CLAP_COOLDOWN_S
-                log_event("CLAP")
-
-        _prev_hands_dist = d
-    else:
-        _prev_hands_dist = None
-
-    return clap_event
-
-
-def draw_and_update_gestures(frame, detected_hands, now: float, dt: float):
-    clap_event = detect_clap(detected_hands, now, dt)
-    per_hand = {}
-
-    for hand_lms, label, score in detected_hands:
-        mp_draw.draw_landmarks(
-            frame,
-            hand_lms,
-            mp_hands.HAND_CONNECTIONS,
-            mp_styles.get_default_hand_landmarks_style(),
-            mp_styles.get_default_hand_connections_style(),
-        )
-
-        state, open01, snap_event = update_snap_and_open_state(hand_lms, label, now, dt)
-        per_hand[label] = {"state": state, "open01": open01, "snap": snap_event, "score": score}
-
-        h_img, w_img = frame.shape[:2]
-        xw = int(hand_lms.landmark[0].x * w_img)
-        yw = int(hand_lms.landmark[0].y * h_img)
-
-        extras = [state]
-        if snap_event:
-            extras.append("SNAP!")
-        if clap_event:
-            extras.append("CLAP!")
-
-        text = f"{label} ({score:.2f}) {extras}"
-        cv2.putText(frame, text, (xw + 10, yw - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
-
-    return clap_event, per_hand
-
-
 def _clip(x: float, lo: float, hi: float) -> float:
     if x < lo:
         return lo
@@ -218,6 +101,35 @@ def _norm_to_range(z: float, lo: float, hi: float) -> float:
 
 def _angle_2d(a, b) -> float:
     return math.atan2(b[1] - a[1], b[0] - a[0])
+
+
+def _vec(a, b):
+    return np.array([float(b[0]) - float(a[0]), float(b[1]) - float(a[1])], dtype=np.float64)
+
+
+def _norm(v):
+    n = float(np.linalg.norm(v))
+    if n < 1e-9:
+        return v * 0.0
+    return v / n
+
+
+def _load_default_lerobot_calibration_path():
+    path = getattr(val, "LEROBOT_CALIBRATION_FILE", "").strip()
+    if path:
+        return path
+    robot_id = getattr(val, "REAL_ROBOT_ID", "my_awesome_follower_arm")
+    home = os.path.expanduser("~")
+    return os.path.join(
+        home,
+        ".cache",
+        "huggingface",
+        "lerobot",
+        "calibration",
+        "robots",
+        "so101_follower",
+        f"{robot_id}.json",
+    )
 
 
 def _rvec_tvec_to_T(rvec, tvec):
@@ -265,6 +177,235 @@ def _safe_npz_value(d, keys, default=None):
     return default
 
 
+def _count_extended_fingers(hand_lms, label: str):
+    lm = hand_lms.landmark
+
+    wrist = (lm[0].x, lm[0].y)
+    thumb_mcp = (lm[2].x, lm[2].y)
+    thumb_ip = (lm[3].x, lm[3].y)
+    thumb_tip = (lm[4].x, lm[4].y)
+
+    index_mcp = (lm[5].x, lm[5].y)
+    index_pip = (lm[6].x, lm[6].y)
+    index_tip = (lm[8].x, lm[8].y)
+
+    middle_mcp = (lm[9].x, lm[9].y)
+    middle_pip = (lm[10].x, lm[10].y)
+    middle_tip = (lm[12].x, lm[12].y)
+
+    ring_mcp = (lm[13].x, lm[13].y)
+    ring_pip = (lm[14].x, lm[14].y)
+    ring_tip = (lm[16].x, lm[16].y)
+
+    pinky_mcp = (lm[17].x, lm[17].y)
+    pinky_pip = (lm[18].x, lm[18].y)
+    pinky_tip = (lm[20].x, lm[20].y)
+
+    palm_width = mm.dist(index_mcp, pinky_mcp)
+    palm_height = mm.dist(wrist, middle_mcp)
+    palm_size = max(1e-6, 0.5 * (palm_width + palm_height))
+
+    ext_on = float(getattr(val, "OPEN_FINGER_EXTENDED_ON", 0.62))
+    ext_off = float(getattr(val, "OPEN_FINGER_EXTENDED_OFF", 0.52))
+
+    state_closed = _hand_closed_bool[label]
+    ext_thr = ext_on if state_closed else ext_off
+
+    def straight_score(mcp, pip, tip):
+        a = _norm(_vec(pip, tip))
+        b = _norm(_vec(mcp, pip))
+        straight = float(np.dot(a, b))
+        tip_far = (mm.dist(tip, wrist) - mm.dist(pip, wrist)) / palm_size
+        score = 0.55 * straight + 0.45 * tip_far
+        return score
+
+    index_score = straight_score(index_mcp, index_pip, index_tip)
+    middle_score = straight_score(middle_mcp, middle_pip, middle_tip)
+    ring_score = straight_score(ring_mcp, ring_pip, ring_tip)
+    pinky_score = straight_score(pinky_mcp, pinky_pip, pinky_tip)
+
+    palm_axis = _norm(_vec(index_mcp, pinky_mcp))
+    thumb_dir = _norm(_vec(thumb_mcp, thumb_tip))
+    thumb_outward = abs(float(np.cross(palm_axis, thumb_dir)))
+    thumb_far = (mm.dist(thumb_tip, wrist) - mm.dist(thumb_ip, wrist)) / palm_size
+    thumb_score = 0.55 * thumb_outward + 0.45 * thumb_far
+
+    thumb_extended = thumb_score > ext_thr
+    index_extended = index_score > ext_thr
+    middle_extended = middle_score > ext_thr
+    ring_extended = ring_score > ext_thr
+    pinky_extended = pinky_score > ext_thr
+
+    extended_flags = {
+        "thumb": thumb_extended,
+        "index": index_extended,
+        "middle": middle_extended,
+        "ring": ring_extended,
+        "pinky": pinky_extended,
+    }
+    extended_scores = {
+        "thumb": thumb_score,
+        "index": index_score,
+        "middle": middle_score,
+        "ring": ring_score,
+        "pinky": pinky_score,
+    }
+
+    extended_count = sum(1 for v in extended_flags.values() if v)
+
+    pinch_dist = mm.dist(thumb_tip, index_tip) / palm_size
+
+    return extended_count, extended_flags, extended_scores, pinch_dist, palm_size
+
+
+def openness_from_fingertips(hand_lms, label: str):
+    global _hand_closed_bool
+
+    extended_count, extended_flags, extended_scores, pinch_dist, _palm_size = _count_extended_fingers(hand_lms, label)
+
+    min_open_fingers = int(getattr(val, "OPEN_HAND_MIN_OPEN_FINGERS", 3))
+    max_closed_fingers = int(getattr(val, "OPEN_HAND_MAX_CLOSED_FINGERS", 1))
+    pinch_block = float(getattr(val, "OPEN_HAND_PINCH_BLOCK", 0.10))
+
+    st = _hand_closed_bool[label]
+
+    if st:
+        if extended_count >= min_open_fingers and pinch_dist > pinch_block:
+            st = False
+    else:
+        if extended_count <= max_closed_fingers:
+            st = True
+
+    _hand_closed_bool[label] = st
+
+    open01 = (extended_count - max_closed_fingers) / max(1.0, float(min_open_fingers - max_closed_fingers))
+    open01 = max(0.0, min(1.0, open01))
+
+    if pinch_dist < pinch_block:
+        open01 *= 0.5
+
+    debug = {
+        "extended_count": extended_count,
+        "extended_flags": extended_flags,
+        "extended_scores": extended_scores,
+        "pinch_dist": pinch_dist,
+    }
+
+    return st, open01, float(extended_count), debug
+
+
+def update_snap_and_open_state(hand_lms, label: str, now: float, dt: float):
+    lm = hand_lms.landmark
+    thumb_tip = (lm[4].x, lm[4].y)
+    middle_tip = (lm[12].x, lm[12].y)
+
+    d_tm = mm.dist(thumb_tip, middle_tip)
+    st = _snap_state[label]
+    snap_event = False
+
+    if now > st["cooldown_until"]:
+        pinch_on = d_tm < val.SNAP_PINCH_ON
+        pinch_off = d_tm > val.SNAP_PINCH_OFF
+        opening_speed = (d_tm - st["prev_d"]) / dt if st["prev_d"] is not None and dt > 1e-9 else 0.0
+
+        if not st["pinched"]:
+            if pinch_on:
+                st["pinched"] = True
+        else:
+            if pinch_off and opening_speed > val.SNAP_FAST_RELEASE:
+                snap_event = True
+                st["pinched"] = False
+                st["cooldown_until"] = now + val.SNAP_COOLDOWN_S
+                log_event(f"{label} SNAP")
+            elif pinch_off:
+                st["pinched"] = False
+
+    st["prev_d"] = d_tm
+
+    is_closed, open01, _metric, debug = openness_from_fingertips(hand_lms, label)
+    state = "CLOSED" if is_closed else ("OPEN" if open01 > 0.8 else "PARTIAL")
+
+    if _hand_open_state[label] != state:
+        _hand_open_state[label] = state
+        log_event(f"{label} {state}")
+
+    return state, open01, snap_event, debug
+
+
+def detect_clap(detected_hands, now: float, dt: float):
+    global _prev_hands_dist, _clap_cooldown_until
+    clap_event = False
+
+    if len(detected_hands) == 2:
+        c0 = mm.hand_center_xy(detected_hands[0][0])
+        c1 = mm.hand_center_xy(detected_hands[1][0])
+        d = mm.dist(c0, c1)
+
+        if _prev_hands_dist is not None and dt > 1e-9:
+            closing_speed = (_prev_hands_dist - d) / dt
+            if now > _clap_cooldown_until and d < val.CLAP_CLOSE_ENOUGH and closing_speed > val.CLAP_FAST_CLOSING:
+                clap_event = True
+                _clap_cooldown_until = now + val.CLAP_COOLDOWN_S
+                log_event("CLAP")
+
+        _prev_hands_dist = d
+    else:
+        _prev_hands_dist = None
+
+    return clap_event
+
+
+def draw_and_update_gestures(frame, detected_hands, now: float, dt: float):
+    clap_event = detect_clap(detected_hands, now, dt)
+    per_hand = {}
+
+    for hand_lms, label, score in detected_hands:
+        mp_draw.draw_landmarks(
+            frame,
+            hand_lms,
+            mp_hands.HAND_CONNECTIONS,
+            mp_styles.get_default_hand_landmarks_style(),
+            mp_styles.get_default_hand_connections_style(),
+        )
+
+        state, open01, snap_event, debug = update_snap_and_open_state(hand_lms, label, now, dt)
+        per_hand[label] = {
+            "state": state,
+            "open01": open01,
+            "snap": snap_event,
+            "score": score,
+            "debug": debug,
+        }
+
+        h_img, w_img = frame.shape[:2]
+        xw = int(hand_lms.landmark[0].x * w_img)
+        yw = int(hand_lms.landmark[0].y * h_img)
+
+        extras = [state]
+        if snap_event:
+            extras.append("SNAP!")
+        if clap_event:
+            extras.append("CLAP!")
+
+        finger_count = debug["extended_count"]
+        flags = debug["extended_flags"]
+        flag_text = (
+            f"T{int(flags['thumb'])}"
+            f"I{int(flags['index'])}"
+            f"M{int(flags['middle'])}"
+            f"R{int(flags['ring'])}"
+            f"P{int(flags['pinky'])}"
+        )
+
+        text1 = f"{label} ({score:.2f}) {extras}"
+        text2 = f"fingers={finger_count} open={open01:.2f} {flag_text}"
+
+        cv2.putText(frame, text1, (xw + 10, yw - 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(frame, text2, (xw + 10, yw - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 255, 255), 2, cv2.LINE_AA)
+
+    return clap_event, per_hand
+
+
 class ArucoGloveTracker:
     def __init__(self):
         self.enabled = bool(getattr(val, "ARUCO_GLOVE_ENABLED", True))
@@ -276,6 +417,17 @@ class ArucoGloveTracker:
         self.T_workspace_from_camera = None
         self.workspace_min = np.array(getattr(val, "ARUCO_WORKSPACE_MIN", (-0.18, -0.12, 0.02)), dtype=np.float64)
         self.workspace_max = np.array(getattr(val, "ARUCO_WORKSPACE_MAX", (0.18, 0.18, 0.28)), dtype=np.float64)
+        self._stable_id = None
+        self._stable_count = 0
+        self._required_stable_frames = 3
+        self.last_debug = {
+            "status": "disabled",
+            "all_ids": [],
+            "candidate_count": 0,
+            "rejected_count": 0,
+            "chosen_id": None,
+            "pose_ok": False,
+        }
 
         if not self.enabled:
             self.detector = None
@@ -284,7 +436,28 @@ class ArucoGloveTracker:
         dict_name = getattr(val, "ARUCO_DICT_NAME", "DICT_4X4_50")
         dict_id = getattr(cv2.aruco, dict_name)
         dictionary = cv2.aruco.getPredefinedDictionary(dict_id)
+
         params = cv2.aruco.DetectorParameters()
+        params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        params.cornerRefinementWinSize = 5
+        params.cornerRefinementMaxIterations = 50
+        params.cornerRefinementMinAccuracy = 0.01
+
+        params.adaptiveThreshWinSizeMin = 3
+        params.adaptiveThreshWinSizeMax = 53
+        params.adaptiveThreshWinSizeStep = 4
+        params.adaptiveThreshConstant = 7.0
+
+        params.minMarkerPerimeterRate = 0.01
+        params.maxMarkerPerimeterRate = 6.0
+        params.polygonalApproxAccuracyRate = 0.08
+        params.minCornerDistanceRate = 0.02
+        params.minDistanceToBorder = 1
+        params.minOtsuStdDev = 3.0
+        params.perspectiveRemoveIgnoredMarginPerCell = 0.20
+        params.maxErroneousBitsInBorderRate = 0.6
+        params.errorCorrectionRate = 0.8
+
         self.detector = cv2.aruco.ArucoDetector(dictionary, params)
 
         self._load_intrinsics()
@@ -353,29 +526,77 @@ class ArucoGloveTracker:
             dtype=np.float64,
         )
 
-    def detect(self, frame):
-        if self.detector is None or self.camera_matrix is None or self.dist_coeffs is None or self.T_workspace_from_camera is None:
-            return None
-
+    def _detect_candidates(self, frame):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        corners, ids, _ = self.detector.detectMarkers(gray)
-        if ids is None or len(ids) == 0:
+        corners, ids, rejected = self.detector.detectMarkers(gray)
+
+        if ids is None:
+            ids_list = []
+        else:
+            ids_list = [int(x) for x in ids.flatten().tolist()]
+
+        return corners, ids_list, rejected
+
+    def detect(self, frame):
+        self.last_debug = {
+            "status": "searching",
+            "all_ids": [],
+            "candidate_count": 0,
+            "rejected_count": 0,
+            "chosen_id": None,
+            "pose_ok": False,
+        }
+
+        if self.detector is None:
+            self.last_debug["status"] = "disabled"
             return None
 
-        ids = ids.flatten().tolist()
+        corners, ids_list, rejected = self._detect_candidates(frame)
+
+        self.last_debug["all_ids"] = ids_list
+        self.last_debug["candidate_count"] = len(corners)
+        self.last_debug["rejected_count"] = 0 if rejected is None else len(rejected)
+
+        if len(corners) == 0:
+            self.last_debug["status"] = "no_markers"
+            self._stable_id = None
+            self._stable_count = 0
+            return None
+
         chosen_idx = None
         chosen_id = None
 
         for candidate in (self.front_id, self.back_id):
-            if candidate in ids:
-                chosen_idx = ids.index(candidate)
+            if candidate in ids_list:
+                chosen_idx = ids_list.index(candidate)
                 chosen_id = candidate
                 break
 
         if chosen_idx is None:
+            self.last_debug["status"] = "wrong_ids"
+            self._stable_id = None
+            self._stable_count = 0
+            return None
+
+        if self._stable_id == chosen_id:
+            self._stable_count += 1
+        else:
+            self._stable_id = chosen_id
+            self._stable_count = 1
+
+        self.last_debug["chosen_id"] = int(chosen_id)
+        self.last_debug["stable_count"] = self._stable_count
+
+        if self._stable_count < self._required_stable_frames:
+            self.last_debug["status"] = "id_unstable"
+            return None
+
+        if self.camera_matrix is None or self.dist_coeffs is None or self.T_workspace_from_camera is None:
+            self.last_debug["status"] = "missing_calibration"
             return None
 
         image_points = np.asarray(corners[chosen_idx], dtype=np.float64).reshape(4, 2)
+
         ok, rvec, tvec = cv2.solvePnP(
             self._marker_object_points(),
             image_points,
@@ -383,7 +604,9 @@ class ArucoGloveTracker:
             self.dist_coeffs,
             flags=cv2.SOLVEPNP_IPPE_SQUARE,
         )
+
         if not ok:
+            self.last_debug["status"] = "pose_failed"
             return None
 
         T_camera_from_marker = _rvec_tvec_to_T(rvec, tvec)
@@ -394,11 +617,18 @@ class ArucoGloveTracker:
         R_workspace_marker = self.T_workspace_from_camera[:3, :3] @ R_marker_camera
         workspace_rpy = _rot_to_rpy(R_workspace_marker)
 
+        self.last_debug["status"] = "pose_ok"
+        self.last_debug["pose_ok"] = True
+        self.last_debug["chosen_corners"] = image_points
+
         return {
             "marker_id": int(chosen_id),
             "workspace_xyz": marker_origin_workspace,
             "workspace_rpy": workspace_rpy,
             "image_corners": image_points,
+            "all_corners": corners,
+            "all_ids": ids_list,
+            "rejected": rejected,
         }
 
     def normalize_workspace_xyz(self, xyz):
@@ -406,6 +636,51 @@ class ArucoGloveTracker:
         denom = np.where(np.abs(denom) < 1e-9, 1.0, denom)
         z = (np.asarray(xyz, dtype=np.float64) - self.workspace_min) / denom
         return np.clip(z, 0.0, 1.0)
+
+    def draw_debug(self, frame, aruco_pose=None):
+        dbg = self.last_debug
+
+        if aruco_pose is not None and "all_corners" in aruco_pose and len(aruco_pose["all_corners"]) > 0:
+            ids = None if len(aruco_pose.get("all_ids", [])) == 0 else np.array(aruco_pose["all_ids"], dtype=np.int32)
+            cv2.aruco.drawDetectedMarkers(frame, aruco_pose["all_corners"], ids)
+
+        status = dbg.get("status", "unknown")
+        all_ids = dbg.get("all_ids", [])
+        chosen_id = dbg.get("chosen_id", None)
+        rejected_count = dbg.get("rejected_count", 0)
+
+        status = dbg.get("status", "unknown")
+        all_ids = dbg.get("all_ids", [])
+        chosen_id = dbg.get("chosen_id", None)
+        rejected_count = dbg.get("rejected_count", 0)
+        stable_count = dbg.get("stable_count", 0)
+
+        if status == "pose_ok":
+            color = (0, 255, 0)
+            msg = f"ARUCO DETECTED id={chosen_id} ids={all_ids}"
+        elif status == "id_unstable":
+            color = (0, 255, 255)
+            msg = f"ARUCO id={chosen_id} unstable {stable_count}/{self._required_stable_frames}"
+        elif status == "wrong_ids":
+            color = (0, 0, 255)
+            msg = f"ARUCO wrong ids seen={all_ids} expected={[self.front_id, self.back_id]}"
+        elif status == "no_markers":
+            color = (0, 0, 255)
+            msg = f"ARUCO no marker detected rejected={rejected_count}"
+        elif status == "pose_failed":
+            color = (0, 165, 255)
+            msg = f"ARUCO id={chosen_id} found but pose failed"
+        elif status == "missing_calibration":
+            color = (0, 165, 255)
+            msg = "ARUCO marker found but camera/workspace calibration missing"
+        elif status == "disabled":
+            color = (128, 128, 128)
+            msg = "ARUCO disabled"
+        else:
+            color = (255, 255, 0)
+            msg = f"ARUCO status={status} ids={all_ids} rejected={rejected_count}"
+
+        cv2.putText(frame, msg, (10, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv2.LINE_AA)
 
 
 class HandTracker:
@@ -421,28 +696,14 @@ class HandTracker:
         }
         self._last_open01 = 1.0
         self._alpha = float(getattr(val, "HAND_CMD_SMOOTHING", 0.25))
+        self._open_alpha = float(getattr(val, "HAND_STATE_SMOOTHING", 0.20))
         self.aruco = ArucoGloveTracker()
         self.lerobot_calibration = self._load_lerobot_calibration()
 
     def _load_lerobot_calibration(self):
-        path = getattr(val, "LEROBOT_CALIBRATION_FILE", "").strip()
-        if not path:
-            robot_id = getattr(val, "REAL_ROBOT_ID", "my_awesome_follower_arm")
-            home = os.path.expanduser("~")
-            path = os.path.join(
-                home,
-                ".cache",
-                "huggingface",
-                "lerobot",
-                "calibration",
-                "robots",
-                "so101_follower",
-                f"{robot_id}.json",
-            )
-
+        path = _load_default_lerobot_calibration_path()
         if not os.path.exists(path):
             return None
-
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
 
@@ -460,6 +721,8 @@ class HandTracker:
         draw_and_update_gestures(frame, detected_hands, now, dt)
 
         aruco_pose = self.aruco.detect(frame)
+        self.aruco.draw_debug(frame, aruco_pose)
+
         if aruco_pose is not None:
             open01 = self._estimate_gripper_open01(detected_hands)
             cmd = self._aruco_pose_to_command(aruco_pose, open01)
@@ -491,17 +754,19 @@ class HandTracker:
         driver = choose_driver(detected_hands)
         if driver is None:
             return self._last_open01
+
         hand_lms, label, _score = driver
-        is_closed, open01, _spread = openness_from_fingertips(hand_lms, label)
+        is_closed, open01, _metric, _debug = openness_from_fingertips(hand_lms, label)
+
         if is_closed:
             open01 = 0.0
-        self._last_open01 = open01
-        return open01
+
+        self._last_open01 = _lerp(self._last_open01, open01, self._open_alpha)
+        return self._last_open01
 
     def _aruco_pose_to_command(self, aruco_pose, open01):
         xyz = np.asarray(aruco_pose["workspace_xyz"], dtype=np.float64)
         rpy = np.asarray(aruco_pose["workspace_rpy"], dtype=np.float64)
-        xyz_norm = self.aruco.normalize_workspace_xyz(xyz)
 
         if hasattr(mm, "solve_ik_from_target"):
             try:
@@ -520,17 +785,10 @@ class HandTracker:
                         "wrist_roll": float(solved["wrist_roll"]),
                         "gripper_open01": float(solved["gripper_open01"]),
                     }
-                if isinstance(solved, (list, tuple)) and len(solved) >= 5:
-                    return {
-                        "shoulder_pan": float(solved[0]),
-                        "shoulder_lift": float(solved[1]),
-                        "elbow_flex": float(solved[2]),
-                        "wrist_flex": float(solved[3]),
-                        "wrist_roll": float(solved[4]),
-                        "gripper_open01": float(open01),
-                    }
             except Exception:
                 pass
+
+        xyz_norm = self.aruco.normalize_workspace_xyz(xyz)
 
         pan_lo, pan_hi = _get_limit("BASE_PAN", -1.2, 1.2)
         lift_lo, lift_hi = _get_limit("SHOULDER_LIFT", -0.8, 1.0)
@@ -604,7 +862,7 @@ class HandTracker:
         palm_height = mm.dist(wrist, middle_mcp)
         size_metric = 0.5 * (palm_width + palm_height)
 
-        is_closed, open01, _spread = openness_from_fingertips(hand_lms, label)
+        is_closed, open01, _metric, _debug = openness_from_fingertips(hand_lms, label)
 
         pan_lo, pan_hi = _get_limit("BASE_PAN", -1.2, 1.2)
         lift_lo, lift_hi = _get_limit("SHOULDER_LIFT", -0.8, 1.0)
@@ -648,7 +906,8 @@ class HandTracker:
         if is_closed:
             gripper_open01 = 0.0
 
-        self._last_open01 = gripper_open01
+        self._last_open01 = _lerp(self._last_open01, gripper_open01, self._open_alpha)
+        gripper_open01 = self._last_open01
 
         return {
             "shoulder_pan": shoulder_pan,
