@@ -699,6 +699,7 @@ class HandTracker:
         self._open_alpha = float(getattr(val, "HAND_STATE_SMOOTHING", 0.20))
         self.aruco = ArucoGloveTracker()
         self.lerobot_calibration = self._load_lerobot_calibration()
+        self._last_ik_solution = None
 
     def _load_lerobot_calibration(self):
         path = _load_default_lerobot_calibration_path()
@@ -775,8 +776,16 @@ class HandTracker:
                     target_rpy=rpy,
                     gripper_open01=float(open01),
                     lerobot_calibration=self.lerobot_calibration,
+                    previous_joints=self._last_ik_solution,
                 )
                 if isinstance(solved, dict):
+                    self._last_ik_solution = {
+                        "shoulder_pan": float(solved["shoulder_pan"]),
+                        "shoulder_lift": float(solved["shoulder_lift"]),
+                        "elbow_flex": float(solved["elbow_flex"]),
+                        "wrist_flex": float(solved["wrist_flex"]),
+                        "wrist_roll": float(solved["wrist_roll"]),
+                    }
                     return {
                         "shoulder_pan": float(solved["shoulder_pan"]),
                         "shoulder_lift": float(solved["shoulder_lift"]),

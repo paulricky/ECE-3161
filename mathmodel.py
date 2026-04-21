@@ -286,15 +286,220 @@ def _apply_calibration_bias(joints, joint_cal, base_limits):
     return out
 
 
+def _wrap_angle(x: float) -> float:
+    return math.atan2(math.sin(float(x)), math.cos(float(x)))
+
+
+def _angle_diff(a: float, b: float) -> float:
+    return _wrap_angle(float(a) - float(b))
+
+
+def _rpy_to_matrix(target_rpy):
+    if target_rpy is None:
+        return np.eye(3, dtype=np.float64)
+    rpy = np.asarray(target_rpy, dtype=np.float64).reshape(-1)
+    if rpy.size < 3:
+        return np.eye(3, dtype=np.float64)
+    roll = float(rpy[0])
+    pitch = float(rpy[1])
+    yaw = float(rpy[2])
+
+    cr, sr = math.cos(roll), math.sin(roll)
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    cy, sy = math.cos(yaw), math.sin(yaw)
+
+    rx = np.array([
+        [1.0, 0.0, 0.0],
+        [0.0, cr, -sr],
+        [0.0, sr, cr],
+    ], dtype=np.float64)
+
+    ry = np.array([
+        [cp, 0.0, sp],
+        [0.0, 1.0, 0.0],
+        [-sp, 0.0, cp],
+    ], dtype=np.float64)
+
+    rz = np.array([
+        [cy, -sy, 0.0],
+        [sy, cy, 0.0],
+        [0.0, 0.0, 1.0],
+    ], dtype=np.float64)
+
+    return rz @ ry @ rx
+
+
+def _pitch_from_rpy(target_rpy) -> float:
+    if target_rpy is None:
+        return 0.0
+    rpy = np.asarray(target_rpy, dtype=np.float64).reshape(-1)
+    if rpy.size < 2:
+        return 0.0
+    return float(rpy[1])
+
+
+def _fk_arm_position(joints, geom):
+    q0 = float(joints["shoulder_pan"])
+    q1 = float(joints["shoulder_lift"])
+    q2 = float(joints["elbow_flex"])
+    q3 = float(joints["wrist_flex"])
+
+    l1 = float(geom["upper_arm"])
+    l2 = float(geom["forearm"])
+    tool = float(geom["tool"])
+    base_height = float(geom["base_height"])
+
+    a1 = q1
+    a2 = q1 + q2
+    a3 = q1 + q2 + q3
+
+    radial = (
+        l1 * math.cos(a1)
+        + l2 * math.cos(a2)
+        + tool * math.cos(a3)
+    )
+    z = (
+        base_height
+        + l1 * math.sin(a1)
+        + l2 * math.sin(a2)
+        + tool * math.sin(a3)
+    )
+
+    x = math.cos(q0) * radial
+    y = math.sin(q0) * radial
+    return np.array([x, y, z], dtype=np.float64)
+
+
+def _fk_pitch(joints) -> float:
+    return float(joints["shoulder_lift"] + joints["elbow_flex"] + joints["wrist_flex"])
+
+
+def _joint_delta_cost(candidate, previous_joints):
+    if not previous_joints:
+        return 0.0
+    names = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
+    total = 0.0
+    for name in names:
+        if name not in previous_joints:
+            continue
+        if name == "wrist_roll":
+            total += abs(_angle_diff(candidate[name], float(previous_joints[name])))
+        else:
+            total += abs(float(candidate[name]) - float(previous_joints[name]))
+    return total
+
+
+def _candidate_cost(candidate, target_xyz, target_pitch, previous_joints, geom):
+    pos_err = np.linalg.norm(_fk_arm_position(candidate, geom) - np.asarray(target_xyz, dtype=np.float64))
+    pitch_err = abs(_angle_diff(_fk_pitch(candidate), target_pitch))
+    continuity = _joint_delta_cost(candidate, previous_joints)
+    return pos_err + 0.20 * pitch_err + 0.08 * continuity
+
+
+def _clamp_joint_dict(joints, limits):
+    out = dict(joints)
+    for name in ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"):
+        out[name] = _clamp_to_joint(name, out[name], limits)
+    out["gripper_open01"] = _clip(float(out.get("gripper_open01", 1.0)), 0.0, 1.0)
+    return out
+
+
+def _solve_planar_branches(r: float, z: float, l1: float, l2: float):
+    rr = float(r)
+    zz = float(z)
+    d2 = rr * rr + zz * zz
+    c2 = _clip((d2 - l1 * l1 - l2 * l2) / (2.0 * l1 * l2), -1.0, 1.0)
+    elbow_mag = math.acos(c2)
+
+    sols = []
+    for q2 in (-elbow_mag, elbow_mag):
+        k1 = l1 + l2 * math.cos(q2)
+        k2 = l2 * math.sin(q2)
+        q1 = math.atan2(zz, rr) - math.atan2(k2, k1)
+        sols.append((q1, q2))
+    return sols
+
+
+def _finite_difference_jacobian(joints, target_pitch, geom, var_names, eps=1e-5):
+    base_pos = _fk_arm_position(joints, geom)
+    base_pitch = _fk_pitch(joints)
+
+    jcols = []
+    for name in var_names:
+        perturbed = dict(joints)
+        perturbed[name] = float(perturbed[name]) + eps
+        p_pos = _fk_arm_position(perturbed, geom)
+        p_pitch = _fk_pitch(perturbed)
+
+        col = np.array([
+            (p_pos[0] - base_pos[0]) / eps,
+            (p_pos[1] - base_pos[1]) / eps,
+            (p_pos[2] - base_pos[2]) / eps,
+            _angle_diff(p_pitch, base_pitch) / eps,
+        ], dtype=np.float64)
+        jcols.append(col)
+
+    return np.column_stack(jcols)
+
+
+def _refine_dls(initial_joints, target_xyz, target_pitch, limits, geom, previous_joints):
+    q = dict(initial_joints)
+    target_xyz = np.asarray(target_xyz, dtype=np.float64).reshape(3)
+    var_names = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex"]
+
+    damping = float(_get_value("IK_DLS_DAMPING", 0.08))
+    pos_gain = float(_get_value("IK_DLS_POSITION_GAIN", 1.0))
+    pitch_gain = float(_get_value("IK_DLS_PITCH_GAIN", 0.35))
+    max_iters = int(_get_value("IK_DLS_MAX_ITERS", 12))
+    step_limit = float(_get_value("IK_DLS_MAX_STEP_RAD", 0.20))
+
+    for _ in range(max_iters):
+        pos_err_vec = target_xyz - _fk_arm_position(q, geom)
+        pitch_err = _angle_diff(target_pitch, _fk_pitch(q))
+
+        err = np.array([
+            pos_gain * pos_err_vec[0],
+            pos_gain * pos_err_vec[1],
+            pos_gain * pos_err_vec[2],
+            pitch_gain * pitch_err,
+        ], dtype=np.float64)
+
+        if np.linalg.norm(err[:3]) < 1e-4 and abs(pitch_err) < 1e-3:
+            break
+
+        J = _finite_difference_jacobian(q, target_pitch, geom, var_names)
+        Jw = J.copy()
+        Jw[0:3, :] *= pos_gain
+        Jw[3, :] *= pitch_gain
+
+        A = Jw @ Jw.T + (damping * damping) * np.eye(Jw.shape[0], dtype=np.float64)
+        delta = Jw.T @ np.linalg.solve(A, err)
+
+        delta = np.clip(delta, -step_limit, step_limit)
+
+        proposal = dict(q)
+        for i, name in enumerate(var_names):
+            proposal[name] = float(proposal[name]) + float(delta[i])
+
+        proposal = _clamp_joint_dict(proposal, limits)
+
+        current_cost = _candidate_cost(q, target_xyz, target_pitch, previous_joints, geom)
+        proposal_cost = _candidate_cost(proposal, target_xyz, target_pitch, previous_joints, geom)
+
+        if proposal_cost <= current_cost:
+            q = proposal
+        else:
+            damping = min(1.0, damping * 1.8)
+
+    return _clamp_joint_dict(q, limits)
+
+
 def _fallback_joint_mapping_from_workspace(target_xyz, target_rpy, gripper_open01, limits, joint_cal):
     xyz_norm = _normalize_workspace_xyz(target_xyz)
-
     shoulder_pan = _joint_mid(*limits["shoulder_pan"]) + (0.5 - xyz_norm[0]) * _joint_span(*limits["shoulder_pan"])
     shoulder_lift = limits["shoulder_lift"][0] + xyz_norm[1] * _joint_span(*limits["shoulder_lift"])
     elbow_flex = limits["elbow_flex"][0] + xyz_norm[2] * _joint_span(*limits["elbow_flex"])
-
     wrist_flex, wrist_roll = _map_rpy_to_wrist(target_rpy)
-
     out = {
         "shoulder_pan": _clamp_to_joint("shoulder_pan", shoulder_pan, limits),
         "shoulder_lift": _clamp_to_joint("shoulder_lift", shoulder_lift, limits),
@@ -303,7 +508,6 @@ def _fallback_joint_mapping_from_workspace(target_xyz, target_rpy, gripper_open0
         "wrist_roll": _clamp_to_joint("wrist_roll", wrist_roll, limits),
         "gripper_open01": _clip(float(gripper_open01), 0.0, 1.0),
     }
-
     return _apply_calibration_bias(out, joint_cal, limits)
 
 
@@ -312,6 +516,7 @@ def solve_ik_from_target(
     target_rpy=None,
     gripper_open01: float = 1.0,
     lerobot_calibration=None,
+    previous_joints=None,
 ):
     if lerobot_calibration is None:
         lerobot_calibration = _load_lerobot_calibration_file()
@@ -325,62 +530,66 @@ def solve_ik_from_target(
         return _fallback_joint_mapping_from_workspace((0.0, 0.0, 0.1), target_rpy, gripper_open01, limits, joint_cal)
 
     geom = _ee_geom()
-
-    x = float(xyz[0])
-    y = float(xyz[1])
-    z = float(xyz[2])
-
-    base_height = geom["base_height"]
-    l1 = geom["upper_arm"]
-    l2 = geom["forearm"]
-    tool = geom["tool"]
-    r_min = geom["r_min"]
+    base_height = float(geom["base_height"])
+    l1 = float(geom["upper_arm"])
+    l2 = float(geom["forearm"])
+    tool = float(geom["tool"])
+    r_min = float(geom["r_min"])
 
     wrist_flex_seed, wrist_roll = _map_rpy_to_wrist(target_rpy)
+    target_pitch = _pitch_from_rpy(target_rpy)
 
-    shoulder_pan = math.atan2(y, x)
+    rmat = _rpy_to_matrix(target_rpy)
+    tool_offset_local = np.array([tool, 0.0, 0.0], dtype=np.float64)
+    wrist_xyz = xyz - rmat @ tool_offset_local
 
-    planar_r = math.hypot(x, y)
-    wrist_target_r = max(r_min, planar_r - tool)
-    wrist_target_z = z - base_height
+    wx = float(wrist_xyz[0])
+    wy = float(wrist_xyz[1])
+    wz = float(wrist_xyz[2])
 
+    planar_r = max(r_min, math.hypot(wx, wy))
+    planar_z = wz - base_height
+
+    reach = math.hypot(planar_r, planar_z)
     max_reach = max(1e-6, l1 + l2 - 1e-4)
     min_reach = max(1e-6, abs(l1 - l2) + 1e-4)
 
-    reach = math.hypot(wrist_target_r, wrist_target_z)
     if reach > max_reach:
-        s = max_reach / reach
-        wrist_target_r *= s
-        wrist_target_z *= s
+        s = max_reach / max(reach, 1e-9)
+        planar_r *= s
+        planar_z *= s
     elif reach < min_reach:
         s = min_reach / max(reach, 1e-9)
-        wrist_target_r *= s
-        wrist_target_z *= s
+        planar_r *= s
+        planar_z *= s
 
-    shoulder_lift, elbow_geom = _solve_planar_2link(wrist_target_r, wrist_target_z, l1, l2)
+    shoulder_pan_seed = math.atan2(wy, wx)
 
-    elbow_flex = -elbow_geom
+    candidates = []
+    for shoulder_lift, elbow_flex in _solve_planar_branches(planar_r, planar_z, l1, l2):
+        wrist_flex = target_pitch - shoulder_lift - elbow_flex
+        candidate = {
+            "shoulder_pan": shoulder_pan_seed,
+            "shoulder_lift": shoulder_lift,
+            "elbow_flex": elbow_flex,
+            "wrist_flex": wrist_flex if math.isfinite(wrist_flex) else wrist_flex_seed,
+            "wrist_roll": wrist_roll,
+            "gripper_open01": _clip(float(gripper_open01), 0.0, 1.0),
+        }
+        candidate = _clamp_joint_dict(candidate, limits)
+        candidate = _refine_dls(candidate, xyz, target_pitch, limits, geom, previous_joints)
+        candidates.append(candidate)
 
-    pitch_target = 0.0
-    if target_rpy is not None:
-        rpy = np.asarray(target_rpy, dtype=np.float64).reshape(-1)
-        if rpy.size >= 2:
-            pitch_target = float(rpy[1])
+    if not candidates:
+        return _fallback_joint_mapping_from_workspace(xyz, target_rpy, gripper_open01, limits, joint_cal)
 
-    wrist_flex = pitch_target - shoulder_lift - elbow_flex
+    best = min(
+        candidates,
+        key=lambda c: _candidate_cost(c, xyz, target_pitch, previous_joints, geom),
+    )
 
-    solved = {
-        "shoulder_pan": _clamp_to_joint("shoulder_pan", shoulder_pan, limits),
-        "shoulder_lift": _clamp_to_joint("shoulder_lift", shoulder_lift, limits),
-        "elbow_flex": _clamp_to_joint("elbow_flex", elbow_flex, limits),
-        "wrist_flex": _clamp_to_joint(
-            "wrist_flex",
-            wrist_flex if math.isfinite(wrist_flex) else wrist_flex_seed,
-            limits,
-        ),
-        "wrist_roll": _clamp_to_joint("wrist_roll", wrist_roll, limits),
-        "gripper_open01": _clip(float(gripper_open01), 0.0, 1.0),
-    }
+    best["wrist_roll"] = _clamp_to_joint("wrist_roll", wrist_roll, limits)
+    best["gripper_open01"] = _clip(float(gripper_open01), 0.0, 1.0)
 
-    solved = _apply_calibration_bias(solved, joint_cal, base_limits)
-    return solved
+    best = _apply_calibration_bias(best, joint_cal, base_limits)
+    return best

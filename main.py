@@ -40,17 +40,25 @@ def main():
 
         if hand_data is not None:
 
-            panned = np.interp(hand_data["shoulder_pan"], [-1, 1], [val.BASE_PAN_MIN, val.BASE_PAN_MAX])
-            lifted = np.interp(hand_data["shoulder_lift"], [-1, 1], [val.SHOULDER_LIFT_MIN, val.SHOULDER_LIFT_MAX])
-            elbowed = np.interp(hand_data["elbow_flex"], [-1, 1], [val.ELBOW_MIN, val.ELBOW_MAX])
+            # panned = np.interp(hand_data["shoulder_pan"], [-1, 1], [val.BASE_PAN_MIN, val.BASE_PAN_MAX])
+            # lifted = np.interp(hand_data["shoulder_lift"], [-1, 1], [val.SHOULDER_LIFT_MIN, val.SHOULDER_LIFT_MAX])
+            # elbowed = np.interp(hand_data["elbow_flex"], [-1, 1], [val.ELBOW_MIN, val.ELBOW_MAX])
+            # cmd = JointCommand(
+            #     shoulder_pan=panned,  # Use the stretched value
+            #     shoulder_lift=lifted,  # Use the stretched value
+            #     elbow_flex=elbowed,  # Use the stretched value
+            #     wrist_flex=hand_data["wrist_flex"],
+            #     wrist_roll=hand_data["wrist_roll"],
+            #     gripper_open01=hand_data["gripper_open01"],
+            # )
 
             cmd = JointCommand(
-                shoulder_pan=panned,  # Use the stretched value
-                shoulder_lift=lifted,  # Use the stretched value
-                elbow_flex=elbowed,  # Use the stretched value
-                wrist_flex=hand_data["wrist_flex"],
-                wrist_roll=hand_data["wrist_roll"],
-                gripper_open01=hand_data["gripper_open01"],
+                shoulder_pan=float(hand_data["shoulder_pan"]),
+                shoulder_lift=float(hand_data["shoulder_lift"]),
+                elbow_flex=float(hand_data["elbow_flex"]),
+                wrist_flex=float(hand_data["wrist_flex"]),
+                wrist_roll=float(hand_data["wrist_roll"]),
+                gripper_open01=float(hand_data["gripper_open01"]),
             )
 
             robot.send_if_due(cmd)
