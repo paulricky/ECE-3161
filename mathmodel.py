@@ -361,14 +361,25 @@ def _matrix_to_rpy(R):
     return np.array([roll, pitch, yaw], dtype=np.float64)
 
 
+def _vee(M):
+    return np.array([M[2, 1], M[0, 2], M[1, 0]], dtype=np.float64)
+
+
 def _orientation_error_vec(R_target, R_current):
-    R_err = R_target @ R_current.T
-    skew = 0.5 * np.array([
-        R_err[2, 1] - R_err[1, 2],
-        R_err[0, 2] - R_err[2, 0],
-        R_err[1, 0] - R_err[0, 1],
-    ], dtype=np.float64)
-    return skew
+    R_err = np.asarray(R_target, dtype=np.float64) @ np.asarray(R_current, dtype=np.float64).T
+    cos_theta = _clip((float(np.trace(R_err)) - 1.0) * 0.5, -1.0, 1.0)
+    theta = math.acos(cos_theta)
+    if theta < 1e-9:
+        return 0.5 * _vee(R_err - R_err.T)
+    sin_theta = math.sin(theta)
+    if abs(sin_theta) < 1e-7:
+        diag = np.diag(R_err)
+        axis = np.sqrt(np.maximum((diag + 1.0) * 0.5, 0.0))
+        if axis[0] < 1e-6 and axis[1] < 1e-6 and axis[2] < 1e-6:
+            axis = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+        axis = axis / max(np.linalg.norm(axis), 1e-9)
+        return theta * axis
+    return (theta / (2.0 * sin_theta)) * _vee(R_err - R_err.T)
 
 
 def _map_rpy_to_wrist(target_rpy, shoulder_pan_seed=0.0):
@@ -389,7 +400,7 @@ def _map_rpy_to_wrist(target_rpy, shoulder_pan_seed=0.0):
     return wrist_flex, wrist_yaw, wrist_roll
 
 
-def _fk_all(joints, geom):
+def _fk_chain_details(joints, geom):
     q0 = float(joints["shoulder_pan"])
     q1 = float(joints["shoulder_lift"])
     q2 = float(joints["elbow_flex"])
@@ -403,21 +414,45 @@ def _fk_all(joints, geom):
     base_height = float(geom["base_height"])
 
     p = np.array([0.0, 0.0, base_height], dtype=np.float64)
-    R = _rot_z(q0)
+    R = np.eye(3, dtype=np.float64)
 
+    joint_origins = []
+    joint_axes = []
+
+    joint_origins.append(p.copy())
+    joint_axes.append(R @ np.array([0.0, 0.0, 1.0], dtype=np.float64))
+    R = R @ _rot_z(q0)
+
+    joint_origins.append(p.copy())
+    joint_axes.append(R @ np.array([0.0, 1.0, 0.0], dtype=np.float64))
     R = R @ _rot_y(q1)
     p = p + R @ np.array([l1, 0.0, 0.0], dtype=np.float64)
 
+    joint_origins.append(p.copy())
+    joint_axes.append(R @ np.array([0.0, 1.0, 0.0], dtype=np.float64))
     R = R @ _rot_y(q2)
     p = p + R @ np.array([l2, 0.0, 0.0], dtype=np.float64)
 
+    joint_origins.append(p.copy())
+    joint_axes.append(R @ np.array([0.0, 1.0, 0.0], dtype=np.float64))
     R = R @ _rot_y(q3)
+
     wrist_center = p.copy()
 
+    joint_origins.append(wrist_center.copy())
+    joint_axes.append(R @ np.array([0.0, 0.0, 1.0], dtype=np.float64))
     R = R @ _rot_z(q4)
-    R = R @ _rot_x(q5)
-    ee = p + R @ np.array([tool, 0.0, 0.0], dtype=np.float64)
 
+    joint_origins.append(wrist_center.copy())
+    joint_axes.append(R @ np.array([1.0, 0.0, 0.0], dtype=np.float64))
+    R = R @ _rot_x(q5)
+
+    ee = wrist_center + R @ np.array([tool, 0.0, 0.0], dtype=np.float64)
+    return ee, R, wrist_center, joint_origins, joint_axes
+
+
+def _fk_all(joints, geom):
+    ee, R, wrist_center, _origins, _axes = _fk_chain_details(joints, geom)
     return ee, R, wrist_center
 
 
@@ -433,6 +468,30 @@ def _fk_orientation_matrix(joints, geom):
 
 def _fk_rpy(joints, geom):
     return _matrix_to_rpy(_fk_orientation_matrix(joints, geom))
+
+
+def _joint_dict_to_vector(joints):
+    return np.array([
+        float(joints["shoulder_pan"]),
+        float(joints["shoulder_lift"]),
+        float(joints["elbow_flex"]),
+        float(joints["wrist_flex"]),
+        float(joints["wrist_yaw"]),
+        float(joints["wrist_roll"]),
+    ], dtype=np.float64)
+
+
+def _vector_to_joint_dict(vec, gripper_open01=1.0):
+    arr = np.asarray(vec, dtype=np.float64).reshape(6)
+    return {
+        "shoulder_pan": float(arr[0]),
+        "shoulder_lift": float(arr[1]),
+        "elbow_flex": float(arr[2]),
+        "wrist_flex": float(arr[3]),
+        "wrist_yaw": float(arr[4]),
+        "wrist_roll": float(arr[5]),
+        "gripper_open01": _clip(float(gripper_open01), 0.0, 1.0),
+    }
 
 
 def _joint_delta_cost(candidate, previous_joints):
@@ -494,34 +553,72 @@ def _solve_planar_branches(r: float, z: float, l1: float, l2: float):
     return sols
 
 
-def _finite_difference_jacobian(joints, target_R, geom, var_names, eps=1e-5):
-    base_pos = _fk_arm_position(joints, geom)
-    base_R = _fk_orientation_matrix(joints, geom)
-
-    jcols = []
+def _analytic_geometric_jacobian(joints, geom, var_names):
+    ee, _R, _wrist_center, joint_origins, joint_axes = _fk_chain_details(joints, geom)
+    name_to_index = {
+        "shoulder_pan": 0,
+        "shoulder_lift": 1,
+        "elbow_flex": 2,
+        "wrist_flex": 3,
+        "wrist_yaw": 4,
+        "wrist_roll": 5,
+    }
+    cols = []
     for name in var_names:
-        perturbed = dict(joints)
-        perturbed[name] = float(perturbed[name]) + eps
-        p_pos = _fk_arm_position(perturbed, geom)
-        p_R = _fk_orientation_matrix(perturbed, geom)
-        orient_err = _orientation_error_vec(p_R, base_R) / eps
+        idx = name_to_index[name]
+        axis = joint_axes[idx]
+        origin = joint_origins[idx]
+        linear = np.cross(axis, ee - origin)
+        angular = axis.copy()
+        cols.append(np.concatenate((linear, angular)))
+    return np.column_stack(cols)
 
-        col = np.array([
-            (p_pos[0] - base_pos[0]) / eps,
-            (p_pos[1] - base_pos[1]) / eps,
-            (p_pos[2] - base_pos[2]) / eps,
-            orient_err[0],
-            orient_err[1],
-            orient_err[2],
-        ], dtype=np.float64)
-        jcols.append(col)
 
-    return np.column_stack(jcols)
+def _build_orientation_seed(target_R, q0_seed, q1_seed, q2_seed, q3_seed):
+    R_pre = _rot_z(q0_seed) @ _rot_y(q1_seed) @ _rot_y(q2_seed) @ _rot_y(q3_seed)
+    R_local = R_pre.T @ np.asarray(target_R, dtype=np.float64)
+    yaw_seed = math.atan2(float(R_local[1, 0]), float(R_local[0, 0]))
+    R_after_yaw = _rot_z(yaw_seed).T @ R_local
+    roll_seed = math.atan2(float(R_after_yaw[2, 1]), float(R_after_yaw[1, 1]))
+    return _wrap_angle(yaw_seed), _wrap_angle(roll_seed)
+
+
+def _decompose_local_orientation(target_R, shoulder_pan):
+    R_local = _rot_z(-float(shoulder_pan)) @ np.asarray(target_R, dtype=np.float64)
+    r11 = float(R_local[0, 0])
+    r21 = float(R_local[1, 0])
+    r31 = float(R_local[2, 0])
+    r22 = float(R_local[1, 1])
+    r23 = float(R_local[1, 2])
+    cb_abs = math.sqrt(max(0.0, r11 * r11 + r31 * r31))
+
+    branches = []
+    q4_a = math.atan2(r21, cb_abs)
+    q123_a = math.atan2(-r31, r11)
+    q5_a = math.atan2(-r23, r22)
+    branches.append((_wrap_angle(q123_a), _wrap_angle(q4_a), _wrap_angle(q5_a)))
+
+    q4_b = math.atan2(r21, -cb_abs)
+    q123_b = math.atan2(r31, -r11)
+    q5_b = math.atan2(r23, -r22)
+    branches.append((_wrap_angle(q123_b), _wrap_angle(q4_b), _wrap_angle(q5_b)))
+
+    out = []
+    for q123, q4, q5 in branches:
+        keep = True
+        for e123, e4, e5 in out:
+            if abs(_angle_diff(q123, e123)) < 1e-6 and abs(_angle_diff(q4, e4)) < 1e-6 and abs(_angle_diff(q5, e5)) < 1e-6:
+                keep = False
+                break
+        if keep:
+            out.append((q123, q4, q5))
+    return out
 
 
 def _refine_dls(initial_joints, target_xyz, target_R, limits, geom, previous_joints):
-    q = dict(initial_joints)
+    q = _clamp_joint_dict(initial_joints, limits)
     target_xyz = np.asarray(target_xyz, dtype=np.float64).reshape(3)
+    target_R = np.asarray(target_R, dtype=np.float64).reshape(3, 3)
     var_names = [
         "shoulder_pan",
         "shoulder_lift",
@@ -534,49 +631,77 @@ def _refine_dls(initial_joints, target_xyz, target_R, limits, geom, previous_joi
     damping = float(_get_value("IK_DLS_DAMPING", 0.08))
     pos_gain = float(_get_value("IK_DLS_POSITION_GAIN", 1.0))
     orient_gain = float(_get_value("IK_DLS_ORIENTATION_GAIN", 0.45))
-    max_iters = int(_get_value("IK_DLS_MAX_ITERS", 12))
-    step_limit = float(_get_value("IK_DLS_MAX_STEP_RAD", 0.20))
+    cont_gain = float(_get_value("IK_DLS_CONTINUITY_GAIN", 0.08))
+    max_iters = int(_get_value("IK_DLS_MAX_ITERS", 20))
+    step_limit = float(_get_value("IK_DLS_MAX_STEP_RAD", 0.16))
+    pos_tol = float(_get_value("IK_RESIDUAL_THRESH", 1e-4))
+    orient_tol = float(_get_value("IK_DLS_ORIENTATION_TOL", 1e-3))
+    prev_vec = None if not previous_joints else _joint_dict_to_vector(_clamp_joint_dict(previous_joints, limits))
+
+    q_vec = _joint_dict_to_vector(q)
+    best = dict(q)
+    best_cost = _candidate_cost(best, target_xyz, target_R, previous_joints, geom)
 
     for _ in range(max_iters):
+        q = _vector_to_joint_dict(q_vec, q.get("gripper_open01", 1.0))
         pos_err_vec = target_xyz - _fk_arm_position(q, geom)
         orient_err = _orientation_error_vec(target_R, _fk_orientation_matrix(q, geom))
-
-        err = np.array([
-            pos_gain * pos_err_vec[0],
-            pos_gain * pos_err_vec[1],
-            pos_gain * pos_err_vec[2],
-            orient_gain * orient_err[0],
-            orient_gain * orient_err[1],
-            orient_gain * orient_err[2],
-        ], dtype=np.float64)
-
-        if np.linalg.norm(err[:3]) < 1e-4 and np.linalg.norm(err[3:]) < 1e-3:
+        pos_norm = float(np.linalg.norm(pos_err_vec))
+        orient_norm = float(np.linalg.norm(orient_err))
+        if pos_norm < pos_tol and orient_norm < orient_tol:
             break
 
-        J = _finite_difference_jacobian(q, target_R, geom, var_names)
-        Jw = J.copy()
-        Jw[0:3, :] *= pos_gain
-        Jw[3:6, :] *= orient_gain
+        J = _analytic_geometric_jacobian(q, geom, var_names)
+        W = np.diag([pos_gain, pos_gain, pos_gain, orient_gain, orient_gain, orient_gain]).astype(np.float64)
+        A_top = W @ J
+        b_top = W @ np.concatenate((pos_err_vec, orient_err))
 
-        A = Jw @ Jw.T + (damping * damping) * np.eye(Jw.shape[0], dtype=np.float64)
-        delta = Jw.T @ np.linalg.solve(A, err)
-        delta = np.clip(delta, -step_limit, step_limit)
+        if prev_vec is not None and cont_gain > 0.0:
+            A = np.vstack((A_top, math.sqrt(cont_gain) * np.eye(6, dtype=np.float64)))
+            b = np.concatenate((b_top, math.sqrt(cont_gain) * (prev_vec - q_vec)))
+        else:
+            A = A_top
+            b = b_top
 
-        proposal = dict(q)
-        for i, name in enumerate(var_names):
-            proposal[name] = float(proposal[name]) + float(delta[i])
+        lhs = A.T @ A + (damping * damping) * np.eye(6, dtype=np.float64)
+        rhs = A.T @ b
+        try:
+            delta = np.linalg.solve(lhs, rhs)
+        except np.linalg.LinAlgError:
+            delta = np.linalg.lstsq(lhs, rhs, rcond=None)[0]
 
-        proposal = _clamp_joint_dict(proposal, limits)
+        max_abs = float(np.max(np.abs(delta))) if delta.size else 0.0
+        if max_abs > step_limit:
+            delta *= step_limit / max(max_abs, 1e-9)
 
         current_cost = _candidate_cost(q, target_xyz, target_R, previous_joints, geom)
-        proposal_cost = _candidate_cost(proposal, target_xyz, target_R, previous_joints, geom)
+        accepted = False
+        for scale in (1.0, 0.5, 0.25, 0.1):
+            trial_vec = q_vec + scale * delta
+            trial = _clamp_joint_dict(_vector_to_joint_dict(trial_vec, q.get("gripper_open01", 1.0)), limits)
+            trial_vec = _joint_dict_to_vector(trial)
+            trial_cost = _candidate_cost(trial, target_xyz, target_R, previous_joints, geom)
+            if trial_cost <= current_cost:
+                q_vec = trial_vec
+                q = trial
+                current_cost = trial_cost
+                damping = max(1e-4, damping * 0.85)
+                accepted = True
+                if trial_cost < best_cost:
+                    best = dict(trial)
+                    best_cost = trial_cost
+                break
 
-        if proposal_cost <= current_cost:
-            q = proposal
-        else:
-            damping = min(1.0, damping * 1.8)
+        if not accepted:
+            damping = min(2.0, damping * 2.0)
+            if np.linalg.norm(delta) < 1e-6:
+                break
 
-    return _clamp_joint_dict(q, limits)
+    final = _clamp_joint_dict(_vector_to_joint_dict(q_vec, q.get("gripper_open01", 1.0)), limits)
+    final_cost = _candidate_cost(final, target_xyz, target_R, previous_joints, geom)
+    if final_cost <= best_cost:
+        best = final
+    return _clamp_joint_dict(best, limits)
 
 
 def _fallback_joint_mapping_from_workspace(target_xyz, target_rpy, gripper_open01, limits, joint_cal):
@@ -594,7 +719,7 @@ def _fallback_joint_mapping_from_workspace(target_xyz, target_rpy, gripper_open0
         "wrist_roll": _clamp_to_joint("wrist_roll", wrist_roll, limits),
         "gripper_open01": _clip(float(gripper_open01), 0.0, 1.0),
     }
-    return _apply_calibration_bias(out, joint_cal, limits)
+    return out
 
 
 def solve_ik_from_target(
@@ -661,27 +786,49 @@ def solve_ik_from_target(
             "wrist_roll": float(previous_joints.get("wrist_roll", wrist_roll_seed)),
             "gripper_open01": _clip(float(gripper_open01), 0.0, 1.0),
         }
-        candidates.append(_refine_dls(_clamp_joint_dict(seed, limits), xyz, target_R, limits, geom, previous_joints))
+        candidates.append(_refine_dls(seed, xyz, target_R, limits, geom, previous_joints))
 
+    neutral_seed = {
+        "shoulder_pan": shoulder_pan_seed,
+        "shoulder_lift": 0.0,
+        "elbow_flex": 0.0,
+        "wrist_flex": wrist_flex_seed,
+        "wrist_yaw": wrist_yaw_seed,
+        "wrist_roll": wrist_roll_seed,
+        "gripper_open01": _clip(float(gripper_open01), 0.0, 1.0),
+    }
+    candidates.append(_refine_dls(neutral_seed, xyz, target_R, limits, geom, previous_joints))
+
+    orientation_branches = _decompose_local_orientation(target_R, shoulder_pan_seed)
     for shoulder_lift, elbow_flex in _solve_planar_branches(planar_r, planar_z, l1, l2):
-        wrist_flex = float(np.asarray(target_rpy, dtype=np.float64).reshape(-1)[1]) - shoulder_lift - elbow_flex if target_rpy is not None else wrist_flex_seed
-        candidate = {
+        for q123, wrist_yaw, wrist_roll in orientation_branches:
+            wrist_flex = _wrap_angle(q123 - shoulder_lift - elbow_flex)
+            candidate = {
+                "shoulder_pan": shoulder_pan_seed,
+                "shoulder_lift": shoulder_lift,
+                "elbow_flex": elbow_flex,
+                "wrist_flex": wrist_flex if math.isfinite(wrist_flex) else wrist_flex_seed,
+                "wrist_yaw": wrist_yaw if math.isfinite(wrist_yaw) else wrist_yaw_seed,
+                "wrist_roll": wrist_roll if math.isfinite(wrist_roll) else wrist_roll_seed,
+                "gripper_open01": _clip(float(gripper_open01), 0.0, 1.0),
+            }
+            candidates.append(_refine_dls(candidate, xyz, target_R, limits, geom, previous_joints))
+
+        wrist_yaw, wrist_roll = _build_orientation_seed(target_R, shoulder_pan_seed, shoulder_lift, elbow_flex, 0.0)
+        loose_candidate = {
             "shoulder_pan": shoulder_pan_seed,
             "shoulder_lift": shoulder_lift,
             "elbow_flex": elbow_flex,
-            "wrist_flex": wrist_flex if math.isfinite(wrist_flex) else wrist_flex_seed,
-            "wrist_yaw": wrist_yaw_seed,
-            "wrist_roll": wrist_roll_seed,
+            "wrist_flex": wrist_flex_seed,
+            "wrist_yaw": wrist_yaw if math.isfinite(wrist_yaw) else wrist_yaw_seed,
+            "wrist_roll": wrist_roll if math.isfinite(wrist_roll) else wrist_roll_seed,
             "gripper_open01": _clip(float(gripper_open01), 0.0, 1.0),
         }
-        candidate = _clamp_joint_dict(candidate, limits)
-        candidate = _refine_dls(candidate, xyz, target_R, limits, geom, previous_joints)
-        candidates.append(candidate)
+        candidates.append(_refine_dls(loose_candidate, xyz, target_R, limits, geom, previous_joints))
 
     if not candidates:
         return _fallback_joint_mapping_from_workspace(xyz, target_rpy, gripper_open01, limits, joint_cal)
 
     best = min(candidates, key=lambda c: _candidate_cost(c, xyz, target_R, previous_joints, geom))
     best["gripper_open01"] = _clip(float(gripper_open01), 0.0, 1.0)
-    best = _apply_calibration_bias(best, joint_cal, base_limits)
-    return best
+    return _clamp_joint_dict(best, limits)
