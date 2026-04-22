@@ -5,6 +5,8 @@ import math
 import time
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional
+import json
+from pathlib import Path
 
 import numpy as np
 from serial.tools import list_ports
@@ -97,6 +99,36 @@ class SOArmHardwareController:
         module = importlib.import_module(module_path)
         return getattr(module, symbol_name)
 
+
+
+    def _resolve_project_calibration_file(self) -> Optional[Path]:
+        raw = str(getattr(val, "ROBOT_JOINT_CALIBRATION_FILE", "")).strip()
+        if not raw:
+            return None
+        path = Path(raw)
+        if not path.is_absolute():
+            path = Path(__file__).resolve().parent / path
+        return path
+
+    def _load_project_calibration_metadata(self) -> Optional[dict]:
+        path = self._resolve_project_calibration_file()
+        if path is None or not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text())
+        except Exception as exc:
+            print(f"[robot_controller] warning: failed to read calibration JSON {path}: {exc}")
+            return None
+
+        motor_names = list(payload.get("motor_names", []))
+        configured_names = list(getattr(val, "REAL_ROBOT_MOTOR_NAMES", []))
+        if motor_names and configured_names and motor_names != configured_names:
+            print(
+                "[robot_controller] warning: project calibration motor order does not match "
+                f"REAL_ROBOT_MOTOR_NAMES. calibration={motor_names}, configured={configured_names}"
+            )
+        return payload
+
     def _import_lerobot_so101(self):
         attempts = [
             (
@@ -160,6 +192,21 @@ class SOArmHardwareController:
             self._last_velocity[k] = 0.0
 
         self._apply_torque_limits()
+
+        project_cal = self._load_project_calibration_metadata()
+        if project_cal is not None:
+            path = self._resolve_project_calibration_file()
+            print(f"[robot_controller] loaded project calibration metadata from {path}")
+            neutral = project_cal.get("neutral_pos")
+            mins = project_cal.get("min_pos")
+            maxs = project_cal.get("max_pos")
+            if neutral is not None and mins is not None and maxs is not None:
+                count = len(project_cal.get("motor_names", []))
+                print(f"[robot_controller] calibration neutral/min/max available for {count} motors")
+        else:
+            path = self._resolve_project_calibration_file()
+            if path is not None:
+                print(f"[robot_controller] project calibration file not found at {path}; run calibrate_robot_joints.py first")
 
         print(f"[robot_controller] connected on {port} with id={robot_id}")
 

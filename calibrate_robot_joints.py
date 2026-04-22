@@ -15,8 +15,26 @@ from robot_controller import SOArmHardwareController, RealRobotUnavailableError
 
 
 CALIB_DIR = Path(__file__).resolve().parent / "calibration_data"
-JSON_PATH = CALIB_DIR / "robot_joint_calibration.json"
+PROJECT_JSON_PATH = CALIB_DIR / "robot_joint_calibration.json"
 TXT_PATH = CALIB_DIR / "robot_joint_calibration_summary.txt"
+
+
+def _resolve_optional_path(raw: str) -> Path | None:
+    raw = str(raw).strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    if not path.is_absolute():
+        path = Path(__file__).resolve().parent / path
+    return path
+
+
+def _get_output_json_paths() -> list[Path]:
+    paths: list[Path] = [PROJECT_JSON_PATH]
+    driver_path = _resolve_optional_path(getattr(val, "LEROBOT_DRIVER_CALIBRATION_FILE", ""))
+    if driver_path is not None and driver_path not in paths:
+        paths.append(driver_path)
+    return paths
 
 @dataclass
 class CalibrationSession:
@@ -343,14 +361,19 @@ def build_calibration_payload(session: CalibrationSession, neutral: dict[str, in
     return payload
 
 
-def write_outputs(payload: dict[str, Any]) -> None:
+def write_outputs(payload: dict[str, Any]) -> list[Path]:
     CALIB_DIR.mkdir(parents=True, exist_ok=True)
-    JSON_PATH.write_text(json.dumps(payload, indent=2) + "\n")
+    output_paths = _get_output_json_paths()
+    for path in output_paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2) + "\n")
 
     lines: list[str] = []
     lines.append("Robot joint calibration summary")
     lines.append("=" * 40)
-    lines.append(f"JSON file: {JSON_PATH}")
+    lines.append("JSON files:")
+    for path in output_paths:
+        lines.append(f"  {path}")
     lines.append("")
 
     motor_names: list[str] = payload["motor_names"]
@@ -370,8 +393,10 @@ def write_outputs(payload: dict[str, Any]) -> None:
         lines.append("")
 
     lines.append("JSON one-line paths for easy copy/paste:")
-    lines.append(f"robot_joint_calibration = {JSON_PATH.as_posix()}")
+    for path in output_paths:
+        lines.append(f"robot_joint_calibration = {path.as_posix()}")
     TXT_PATH.write_text("\n".join(lines) + "\n")
+    return output_paths
 
 
 def main() -> int:
@@ -403,10 +428,12 @@ def main() -> int:
 
         min_pos, max_pos = capture_joint_limits(session)
         payload = build_calibration_payload(session, neutral, min_pos, max_pos)
-        write_outputs(payload)
+        output_paths = write_outputs(payload)
 
         _print_header("Calibration complete")
-        print(f"Saved JSON calibration to: {JSON_PATH}")
+        print("Saved JSON calibration to:")
+        for path in output_paths:
+            print(f"  {path}")
         print(f"Saved text summary to:     {TXT_PATH}")
         print("\nSummary:")
         for name, neutral_pos, minp, maxp in zip(
@@ -430,6 +457,3 @@ def main() -> int:
 
     return 0
 
-
-if __name__ == "__main__":
-    raise SystemExit(main())
