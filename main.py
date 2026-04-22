@@ -1,6 +1,5 @@
 import time
 import cv2
-import numpy as np
 
 import values as val
 from robot_controller import SOArmHardwareController, JointCommand
@@ -57,6 +56,7 @@ def main():
                 shoulder_lift=float(hand_data["shoulder_lift"]),
                 elbow_flex=float(hand_data["elbow_flex"]),
                 wrist_flex=float(hand_data["wrist_flex"]),
+                wrist_yaw=float(hand_data["wrist_yaw"]),
                 wrist_roll=float(hand_data["wrist_roll"]),
                 gripper_open01=float(hand_data["gripper_open01"]),
             )

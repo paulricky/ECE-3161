@@ -691,6 +691,7 @@ class HandTracker:
             "shoulder_lift": 0.0,
             "elbow_flex": 0.0,
             "wrist_flex": 0.0,
+            "wrist_yaw": 0.0,
             "wrist_roll": 0.0,
             "gripper_open01": 1.0,
         }
@@ -784,6 +785,7 @@ class HandTracker:
                         "shoulder_lift": float(solved["shoulder_lift"]),
                         "elbow_flex": float(solved["elbow_flex"]),
                         "wrist_flex": float(solved["wrist_flex"]),
+                        "wrist_yaw": float(solved["wrist_yaw"]),
                         "wrist_roll": float(solved["wrist_roll"]),
                     }
                     return {
@@ -791,6 +793,7 @@ class HandTracker:
                         "shoulder_lift": float(solved["shoulder_lift"]),
                         "elbow_flex": float(solved["elbow_flex"]),
                         "wrist_flex": float(solved["wrist_flex"]),
+                        "wrist_yaw": float(solved["wrist_yaw"]),
                         "wrist_roll": float(solved["wrist_roll"]),
                         "gripper_open01": float(solved["gripper_open01"]),
                     }
@@ -803,6 +806,7 @@ class HandTracker:
         lift_lo, lift_hi = _get_limit("SHOULDER_LIFT", -0.8, 1.0)
         elbow_lo, elbow_hi = _get_limit("ELBOW", -0.9, 1.2)
         wflex_lo, wflex_hi = _get_limit("WRIST_FLEX", -0.9, 0.9)
+        wyaw_lo, wyaw_hi = _get_limit("WRIST_YAW", -1.5, 1.5)
         wroll_lo, wroll_hi = _get_limit("WRIST_ROLL", -1.5, 1.5)
 
         shoulder_pan = _norm_to_range(1.0 - xyz_norm[0], pan_lo, pan_hi)
@@ -810,9 +814,11 @@ class HandTracker:
         elbow_flex = _norm_to_range(xyz_norm[2], elbow_lo, elbow_hi)
 
         pitch_norm = _clip((rpy[1] + math.pi / 2.0) / math.pi, 0.0, 1.0)
+        yaw_norm = _clip((rpy[2] + math.pi) / (2.0 * math.pi), 0.0, 1.0)
         roll_norm = _clip((rpy[0] + math.pi) / (2.0 * math.pi), 0.0, 1.0)
 
         wrist_flex = _norm_to_range(pitch_norm, wflex_lo, wflex_hi)
+        wrist_yaw = _norm_to_range(yaw_norm, wyaw_lo, wyaw_hi)
         wrist_roll = _norm_to_range(roll_norm, wroll_lo, wroll_hi)
 
         return {
@@ -820,6 +826,7 @@ class HandTracker:
             "shoulder_lift": float(shoulder_lift),
             "elbow_flex": float(elbow_flex),
             "wrist_flex": float(wrist_flex),
+            "wrist_yaw": float(wrist_yaw),
             "wrist_roll": float(wrist_roll),
             "gripper_open01": float(open01),
         }
@@ -845,7 +852,7 @@ class HandTracker:
         )
         cv2.putText(
             frame,
-            f"wflex={out['wrist_flex']:.2f} wroll={out['wrist_roll']:.2f} grip={out['gripper_open01']:.2f}",
+            f"wflex={out['wrist_flex']:.2f} wyaw={out['wrist_yaw']:.2f} wroll={out['wrist_roll']:.2f} grip={out['gripper_open01']:.2f}",
             (10, h_img - 15),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,
@@ -853,6 +860,32 @@ class HandTracker:
             2,
             cv2.LINE_AA,
         )
+
+    def _estimate_hand_rpy_from_landmarks(self, hand_lms):
+        lm = hand_lms.landmark
+        wrist = np.array([lm[0].x, lm[0].y, lm[0].z], dtype=np.float64)
+        index_mcp = np.array([lm[5].x, lm[5].y, lm[5].z], dtype=np.float64)
+        middle_mcp = np.array([lm[9].x, lm[9].y, lm[9].z], dtype=np.float64)
+        pinky_mcp = np.array([lm[17].x, lm[17].y, lm[17].z], dtype=np.float64)
+
+        x_axis = middle_mcp - wrist
+        if np.linalg.norm(x_axis) < 1e-8:
+            x_axis = index_mcp - wrist
+        x_axis = x_axis / max(np.linalg.norm(x_axis), 1e-8)
+
+        across = pinky_mcp - index_mcp
+        across = across / max(np.linalg.norm(across), 1e-8)
+
+        z_axis = np.cross(x_axis, across)
+        if np.linalg.norm(z_axis) < 1e-8:
+            z_axis = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        z_axis = z_axis / max(np.linalg.norm(z_axis), 1e-8)
+
+        y_axis = np.cross(z_axis, x_axis)
+        y_axis = y_axis / max(np.linalg.norm(y_axis), 1e-8)
+
+        R = np.column_stack([x_axis, y_axis, z_axis])
+        return _rot_to_rpy(R)
 
     def _landmarks_to_command(self, hand_lms, label: str):
         lm = hand_lms.landmark
@@ -877,6 +910,7 @@ class HandTracker:
         lift_lo, lift_hi = _get_limit("SHOULDER_LIFT", -0.8, 1.0)
         elbow_lo, elbow_hi = _get_limit("ELBOW", -0.9, 1.2)
         wflex_lo, wflex_hi = _get_limit("WRIST_FLEX", -0.9, 0.9)
+        wyaw_lo, wyaw_hi = _get_limit("WRIST_YAW", -1.5, 1.5)
         wroll_lo, wroll_hi = _get_limit("WRIST_ROLL", -1.5, 1.5)
 
         pan_norm = 1.0 - hand_cx
@@ -891,17 +925,21 @@ class HandTracker:
 
         palm_tilt = _clip((wrist[1] - middle_mcp[1]) / 0.25, -1.0, 1.0)
 
+        palm_rpy = self._estimate_hand_rpy_from_landmarks(hand_lms)
         palm_line_angle = _angle_2d(index_mcp, pinky_mcp)
         wrist_roll_norm = _clip((palm_line_angle + math.pi / 2.0) / math.pi, 0.0, 1.0)
+        wrist_yaw_norm = _clip((float(palm_rpy[2]) + math.pi) / (2.0 * math.pi), 0.0, 1.0)
 
         shoulder_pan = _norm_to_range(pan_norm, pan_lo, pan_hi)
         shoulder_lift = _norm_to_range(lift_norm, lift_lo, lift_hi)
         elbow_flex = _norm_to_range(depth_norm, elbow_lo, elbow_hi)
         wrist_flex = _norm_to_range(0.5 * (1.0 + palm_tilt), wflex_lo, wflex_hi)
+        wrist_yaw = _norm_to_range(wrist_yaw_norm, wyaw_lo, wyaw_hi)
         wrist_roll = _norm_to_range(wrist_roll_norm, wroll_lo, wroll_hi)
 
         if label == "Left":
             shoulder_pan = -shoulder_pan
+            wrist_yaw = -wrist_yaw
             wrist_roll = -wrist_roll
 
         pinch_dist = mm.dist(thumb_tip, index_tip)
@@ -923,6 +961,7 @@ class HandTracker:
             "shoulder_lift": shoulder_lift,
             "elbow_flex": elbow_flex,
             "wrist_flex": wrist_flex,
+            "wrist_yaw": wrist_yaw,
             "wrist_roll": wrist_roll,
             "gripper_open01": gripper_open01,
         }

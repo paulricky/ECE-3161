@@ -22,6 +22,7 @@ class JointCommand:
     shoulder_lift: float
     elbow_flex: float
     wrist_flex: float
+    wrist_yaw: float
     wrist_roll: float
     gripper_open01: float
 
@@ -38,6 +39,7 @@ class SOArmHardwareController:
             "shoulder_lift.pos": 0.0,
             "elbow_flex.pos": 0.0,
             "wrist_flex.pos": 0.0,
+            "wrist_yaw.pos": 0.0,
             "wrist_roll.pos": 0.0,
             "gripper.pos": 0.0,
         }
@@ -184,6 +186,7 @@ class SOArmHardwareController:
             "shoulder_lift",
             "elbow_flex",
             "wrist_flex",
+            "wrist_yaw",
             "wrist_roll",
             "gripper",
         ]
@@ -267,6 +270,7 @@ class SOArmHardwareController:
                 "shoulder_lift.pos": 0.0,
                 "elbow_flex.pos": 0.0,
                 "wrist_flex.pos": 0.0,
+                "wrist_yaw.pos": 0.0,
                 "wrist_roll.pos": 0.0,
                 "gripper.pos": 50.0,
             }
@@ -310,6 +314,7 @@ class SOArmHardwareController:
             "shoulder_lift.pos": self._rad_to_deg(cmd.shoulder_lift),
             "elbow_flex.pos": self._rad_to_deg(cmd.elbow_flex),
             "wrist_flex.pos": self._rad_to_deg(cmd.wrist_flex),
+            "wrist_yaw.pos": self._rad_to_deg(cmd.wrist_yaw),
             "wrist_roll.pos": self._rad_to_deg(cmd.wrist_roll),
             "gripper.pos": self._gripper_open01_to_percent(cmd.gripper_open01),
         }
@@ -327,8 +332,8 @@ class SOArmHardwareController:
 
 def apply_joint_direction_conventions(jvals: Iterable[float]):
     j = list(map(float, jvals))
-    if len(j) != 5:
-        raise ValueError(f"Expected 5 arm joints, got {len(j)}")
+    if len(j) != 6:
+        raise ValueError(f"Expected 6 arm joints, got {len(j)}")
 
     if getattr(val, "INVERT_BASE_PAN", False):
         j[0] = -j[0]
@@ -338,12 +343,14 @@ def apply_joint_direction_conventions(jvals: Iterable[float]):
         j[2] = -j[2]
     if getattr(val, "INVERT_WRIST_FLEX", False):
         j[3] = -j[3]
-    if getattr(val, "INVERT_WRIST_ROLL", False):
+    if getattr(val, "INVERT_WRIST_YAW", False):
         j[4] = -j[4]
+    if getattr(val, "INVERT_WRIST_ROLL", False):
+        j[5] = -j[5]
 
-    offsets_deg = getattr(val, "REAL_ROBOT_JOINT_OFFSETS_DEG", [0, 0, 0, 0, 0])
-    if len(offsets_deg) != 5:
-        raise ValueError("REAL_ROBOT_JOINT_OFFSETS_DEG must have length 5")
+    offsets_deg = getattr(val, "REAL_ROBOT_JOINT_OFFSETS_DEG", [0, 0, 0, 0, 0, 0])
+    if len(offsets_deg) != 6:
+        raise ValueError("REAL_ROBOT_JOINT_OFFSETS_DEG must have length 6")
 
     offsets_rad = [math.radians(float(x)) for x in offsets_deg]
     return [a + b for a, b in zip(j, offsets_rad)]
