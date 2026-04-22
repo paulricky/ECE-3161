@@ -6,7 +6,11 @@ import cv2
 import values as val
 from robot_controller import SOArmHardwareController, JointCommand
 from handtracking import HandTracker
-from robot_calibrate import main as run_robot_calibration
+from robot_calibrate import (
+    get_joint_calibration_status,
+    get_motor_setup_status,
+    run_workflow as run_robot_calibration_workflow,
+)
 
 
 DEFAULT_ROBOT_CALIBRATION_FILE = Path(__file__).resolve().parent / "calibration_data" / "robot_joint_calibration.json"
@@ -19,21 +23,47 @@ def _robot_calibration_path() -> Path:
     return DEFAULT_ROBOT_CALIBRATION_FILE
 
 
-def _ask_yn(prompt: str, default: bool) -> bool:
-    suffix = "[Y/n]" if default else "[y/N]"
-    reply = input(f"{prompt} {suffix}: ").strip().lower()
-    if not reply:
-        return default
-    return reply in ("y", "yes")
+def _ensure_robot_calibration() -> bool:
+    if not getattr(val, "ENABLE_REAL_ROBOT", False):
+        return True
 
-
-def _run_calibration() -> bool:
-    rc = run_robot_calibration()
-    if rc != 0:
-        print("[main] Calibration did not complete successfully. Exiting.")
-        return False
-
+    setup_status = get_motor_setup_status()
+    calib_status = get_joint_calibration_status()
     calib_path = _robot_calibration_path()
+
+    if calib_status.configured:
+        print(f"[main] Using robot calibration: {calib_path}")
+        reply = input("Robot calibration already exists. Recalibrate now? [y/N]: ").strip().lower()
+        if reply in ("y", "yes"):
+            rc = run_robot_calibration_workflow("calibration")
+            if rc != 0:
+                print("[main] Recalibration did not complete successfully. Exiting.")
+                return False
+        return True
+
+    if setup_status.configured:
+        print("[main] Motor-ID setup already exists, but joint calibration does not.")
+        if setup_status.source:
+            print(f"[main] Using existing motor setup from: {setup_status.source}")
+        reply = input("Run joint calibration now? [Y/n]: ").strip().lower()
+        if reply not in ("", "y", "yes"):
+            print("[main] Calibration declined. Exiting.")
+            return False
+        rc = run_robot_calibration_workflow("calibration")
+        if rc != 0:
+            print("[main] Joint calibration did not complete successfully. Exiting.")
+            return False
+    else:
+        print("[main] No robot motor setup detected and no joint calibration found.")
+        reply = input("Run motor setup and joint calibration now? [Y/n]: ").strip().lower()
+        if reply not in ("", "y", "yes"):
+            print("[main] Calibration declined. Exiting.")
+            return False
+        rc = run_robot_calibration_workflow("full")
+        if rc != 0:
+            print("[main] Setup/calibration did not complete successfully. Exiting.")
+            return False
+
     if not calib_path.exists():
         print(f"[main] Calibration finished, but the file was still not found: {calib_path}")
         return False
@@ -42,28 +72,8 @@ def _run_calibration() -> bool:
     return True
 
 
-def _confirm_calibration() -> bool:
-    if not getattr(val, "ENABLE_REAL_ROBOT", False):
-        return True
-
-    calib_path = _robot_calibration_path()
-    if calib_path.exists():
-        print(f"[main] Found existing robot calibration: {calib_path}")
-        if _ask_yn("Do you want to recalibrate the robot before starting?", default=False):
-            return _run_calibration()
-        print("[main] Keeping existing robot calibration.")
-        return True
-
-    print(f"[main] Robot calibration file not found: {calib_path}")
-    if not _ask_yn("Run robot calibration now?", default=True):
-        print("[main] Calibration declined. Exiting.")
-        return False
-
-    return _run_calibration()
-
-
 def main():
-    if not _confirm_calibration():
+    if not _ensure_robot_calibration():
         return
 
     cap = cv2.VideoCapture(0)
@@ -121,7 +131,7 @@ def main():
             dt = now - last_time
             if dt < 1.0 / val.REAL_ROBOT_HZ:
                 time.sleep((1.0 / val.REAL_ROBOT_HZ) - dt)
-            last_time = now
+            last_time = time.time()
     finally:
         try:
             robot.disconnect()
