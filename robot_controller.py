@@ -356,13 +356,21 @@ class SOArmHardwareController:
         return out
 
     def _joint_command_to_action(self, cmd: JointCommand) -> Dict[str, float]:
+        adjusted = apply_joint_direction_conventions([
+            cmd.shoulder_pan,
+            cmd.shoulder_lift,
+            cmd.elbow_flex,
+            cmd.wrist_flex,
+            cmd.wrist_yaw,
+            cmd.wrist_roll,
+        ])
         return {
-            "shoulder_pan.pos": self._rad_to_deg(cmd.shoulder_pan),
-            "shoulder_lift.pos": self._rad_to_deg(cmd.shoulder_lift),
-            "elbow_flex.pos": self._rad_to_deg(cmd.elbow_flex),
-            "wrist_flex.pos": self._rad_to_deg(cmd.wrist_flex),
-            "wrist_yaw.pos": self._rad_to_deg(cmd.wrist_yaw),
-            "wrist_roll.pos": self._rad_to_deg(cmd.wrist_roll),
+            "shoulder_pan.pos": self._rad_to_deg(adjusted[0]),
+            "shoulder_lift.pos": self._rad_to_deg(adjusted[1]),
+            "elbow_flex.pos": self._rad_to_deg(adjusted[2]),
+            "wrist_flex.pos": self._rad_to_deg(adjusted[3]),
+            "wrist_yaw.pos": self._rad_to_deg(adjusted[4]),
+            "wrist_roll.pos": self._rad_to_deg(adjusted[5]),
             "gripper.pos": self._gripper_open01_to_percent(cmd.gripper_open01),
         }
 

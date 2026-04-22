@@ -140,21 +140,59 @@ def _extract_joint_calibration(calibration):
         if range_min is None or range_max is None:
             continue
 
-        span = float(range_max) - float(range_min)
+        lo = min(float(range_min), float(range_max))
+        hi = max(float(range_min), float(range_max))
+        span = hi - lo
         if span <= 0:
             continue
 
-        center = 0.5 * (float(range_min) + float(range_max))
+        center = 0.5 * (lo + hi)
 
         out[name] = {
             "id": None if motor_id is None else int(motor_id),
-            "range_min": float(range_min),
-            "range_max": float(range_max),
+            "range_min": float(lo),
+            "range_max": float(hi),
             "range_center": float(center),
             "range_span": float(span),
             "homing_offset": 0.0 if homing_offset is None else float(homing_offset),
             "drive_mode": 0 if drive_mode is None else int(drive_mode),
             "norm_mode": None if norm_mode is None else int(norm_mode),
+        }
+
+    if out:
+        return out
+
+    motor_names = calibration.get("motor_names")
+    min_pos = calibration.get("min_pos")
+    max_pos = calibration.get("max_pos")
+    homing_offset = calibration.get("homing_offset")
+    drive_mode = calibration.get("drive_mode")
+
+    if not isinstance(motor_names, list) or not isinstance(min_pos, list) or not isinstance(max_pos, list):
+        return {}
+    if len(motor_names) != len(min_pos) or len(motor_names) != len(max_pos):
+        return {}
+
+    for i, name in enumerate(motor_names):
+        if name not in names:
+            continue
+        try:
+            lo = min(float(min_pos[i]), float(max_pos[i]))
+            hi = max(float(min_pos[i]), float(max_pos[i]))
+        except Exception:
+            continue
+        span = hi - lo
+        if span <= 0:
+            continue
+        out[name] = {
+            "id": None,
+            "range_min": float(lo),
+            "range_max": float(hi),
+            "range_center": float(0.5 * (lo + hi)),
+            "range_span": float(span),
+            "homing_offset": 0.0 if not isinstance(homing_offset, list) or i >= len(homing_offset) else float(homing_offset[i]),
+            "drive_mode": 0 if not isinstance(drive_mode, list) or i >= len(drive_mode) else int(drive_mode[i]),
+            "norm_mode": None,
         }
 
     return out
