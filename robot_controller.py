@@ -384,6 +384,96 @@ class SOArmHardwareController:
             open01 = 1.0 - open01
         return 100.0 * open01
 
+    def read_present_joints_rad(self) -> Optional[Dict[str, float]]:
+        """Return the current arm state in the same convention as `JointCommand`
+        (radians for joints, 0-1 for gripper). Returns None on any error, so
+        callers can fall back to time-based waypoint arrival.
+
+        The LeRobot SO101Follower driver, when configured with `use_degrees=True`,
+        exposes `{name}.pos` observation keys in degrees. We convert to radians
+        and then invert both `apply_joint_direction_conventions` (offsets + sign
+        flips) and the gripper-percent mapping so the returned dict matches what
+        would have been passed into `JointCommand`.
+        """
+        if not self.connected or self.robot is None:
+            return None
+
+        obs = None
+        for fn_name in ("get_observation", "capture_observation", "read_observation"):
+            fn = getattr(self.robot, fn_name, None)
+            if fn is None:
+                continue
+            try:
+                obs = fn()
+            except Exception:
+                obs = None
+                continue
+            if isinstance(obs, dict):
+                break
+        if not isinstance(obs, dict):
+            return None
+
+        def _read(name: str) -> Optional[float]:
+            for key in (f"{name}.pos", name, f"observation.{name}.pos"):
+                if key in obs:
+                    try:
+                        return float(obs[key])
+                    except Exception:
+                        return None
+            return None
+
+        names = ["shoulder_pan", "shoulder_lift", "elbow_flex",
+                 "wrist_flex", "wrist_yaw", "wrist_roll"]
+        deg_vals: List[float] = []
+        for name in names:
+            raw = _read(name)
+            if raw is None:
+                return None
+            deg_vals.append(float(raw))
+
+        rad_vals = [float(np.deg2rad(d)) for d in deg_vals]
+
+        # Reverse apply_joint_direction_conventions: subtract the software
+        # offsets first, then undo the sign inversions (sign flip is its own
+        # inverse).
+        offsets_deg = getattr(val, "REAL_ROBOT_JOINT_OFFSETS_DEG", [0.0] * 6)
+        offsets_rad = [math.radians(float(x)) for x in offsets_deg]
+        if len(offsets_rad) != 6:
+            return None
+        rad_vals = [a - b for a, b in zip(rad_vals, offsets_rad)]
+
+        if getattr(val, "INVERT_BASE_PAN", False):
+            rad_vals[0] = -rad_vals[0]
+        if getattr(val, "INVERT_SHOULDER_LIFT", False):
+            rad_vals[1] = -rad_vals[1]
+        if getattr(val, "INVERT_ELBOW", False):
+            rad_vals[2] = -rad_vals[2]
+        if getattr(val, "INVERT_WRIST_FLEX", False):
+            rad_vals[3] = -rad_vals[3]
+        if getattr(val, "INVERT_WRIST_YAW", False):
+            rad_vals[4] = -rad_vals[4]
+        if getattr(val, "INVERT_WRIST_ROLL", False):
+            rad_vals[5] = -rad_vals[5]
+
+        gripper_raw = _read("gripper")
+        if gripper_raw is None:
+            gripper_open01 = float("nan")
+        else:
+            g = float(np.clip(gripper_raw / 100.0, 0.0, 1.0))
+            if getattr(val, "INVERT_GRIPPER", False):
+                g = 1.0 - g
+            gripper_open01 = g
+
+        return {
+            "shoulder_pan": rad_vals[0],
+            "shoulder_lift": rad_vals[1],
+            "elbow_flex": rad_vals[2],
+            "wrist_flex": rad_vals[3],
+            "wrist_yaw": rad_vals[4],
+            "wrist_roll": rad_vals[5],
+            "gripper_open01": gripper_open01,
+        }
+
 
 def apply_joint_direction_conventions(jvals: Iterable[float]):
     j = list(map(float, jvals))
