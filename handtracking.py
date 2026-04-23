@@ -693,6 +693,7 @@ class HandTracker:
             "wrist_flex": 0.0,
             "wrist_yaw": 0.0,
             "wrist_roll": 0.0,
+            "wrist_pitch": 0.0,
             "gripper_open01": 1.0,
         }
         self._last_open01 = 1.0
@@ -787,6 +788,7 @@ class HandTracker:
                         "wrist_flex": float(solved["wrist_flex"]),
                         "wrist_yaw": float(solved["wrist_yaw"]),
                         "wrist_roll": float(solved["wrist_roll"]),
+                        "wrist_pitch": float(solved.get("wrist_pitch", 0.0)),
                     }
                     return {
                         "shoulder_pan": float(solved["shoulder_pan"]),
@@ -795,6 +797,7 @@ class HandTracker:
                         "wrist_flex": float(solved["wrist_flex"]),
                         "wrist_yaw": float(solved["wrist_yaw"]),
                         "wrist_roll": float(solved["wrist_roll"]),
+                        "wrist_pitch": float(solved.get("wrist_pitch", 0.0)),
                         "gripper_open01": float(solved["gripper_open01"]),
                     }
             except Exception:
@@ -828,6 +831,7 @@ class HandTracker:
             "wrist_flex": float(wrist_flex),
             "wrist_yaw": float(wrist_yaw),
             "wrist_roll": float(wrist_roll),
+            "wrist_pitch": 0.0,
             "gripper_open01": float(open01),
         }
 
@@ -963,5 +967,6 @@ class HandTracker:
             "wrist_flex": wrist_flex,
             "wrist_yaw": wrist_yaw,
             "wrist_roll": wrist_roll,
+            "wrist_pitch": 0.0,
             "gripper_open01": gripper_open01,
         }

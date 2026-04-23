@@ -117,6 +117,7 @@ def main():
                     wrist_flex=float(hand_data["wrist_flex"]),
                     wrist_yaw=float(hand_data["wrist_yaw"]),
                     wrist_roll=float(hand_data["wrist_roll"]),
+                    wrist_pitch=float(hand_data.get("wrist_pitch", 0.0)),
                     gripper_open01=float(hand_data["gripper_open01"]),
                 )
 

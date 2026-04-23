@@ -32,6 +32,7 @@ _JOINT_NAMES = (
     "wrist_flex",
     "wrist_yaw",
     "wrist_roll",
+    "wrist_pitch",
 )
 
 
@@ -110,7 +111,7 @@ class PickPlaceConfig:
             continuous_mode=bool(getattr(val, "PICKPLACE_CONTINUOUS_MODE", True)),
             required_stable_frames=int(getattr(val, "PICKPLACE_SCAN_DETECTION_REQUIRED_FRAMES", 2)),
             picking_policy=str(getattr(val, "PICKPLACE_PICKING_POLICY", "highest_confidence")),
-            home_joints_rad=list(getattr(val, "PICKPLACE_HOME_JOINTS_RAD", [0.0] * 6)),
+            home_joints_rad=list(getattr(val, "PICKPLACE_HOME_JOINTS_RAD", [0.0] * 7)),
             home_gripper_open01=float(getattr(val, "PICKPLACE_HOME_GRIPPER_OPEN01", 1.0)),
             max_velocity_deg=float(getattr(val, "REAL_ROBOT_MAX_VELOCITY_DEG", 20.0)),
         )
@@ -441,6 +442,7 @@ class PickPlacePlanner:
                 wrist_flex=float(jt.get("wrist_flex", 0.0)),
                 wrist_yaw=float(jt.get("wrist_yaw", 0.0)),
                 wrist_roll=float(jt.get("wrist_roll", 0.0)),
+                wrist_pitch=float(jt.get("wrist_pitch", 0.0)),
                 gripper_open01=float(wp.gripper_open01),
             )
 
@@ -488,6 +490,7 @@ class PickPlacePlanner:
             wrist_flex=float(sol["wrist_flex"]),
             wrist_yaw=float(sol["wrist_yaw"]),
             wrist_roll=float(sol["wrist_roll"]),
+            wrist_pitch=float(sol.get("wrist_pitch", 0.0)),
             gripper_open01=float(sol.get("gripper_open01", wp.gripper_open01)),
         )
 
@@ -497,7 +500,9 @@ class PickPlacePlanner:
 
     def _home_waypoint(self, label: str,
                         gripper_open01: Optional[float] = None) -> Waypoint:
-        hj = self.cfg.home_joints_rad
+        hj = list(self.cfg.home_joints_rad)
+        while len(hj) < 7:
+            hj.append(0.0)
         targets = {
             "shoulder_pan": float(hj[0]),
             "shoulder_lift": float(hj[1]),
@@ -505,6 +510,7 @@ class PickPlacePlanner:
             "wrist_flex": float(hj[3]),
             "wrist_yaw": float(hj[4]),
             "wrist_roll": float(hj[5]),
+            "wrist_pitch": float(hj[6]),
         }
         return Waypoint(
             label=label,
@@ -634,5 +640,6 @@ def _cmd_to_joints_dict(cmd: JointCommand) -> Dict[str, float]:
         "wrist_flex": float(cmd.wrist_flex),
         "wrist_yaw": float(cmd.wrist_yaw),
         "wrist_roll": float(cmd.wrist_roll),
+        "wrist_pitch": float(cmd.wrist_pitch),
         "gripper_open01": float(cmd.gripper_open01),
     }

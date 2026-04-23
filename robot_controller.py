@@ -26,6 +26,7 @@ class JointCommand:
     wrist_flex: float
     wrist_yaw: float
     wrist_roll: float
+    wrist_pitch: float
     gripper_open01: float
 
 
@@ -43,6 +44,7 @@ class SOArmHardwareController:
             "wrist_flex.pos": 0.0,
             "wrist_yaw.pos": 0.0,
             "wrist_roll.pos": 0.0,
+            "wrist_pitch.pos": 0.0,
             "gripper.pos": 0.0,
         }
 
@@ -228,15 +230,16 @@ class SOArmHardwareController:
         percent = float(getattr(val, "REAL_ROBOT_TORQUE_LIMIT_PERCENT", 20.0))
         percent = max(1.0, min(100.0, percent))
 
-        motor_names = [
+        motor_names = list(getattr(val, "REAL_ROBOT_MOTOR_NAMES", [
             "shoulder_pan",
             "shoulder_lift",
             "elbow_flex",
             "wrist_flex",
             "wrist_yaw",
             "wrist_roll",
+            "wrist_pitch",
             "gripper",
-        ]
+        ]))
 
         register_candidates = [
             "Torque_Limit",
@@ -319,6 +322,7 @@ class SOArmHardwareController:
                 "wrist_flex.pos": 0.0,
                 "wrist_yaw.pos": 0.0,
                 "wrist_roll.pos": 0.0,
+                "wrist_pitch.pos": 0.0,
                 "gripper.pos": 50.0,
             }
             return self._apply_velocity_and_acceleration_limits(action)
@@ -363,6 +367,7 @@ class SOArmHardwareController:
             cmd.wrist_flex,
             cmd.wrist_yaw,
             cmd.wrist_roll,
+            cmd.wrist_pitch,
         ])
         return {
             "shoulder_pan.pos": self._rad_to_deg(adjusted[0]),
@@ -371,6 +376,7 @@ class SOArmHardwareController:
             "wrist_flex.pos": self._rad_to_deg(adjusted[3]),
             "wrist_yaw.pos": self._rad_to_deg(adjusted[4]),
             "wrist_roll.pos": self._rad_to_deg(adjusted[5]),
+            "wrist_pitch.pos": self._rad_to_deg(adjusted[6]),
             "gripper.pos": self._gripper_open01_to_percent(cmd.gripper_open01),
         }
 
@@ -423,7 +429,7 @@ class SOArmHardwareController:
             return None
 
         names = ["shoulder_pan", "shoulder_lift", "elbow_flex",
-                 "wrist_flex", "wrist_yaw", "wrist_roll"]
+                 "wrist_flex", "wrist_yaw", "wrist_roll", "wrist_pitch"]
         deg_vals: List[float] = []
         for name in names:
             raw = _read(name)
@@ -436,9 +442,9 @@ class SOArmHardwareController:
         # Reverse apply_joint_direction_conventions: subtract the software
         # offsets first, then undo the sign inversions (sign flip is its own
         # inverse).
-        offsets_deg = getattr(val, "REAL_ROBOT_JOINT_OFFSETS_DEG", [0.0] * 6)
+        offsets_deg = getattr(val, "REAL_ROBOT_JOINT_OFFSETS_DEG", [0.0] * 7)
         offsets_rad = [math.radians(float(x)) for x in offsets_deg]
-        if len(offsets_rad) != 6:
+        if len(offsets_rad) != 7:
             return None
         rad_vals = [a - b for a, b in zip(rad_vals, offsets_rad)]
 
@@ -454,6 +460,8 @@ class SOArmHardwareController:
             rad_vals[4] = -rad_vals[4]
         if getattr(val, "INVERT_WRIST_ROLL", False):
             rad_vals[5] = -rad_vals[5]
+        if getattr(val, "INVERT_WRIST_PITCH", False):
+            rad_vals[6] = -rad_vals[6]
 
         gripper_raw = _read("gripper")
         if gripper_raw is None:
@@ -471,14 +479,15 @@ class SOArmHardwareController:
             "wrist_flex": rad_vals[3],
             "wrist_yaw": rad_vals[4],
             "wrist_roll": rad_vals[5],
+            "wrist_pitch": rad_vals[6],
             "gripper_open01": gripper_open01,
         }
 
 
 def apply_joint_direction_conventions(jvals: Iterable[float]):
     j = list(map(float, jvals))
-    if len(j) != 6:
-        raise ValueError(f"Expected 6 arm joints, got {len(j)}")
+    if len(j) != 7:
+        raise ValueError(f"Expected 7 arm joints, got {len(j)}")
 
     if getattr(val, "INVERT_BASE_PAN", False):
         j[0] = -j[0]
@@ -492,10 +501,12 @@ def apply_joint_direction_conventions(jvals: Iterable[float]):
         j[4] = -j[4]
     if getattr(val, "INVERT_WRIST_ROLL", False):
         j[5] = -j[5]
+    if getattr(val, "INVERT_WRIST_PITCH", False):
+        j[6] = -j[6]
 
-    offsets_deg = getattr(val, "REAL_ROBOT_JOINT_OFFSETS_DEG", [0, 0, 0, 0, 0, 0])
-    if len(offsets_deg) != 6:
-        raise ValueError("REAL_ROBOT_JOINT_OFFSETS_DEG must have length 6")
+    offsets_deg = getattr(val, "REAL_ROBOT_JOINT_OFFSETS_DEG", [0, 0, 0, 0, 0, 0, 0])
+    if len(offsets_deg) != 7:
+        raise ValueError("REAL_ROBOT_JOINT_OFFSETS_DEG must have length 7")
 
     offsets_rad = [math.radians(float(x)) for x in offsets_deg]
     return [a + b for a, b in zip(j, offsets_rad)]

@@ -68,6 +68,10 @@ def _get_joint_limits():
             _get_value("WRIST_ROLL_MIN", -math.pi),
             _get_value("WRIST_ROLL_MAX", math.pi),
         ),
+        "wrist_pitch": (
+            _get_value("WRIST_PITCH_MIN", -2.5),
+            _get_value("WRIST_PITCH_MAX", 2.5),
+        ),
     }
 
 
@@ -122,6 +126,7 @@ def _extract_joint_calibration(calibration):
         "wrist_flex",
         "wrist_yaw",
         "wrist_roll",
+        "wrist_pitch",
         "gripper",
     ]
 
@@ -213,6 +218,7 @@ def _merge_limits(base_limits, lerobot_calibration):
         "wrist_flex",
         "wrist_yaw",
         "wrist_roll",
+        "wrist_pitch",
     ):
         if joint_name not in merged or joint_name not in joint_cal:
             continue
@@ -256,11 +262,26 @@ def _normalize_workspace_xyz(xyz):
 
 
 def _ee_geom():
+    # 7-DOF chain: wrist_roll --[tool_a]--> wrist_pitch --[tool_b]--> EE.
+    # When wrist_pitch = 0, tool_a + tool_b collapses to the legacy single
+    # tool length used for wrist-center math in solve_ik_from_target.
+    tool_a = _get_value("IK_TOOL_A_M", 0.025)
+    tool_b = _get_value("IK_TOOL_B_M", 0.025)
+    # Backwards-compat: if IK_TOOL_M is set and the A/B split isn't, fall
+    # back to splitting the old single length evenly.
+    legacy = getattr(val, "IK_TOOL_M", None)
+    if legacy is not None and not hasattr(val, "IK_TOOL_A_M") and not hasattr(val, "IK_TOOL_B_M"):
+        tool_a = float(legacy) / 2.0
+        tool_b = float(legacy) / 2.0
     return {
         "base_height": _get_value("IK_BASE_HEIGHT_M", 0.06),
         "upper_arm": _get_value("IK_LINK1_M", 0.115),
         "forearm": _get_value("IK_LINK2_M", 0.115),
-        "tool": _get_value("IK_TOOL_M", 0.05),
+        "tool_a": tool_a,
+        "tool_b": tool_b,
+        # "tool" = distance from wrist_center to EE when wrist_pitch = 0.
+        # Existing IK code uses this for the wrist-center projection.
+        "tool": tool_a + tool_b,
         "r_min": _get_value("IK_RADIAL_MIN_M", 0.04),
     }
 
@@ -278,6 +299,7 @@ def _apply_calibration_bias(joints, joint_cal, base_limits):
         "wrist_flex",
         "wrist_yaw",
         "wrist_roll",
+        "wrist_pitch",
     ):
         if name not in out or name not in joint_cal or name not in base_limits:
             continue
@@ -407,10 +429,12 @@ def _fk_chain_details(joints, geom):
     q3 = float(joints["wrist_flex"])
     q4 = float(joints["wrist_yaw"])
     q5 = float(joints["wrist_roll"])
+    q6 = float(joints.get("wrist_pitch", 0.0))
 
     l1 = float(geom["upper_arm"])
     l2 = float(geom["forearm"])
-    tool = float(geom["tool"])
+    tool_a = float(geom["tool_a"])
+    tool_b = float(geom["tool_b"])
     base_height = float(geom["base_height"])
 
     p = np.array([0.0, 0.0, base_height], dtype=np.float64)
@@ -447,7 +471,15 @@ def _fk_chain_details(joints, geom):
     joint_axes.append(R @ np.array([1.0, 0.0, 0.0], dtype=np.float64))
     R = R @ _rot_x(q5)
 
-    ee = wrist_center + R @ np.array([tool, 0.0, 0.0], dtype=np.float64)
+    # Move tool_a along the current x axis to reach the wrist_pitch joint.
+    p = wrist_center + R @ np.array([tool_a, 0.0, 0.0], dtype=np.float64)
+
+    # q6 = wrist_pitch about local y.
+    joint_origins.append(p.copy())
+    joint_axes.append(R @ np.array([0.0, 1.0, 0.0], dtype=np.float64))
+    R = R @ _rot_y(q6)
+
+    ee = p + R @ np.array([tool_b, 0.0, 0.0], dtype=np.float64)
     return ee, R, wrist_center, joint_origins, joint_axes
 
 
@@ -478,11 +510,12 @@ def _joint_dict_to_vector(joints):
         float(joints["wrist_flex"]),
         float(joints["wrist_yaw"]),
         float(joints["wrist_roll"]),
+        float(joints.get("wrist_pitch", 0.0)),
     ], dtype=np.float64)
 
 
 def _vector_to_joint_dict(vec, gripper_open01=1.0):
-    arr = np.asarray(vec, dtype=np.float64).reshape(6)
+    arr = np.asarray(vec, dtype=np.float64).reshape(7)
     return {
         "shoulder_pan": float(arr[0]),
         "shoulder_lift": float(arr[1]),
@@ -490,6 +523,7 @@ def _vector_to_joint_dict(vec, gripper_open01=1.0):
         "wrist_flex": float(arr[3]),
         "wrist_yaw": float(arr[4]),
         "wrist_roll": float(arr[5]),
+        "wrist_pitch": float(arr[6]),
         "gripper_open01": _clip(float(gripper_open01), 0.0, 1.0),
     }
 
@@ -504,6 +538,7 @@ def _joint_delta_cost(candidate, previous_joints):
         "wrist_flex",
         "wrist_yaw",
         "wrist_roll",
+        "wrist_pitch",
     )
     total = 0.0
     for name in names:
@@ -531,8 +566,9 @@ def _clamp_joint_dict(joints, limits):
         "wrist_flex",
         "wrist_yaw",
         "wrist_roll",
+        "wrist_pitch",
     ):
-        out[name] = _clamp_to_joint(name, out[name], limits)
+        out[name] = _clamp_to_joint(name, out.get(name, 0.0), limits)
     out["gripper_open01"] = _clip(float(out.get("gripper_open01", 1.0)), 0.0, 1.0)
     return out
 
@@ -562,6 +598,7 @@ def _analytic_geometric_jacobian(joints, geom, var_names):
         "wrist_flex": 3,
         "wrist_yaw": 4,
         "wrist_roll": 5,
+        "wrist_pitch": 6,
     }
     cols = []
     for name in var_names:
@@ -626,7 +663,9 @@ def _refine_dls(initial_joints, target_xyz, target_R, limits, geom, previous_joi
         "wrist_flex",
         "wrist_yaw",
         "wrist_roll",
+        "wrist_pitch",
     ]
+    n_dof = len(var_names)
 
     damping = float(_get_value("IK_DLS_DAMPING", 0.08))
     pos_gain = float(_get_value("IK_DLS_POSITION_GAIN", 1.0))
@@ -657,13 +696,13 @@ def _refine_dls(initial_joints, target_xyz, target_R, limits, geom, previous_joi
         b_top = W @ np.concatenate((pos_err_vec, orient_err))
 
         if prev_vec is not None and cont_gain > 0.0:
-            A = np.vstack((A_top, math.sqrt(cont_gain) * np.eye(6, dtype=np.float64)))
+            A = np.vstack((A_top, math.sqrt(cont_gain) * np.eye(n_dof, dtype=np.float64)))
             b = np.concatenate((b_top, math.sqrt(cont_gain) * (prev_vec - q_vec)))
         else:
             A = A_top
             b = b_top
 
-        lhs = A.T @ A + (damping * damping) * np.eye(6, dtype=np.float64)
+        lhs = A.T @ A + (damping * damping) * np.eye(n_dof, dtype=np.float64)
         rhs = A.T @ b
         try:
             delta = np.linalg.solve(lhs, rhs)
@@ -717,6 +756,7 @@ def _fallback_joint_mapping_from_workspace(target_xyz, target_rpy, gripper_open0
         "wrist_flex": _clamp_to_joint("wrist_flex", wrist_flex, limits),
         "wrist_yaw": _clamp_to_joint("wrist_yaw", wrist_yaw, limits),
         "wrist_roll": _clamp_to_joint("wrist_roll", wrist_roll, limits),
+        "wrist_pitch": _clamp_to_joint("wrist_pitch", 0.0, limits),
         "gripper_open01": _clip(float(gripper_open01), 0.0, 1.0),
     }
     return out
@@ -776,6 +816,12 @@ def solve_ik_from_target(
 
     candidates = []
 
+    # For the analytic seeds we fix wrist_pitch = 0 so the legacy 2-link
+    # shoulder/elbow solve and wrist orientation decomposition still apply
+    # (with wrist_pitch=0, tool_a + tool_b collapses to the legacy tool length
+    # which was already baked into the `tool` key used for wrist_xyz). The
+    # DLS refiner then uses all 7 joints, so the redundancy is resolved by
+    # continuity (previous value of wrist_pitch, or 0 when there is none).
     if previous_joints:
         seed = {
             "shoulder_pan": float(previous_joints.get("shoulder_pan", shoulder_pan_seed)),
@@ -784,6 +830,7 @@ def solve_ik_from_target(
             "wrist_flex": float(previous_joints.get("wrist_flex", wrist_flex_seed)),
             "wrist_yaw": float(previous_joints.get("wrist_yaw", wrist_yaw_seed)),
             "wrist_roll": float(previous_joints.get("wrist_roll", wrist_roll_seed)),
+            "wrist_pitch": float(previous_joints.get("wrist_pitch", 0.0)),
             "gripper_open01": _clip(float(gripper_open01), 0.0, 1.0),
         }
         candidates.append(_refine_dls(seed, xyz, target_R, limits, geom, previous_joints))
@@ -795,6 +842,7 @@ def solve_ik_from_target(
         "wrist_flex": wrist_flex_seed,
         "wrist_yaw": wrist_yaw_seed,
         "wrist_roll": wrist_roll_seed,
+        "wrist_pitch": 0.0,
         "gripper_open01": _clip(float(gripper_open01), 0.0, 1.0),
     }
     candidates.append(_refine_dls(neutral_seed, xyz, target_R, limits, geom, previous_joints))
@@ -810,6 +858,7 @@ def solve_ik_from_target(
                 "wrist_flex": wrist_flex if math.isfinite(wrist_flex) else wrist_flex_seed,
                 "wrist_yaw": wrist_yaw if math.isfinite(wrist_yaw) else wrist_yaw_seed,
                 "wrist_roll": wrist_roll if math.isfinite(wrist_roll) else wrist_roll_seed,
+                "wrist_pitch": 0.0,
                 "gripper_open01": _clip(float(gripper_open01), 0.0, 1.0),
             }
             candidates.append(_refine_dls(candidate, xyz, target_R, limits, geom, previous_joints))
@@ -822,6 +871,7 @@ def solve_ik_from_target(
             "wrist_flex": wrist_flex_seed,
             "wrist_yaw": wrist_yaw if math.isfinite(wrist_yaw) else wrist_yaw_seed,
             "wrist_roll": wrist_roll if math.isfinite(wrist_roll) else wrist_roll_seed,
+            "wrist_pitch": 0.0,
             "gripper_open01": _clip(float(gripper_open01), 0.0, 1.0),
         }
         candidates.append(_refine_dls(loose_candidate, xyz, target_R, limits, geom, previous_joints))

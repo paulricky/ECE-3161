@@ -41,6 +41,8 @@ WRIST_YAW_MIN = -3.141592653589793
 WRIST_YAW_MAX = 3.141592653589793
 WRIST_ROLL_MIN = -3.141592653589793
 WRIST_ROLL_MAX = 3.141592653589793
+WRIST_PITCH_MIN = -2.5
+WRIST_PITCH_MAX = 2.5
 
 # Clap
 CLAP_COOLDOWN_S = 0.6
@@ -68,6 +70,7 @@ INVERT_ELBOW = True
 INVERT_WRIST_FLEX = False
 INVERT_WRIST_YAW = False
 INVERT_WRIST_ROLL = False
+INVERT_WRIST_PITCH = False
 INVERT_GRIPPER = False
 
 # x: hand left/right on screen
@@ -92,6 +95,13 @@ IK_DLS_ORIENTATION_GAIN = 0.45
 IK_DLS_CONTINUITY_GAIN = 0.08
 IK_DLS_MAX_ITERS = 12
 IK_DLS_MAX_STEP_RAD = 0.20
+
+# Tool-link split for the 7-DOF chain: wrist_roll --[IK_TOOL_A_M]--> wrist_pitch --[IK_TOOL_B_M]--> EE.
+# When wrist_pitch = 0, the two links lie collinear and act as the old single
+# tool link of length (IK_TOOL_A_M + IK_TOOL_B_M). Defaults to a 25/25 mm split;
+# measure and retune once the physical link lengths are known.
+IK_TOOL_A_M = 0.025
+IK_TOOL_B_M = 0.025
 
 # Smooth target pose a bit (0..1)
 POSE_SMOOTH_ALPHA = 0.25
@@ -118,7 +128,8 @@ REAL_ROBOT_ID = "my_awesome_follower_arm"
 # Use the custom calibration script for the 7-motor arm rather than the stock SO101 auto-calibration flow.
 REAL_ROBOT_AUTO_CALIBRATE = False
 
-# Joint order for the modified arm (6 pose joints + gripper)
+# Joint order for the modified arm (7 pose joints + gripper).
+# wrist_pitch is the "elbow" flexion joint added just before the gripper.
 REAL_ROBOT_MOTOR_NAMES = [
     "shoulder_pan",
     "shoulder_lift",
@@ -126,12 +137,13 @@ REAL_ROBOT_MOTOR_NAMES = [
     "wrist_flex",
     "wrist_yaw",
     "wrist_roll",
+    "wrist_pitch",
     "gripper",
 ]
 
 # Fine-tuning offsets applied in software after the main calibration is loaded.
-# Order: shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_yaw, wrist_roll
-REAL_ROBOT_JOINT_OFFSETS_DEG = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+# Order: shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_yaw, wrist_roll, wrist_pitch
+REAL_ROBOT_JOINT_OFFSETS_DEG = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
 # Project-local calibration file produced by robot_calibrate.py
 ROBOT_JOINT_CALIBRATION_FILE = "calibration_data/robot_joint_calibration.json"
@@ -199,7 +211,7 @@ PICKPLACE_TRANSIT_Z_OFFSET_M = 0.08
 # ---- Pick-and-place: IK / grasp orientation ----
 IK_TOPDOWN_APPROACH_OFFSET_RAD = 0.05
 IK_ABORT_POSITION_ERR_M = 0.010
-PICKPLACE_HOME_JOINTS_RAD = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+PICKPLACE_HOME_JOINTS_RAD = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 PICKPLACE_HOME_GRIPPER_OPEN01 = 1.0
 
 # ---- Pick-and-place: state machine ----
