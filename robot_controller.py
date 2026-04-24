@@ -131,8 +131,18 @@ class SOArmHardwareController:
             )
         return payload
 
-    def _import_lerobot_so101(self):
+    def _import_lerobot_follower(self):
         attempts = [
+            # Current LeRobot GitHub API. This is the path you verified works:
+            #   from lerobot.robots.so_follower.so_follower import SOFollower
+            (
+                "lerobot.robots.so_follower.so_follower",
+                "SOFollower",
+                "lerobot.robots.so_follower.config_so_follower",
+                "SOFollowerConfig",
+            ),
+            # Older LeRobot SO101-specific API. Kept as a fallback so the same
+            # project still works if you later switch to an older SO101 checkout.
             (
                 "lerobot.robots.so101_follower.so101_follower",
                 "SO101Follower",
@@ -153,12 +163,73 @@ class SOArmHardwareController:
                 import_errors.append(f"{follower_module} failed: {e}")
 
         raise RealRobotUnavailableError(
-            "Could not import the SO101 follower driver from LeRobot. "
+            "Could not import a compatible LeRobot SO follower driver. "
             + " | ".join(import_errors)
         )
 
+    def _make_follower_config(self, config_cls, *, port: str, robot_id: str):
+        import dataclasses
+        import inspect
+
+        desired_kwargs = {
+            "port": port,
+            "id": robot_id,
+            "robot_id": robot_id,
+            "use_degrees": True,
+            "max_relative_target": float(getattr(val, "REAL_ROBOT_MAX_RELATIVE_TARGET_DEG", 2.0)),
+        }
+
+        filtered_candidates = []
+
+        try:
+            if dataclasses.is_dataclass(config_cls):
+                field_names = {f.name for f in dataclasses.fields(config_cls)}
+                filtered_candidates.append({k: v for k, v in desired_kwargs.items() if k in field_names})
+        except Exception:
+            pass
+
+        try:
+            sig = inspect.signature(config_cls)
+            params = sig.parameters
+            accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+            if accepts_kwargs:
+                filtered_candidates.append(dict(desired_kwargs))
+            else:
+                filtered_candidates.append({k: v for k, v in desired_kwargs.items() if k in params})
+        except Exception:
+            pass
+
+        filtered_candidates.extend([
+            {"port": port, "id": robot_id, "use_degrees": True},
+            {"port": port, "id": robot_id},
+            {"port": port, "robot_id": robot_id},
+            {"port": port},
+            {},
+        ])
+
+        seen = set()
+        errors = []
+        for kwargs in filtered_candidates:
+            key = tuple(sorted(kwargs.items()))
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                cfg = config_cls(**kwargs)
+                for attr, value in desired_kwargs.items():
+                    try:
+                        if hasattr(cfg, attr):
+                            setattr(cfg, attr, value)
+                    except Exception:
+                        pass
+                return cfg
+            except Exception as exc:
+                errors.append(f"{config_cls.__name__}(**{kwargs}) failed: {exc}")
+
+        raise RealRobotUnavailableError("Could not construct LeRobot follower config. " + " | ".join(errors))
+
     def connect(self):
-        SO101Follower, SO101FollowerConfig = self._import_lerobot_so101()
+        SOFollower, SOFollowerConfig = self._import_lerobot_follower()
 
         port = getattr(val, "REAL_ROBOT_PORT", "").strip()
 
@@ -177,15 +248,16 @@ class SOArmHardwareController:
 
         robot_id = getattr(val, "REAL_ROBOT_ID", "my_awesome_follower_arm")
 
-        cfg = SO101FollowerConfig(
-            port=port,
-            id=robot_id,
-            use_degrees=True,
-            max_relative_target=float(getattr(val, "REAL_ROBOT_MAX_RELATIVE_TARGET_DEG", 2.0)),
-        )
+        cfg = self._make_follower_config(SOFollowerConfig, port=port, robot_id=robot_id)
 
-        self.robot = SO101Follower(cfg)
-        self.robot.connect(calibrate=getattr(val, "REAL_ROBOT_AUTO_CALIBRATE", False))
+        self.robot = SOFollower(cfg)
+        connect_fn = getattr(self.robot, "connect", None)
+        if connect_fn is None:
+            raise RealRobotUnavailableError("The LeRobot follower object does not expose connect().")
+        try:
+            connect_fn(calibrate=getattr(val, "REAL_ROBOT_AUTO_CALIBRATE", False))
+        except TypeError:
+            connect_fn()
         self.connected = True
         self.last_send_time = 0.0
         self._last_action = None
@@ -208,7 +280,7 @@ class SOArmHardwareController:
         else:
             path = self._resolve_project_calibration_file()
             if path is not None:
-                print(f"[robot_controller] project calibration file not found at {path}; run calibrate_robot_joints.py first")
+                print(f"[robot_controller] project calibration file not found at {path}; run robot_calibrate.py first")
 
         print(f"[robot_controller] connected on {port} with id={robot_id}")
 

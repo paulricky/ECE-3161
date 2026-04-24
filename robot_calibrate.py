@@ -38,7 +38,7 @@ def _default_driver_calibration_path() -> Path:
         / "lerobot"
         / "calibration"
         / "robots"
-        / "so101_follower"
+        / "so_follower"
         / f"{robot_id}.json"
     )
 
@@ -100,7 +100,9 @@ def _get_configured_motor_names() -> list[str]:
         "shoulder_lift",
         "elbow_flex",
         "wrist_flex",
+        "wrist_yaw",
         "wrist_roll",
+        "wrist_pitch",
         "gripper",
     ]
 
