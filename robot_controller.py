@@ -4,11 +4,12 @@ import importlib
 import math
 import time
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 import json
 from pathlib import Path
 
 import numpy as np
+import serial
 from serial.tools import list_ports
 
 import values as val
@@ -28,6 +29,233 @@ class JointCommand:
     wrist_roll: float
     wrist_pitch: float
     gripper_open01: float
+
+
+class _DirectFeetechBus:
+    """Persistent direct Feetech/ST bus for the project calibration JSON."""
+
+    def __init__(self, port: str, calibration: dict[str, Any]):
+        self.port = str(port)
+        self.calibration = calibration
+        self.motor_names = [str(x) for x in calibration.get("motor_names", [])]
+        self.motor_ids = [int(x) for x in calibration.get("motor_ids", [])]
+        if not self.motor_names or len(self.motor_names) != len(self.motor_ids):
+            self.motor_names = [str(x) for x in getattr(val, "REAL_ROBOT_MOTOR_NAMES", [])]
+            self.motor_ids = [int(x) for x in getattr(val, "REAL_ROBOT_MOTOR_IDS", [])]
+        raw_bauds = calibration.get("motor_baudrates", [])
+        if isinstance(raw_bauds, list) and len(raw_bauds) == len(self.motor_ids):
+            self.motor_baudrates = [int(x) for x in raw_bauds]
+        else:
+            self.motor_baudrates = [int(getattr(val, "REAL_ROBOT_BAUDRATE", 1000000))] * len(self.motor_ids)
+        self.baudrate = int(self.motor_baudrates[0]) if self.motor_baudrates else int(getattr(val, "REAL_ROBOT_BAUDRATE", 1000000))
+        self._ser = None
+        self._entries = self._build_entries()
+
+    @staticmethod
+    def _checksum(tail: list[int]) -> int:
+        return (~sum(int(x) & 0xFF for x in tail)) & 0xFF
+
+    @classmethod
+    def _packet(cls, servo_id: int, instruction: int, params=()) -> bytes:
+        params_b = [int(x) & 0xFF for x in params]
+        tail = [int(servo_id) & 0xFF, len(params_b) + 2, int(instruction) & 0xFF, *params_b]
+        return bytes([0xFF, 0xFF, *tail, cls._checksum(tail)])
+
+    def connect(self) -> None:
+        if self._ser is not None and getattr(self._ser, "is_open", False):
+            return
+        self._ser = serial.Serial(self.port, self.baudrate, timeout=0.03, write_timeout=0.05)
+        try:
+            self._ser.reset_input_buffer()
+            self._ser.reset_output_buffer()
+        except Exception:
+            pass
+        time.sleep(0.05)
+        self.enable_torque(True)
+
+    def disconnect(self) -> None:
+        try:
+            self.enable_torque(False)
+        except Exception:
+            pass
+        if self._ser is not None:
+            try:
+                self._ser.close()
+            except Exception:
+                pass
+        self._ser = None
+
+    def _ensure_open(self) -> None:
+        if self._ser is None or not getattr(self._ser, "is_open", False):
+            self.connect()
+
+    def _write_register(self, servo_id: int, addr: int, data: list[int]) -> bool:
+        self._ensure_open()
+        try:
+            self._ser.write(self._packet(int(servo_id), 0x03, [int(addr), *[int(x) & 0xFF for x in data]]))
+            self._ser.flush()
+            time.sleep(float(getattr(val, "DIRECT_FEETECH_INTER_WRITE_DELAY_S", 0.004)))
+            return True
+        except Exception as exc:
+            print(f"[robot_controller] direct write failed for ID{servo_id} addr={addr}: {exc}")
+            return False
+
+    def _read_status(self, timeout_s: float = 0.06):
+        self._ensure_open()
+        deadline = time.monotonic() + float(timeout_s)
+        window = bytearray()
+        while time.monotonic() < deadline:
+            b = self._ser.read(1)
+            if not b:
+                continue
+            window += b
+            if len(window) > 2:
+                window[:] = window[-2:]
+            if len(window) == 2 and window[0] == 0xFF and window[1] == 0xFF:
+                header = self._ser.read(3)
+                if len(header) != 3:
+                    return None
+                sid, length, error = int(header[0]), int(header[1]), int(header[2])
+                rest = self._ser.read(max(0, length - 1))
+                if len(rest) != max(0, length - 1) or not rest:
+                    return None
+                params = list(rest[:-1])
+                checksum = int(rest[-1])
+                if checksum != self._checksum([sid, length, error, *params]):
+                    return None
+                return sid, error, params
+        return None
+
+    def _read_register(self, servo_id: int, addr: int, length: int):
+        self._ensure_open()
+        try:
+            self._ser.reset_input_buffer()
+        except Exception:
+            pass
+        try:
+            self._ser.write(self._packet(int(servo_id), 0x02, [int(addr), int(length)]))
+            self._ser.flush()
+            status = self._read_status(timeout_s=float(getattr(val, "DIRECT_FEETECH_READ_TIMEOUT_S", 0.08)))
+            if status is None or int(status[0]) != int(servo_id) or int(status[1]) != 0:
+                return None
+            params = list(status[2])
+            return params[: int(length)] if len(params) >= int(length) else None
+        except Exception:
+            return None
+
+    def _read_u16(self, servo_id: int, addr: int):
+        data = self._read_register(servo_id, addr, 2)
+        if data is None or len(data) < 2:
+            return None
+        return int(data[0]) | (int(data[1]) << 8)
+
+    def _write_u8(self, servo_id: int, addr: int, value: int) -> bool:
+        return self._write_register(servo_id, addr, [int(value) & 0xFF])
+
+    def _write_u16(self, servo_id: int, addr: int, value: int) -> bool:
+        value = int(round(value))
+        return self._write_register(servo_id, addr, [value & 0xFF, (value >> 8) & 0xFF])
+
+    def enable_torque(self, enabled: bool) -> None:
+        addr = int(getattr(val, "FEETECH_TORQUE_ENABLE_ADDR", 40))
+        value = 1 if enabled else 0
+        for sid in self.motor_ids:
+            self._write_u8(int(sid), addr, value)
+
+    def write(self, register: str, values) -> None:
+        reg = str(register).lower().replace("_", "")
+        if reg in {"torqueenable", "torque"}:
+            if isinstance(values, dict):
+                for name, value in values.items():
+                    if name in self.motor_names:
+                        self._write_u8(self.motor_ids[self.motor_names.index(name)], int(getattr(val, "FEETECH_TORQUE_ENABLE_ADDR", 40)), int(value))
+            else:
+                self.enable_torque(bool(values))
+        else:
+            raise RuntimeError(f"Unsupported direct bus write register: {register}")
+
+    sync_write = write
+
+    def _build_entries(self) -> dict[str, dict[str, float]]:
+        entries = {}
+        for i, name in enumerate(self.motor_names):
+            item = self.calibration.get(name, {}) if isinstance(self.calibration.get(name, {}), dict) else {}
+            neutral_list = self.calibration.get("neutral_pos", [])
+            min_list = self.calibration.get("min_pos", [])
+            max_list = self.calibration.get("max_pos", [])
+            drive_list = self.calibration.get("drive_mode", [])
+            neutral = item.get("neutral", neutral_list[i] if i < len(neutral_list) else 2048)
+            min_pos = item.get("range_min", item.get("recorded_min", min_list[i] if i < len(min_list) else 0))
+            max_pos = item.get("range_max", item.get("recorded_max", max_list[i] if i < len(max_list) else 4095))
+            drive_mode = item.get("drive_mode", drive_list[i] if i < len(drive_list) else 0)
+            entries[str(name)] = {
+                "id": float(self.motor_ids[i]),
+                "neutral": float(neutral),
+                "range_min": float(min(min_pos, max_pos)),
+                "range_max": float(max(min_pos, max_pos)),
+                "drive_mode": float(drive_mode),
+            }
+        return entries
+
+    def _goal_to_raw(self, motor_name: str, target: float) -> int:
+        e = self._entries[motor_name]
+        if motor_name.lower() == "gripper":
+            pct = max(0.0, min(100.0, float(target)))
+            raw = e["range_min"] + (pct / 100.0) * (e["range_max"] - e["range_min"])
+        else:
+            scale = 4096.0 / 360.0
+            sign = -1.0 if int(e.get("drive_mode", 0)) else 1.0
+            raw = e["neutral"] + sign * float(target) * scale
+        raw = max(e["range_min"], min(e["range_max"], raw))
+        return int(round(raw))
+
+    def send_action(self, action: Dict[str, float]) -> Dict[str, float]:
+        goal_addr = int(getattr(val, "FEETECH_GOAL_POSITION_ADDR", 42))
+        sent = {}
+        for key, target in action.items():
+            motor_name = str(key).removesuffix(".pos")
+            if motor_name not in self.motor_names:
+                continue
+            raw = self._goal_to_raw(motor_name, float(target))
+            sid = self.motor_ids[self.motor_names.index(motor_name)]
+            self._write_u16(int(sid), goal_addr, raw)
+            sent[key] = float(target)
+        return sent
+
+    def get_observation(self) -> Dict[str, float]:
+        pos_addr = int(getattr(val, "FEETECH_PRESENT_POSITION_ADDR", 56))
+        obs = {}
+        for name, sid in zip(self.motor_names, self.motor_ids, strict=True):
+            raw = self._read_u16(int(sid), pos_addr)
+            if raw is None:
+                continue
+            e = self._entries[name]
+            if name.lower() == "gripper":
+                denom = max(1.0, e["range_max"] - e["range_min"])
+                val_pct = 100.0 * (float(raw) - e["range_min"]) / denom
+                obs[f"{name}.pos"] = float(max(0.0, min(100.0, val_pct)))
+            else:
+                sign = -1.0 if int(e.get("drive_mode", 0)) else 1.0
+                obs[f"{name}.pos"] = float(sign * (float(raw) - e["neutral"]) * 360.0 / 4096.0)
+        return obs
+
+
+class _DirectFeetechRobot:
+    def __init__(self, port: str, calibration: dict[str, Any]):
+        self.bus = _DirectFeetechBus(port, calibration)
+        self.action_features = {f"{name}.pos": float for name in self.bus.motor_names}
+
+    def connect(self) -> None:
+        self.bus.connect()
+
+    def disconnect(self) -> None:
+        self.bus.disconnect()
+
+    def send_action(self, action: Dict[str, float]) -> Dict[str, float]:
+        return self.bus.send_action(action)
+
+    def get_observation(self) -> Dict[str, float]:
+        return self.bus.get_observation()
 
 
 class SOArmHardwareController:
@@ -295,6 +523,30 @@ class SOArmHardwareController:
         except Exception as exc:
             print(f"[robot_controller] warning: failed to install custom 8-motor LeRobot bus: {exc}")
 
+    def _connect_direct_project_controller(self, port: str) -> bool:
+        project_cal = self._load_project_calibration_metadata()
+        if project_cal is None:
+            path = self._resolve_project_calibration_file()
+            print(f"[robot_controller] direct controller unavailable: calibration JSON not found at {path}")
+            return False
+        try:
+            self.robot = _DirectFeetechRobot(port, project_cal)
+            self.robot.connect()
+            self.connected = True
+            self.last_send_time = 0.0
+            self._last_action = None
+            self._last_limited_action = None
+            for k in self._last_velocity:
+                self._last_velocity[k] = 0.0
+            print("[robot_controller] connected using direct project Feetech controller")
+            print("[robot_controller] bypassed LeRobot calibration loader to avoid incompatible project JSON calibration formats")
+            return True
+        except Exception as exc:
+            print(f"[robot_controller] direct project controller failed: {exc}")
+            self.robot = None
+            self.connected = False
+            return False
+
     def connect(self):
         SOFollower, SOFollowerConfig = self._import_lerobot_so_follower()
 
@@ -313,13 +565,23 @@ class SOArmHardwareController:
 
         print(f"[robot_controller] using port = {port}")
 
+        if bool(getattr(val, "REAL_ROBOT_USE_DIRECT_PROJECT_CONTROLLER", True)):
+            if self._connect_direct_project_controller(port):
+                return
+            print("[robot_controller] falling back to LeRobot SO follower driver")
+
         robot_id = getattr(val, "REAL_ROBOT_ID", "my_awesome_follower_arm")
 
         cfg = self._build_lerobot_config(SOFollowerConfig, port, robot_id)
 
         self.robot = SOFollower(cfg)
         self._override_lerobot_bus_for_configured_motors(self.robot, cfg)
-        self.robot.connect(calibrate=getattr(val, "REAL_ROBOT_AUTO_CALIBRATE", False))
+        try:
+            self.robot.connect(calibrate=getattr(val, "REAL_ROBOT_AUTO_CALIBRATE", False))
+        except AttributeError as exc:
+            if "copy" in str(exc) and self._connect_direct_project_controller(port):
+                return
+            raise
         self.connected = True
         self.last_send_time = 0.0
         self._last_action = None

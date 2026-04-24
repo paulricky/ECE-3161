@@ -130,6 +130,11 @@ REAL_ROBOT_ID = "my_awesome_follower_arm"
 # robot_controller.py replaces that bus with the configured motor list below.
 REAL_ROBOT_AUTO_CALIBRATE = False
 
+# Use this project's direct Feetech controller for the custom 8-motor arm.
+# This bypasses LeRobot's stock calibration loader, which expects LeRobot-native
+# calibration objects and can fail on this project's richer JSON calibration file.
+REAL_ROBOT_USE_DIRECT_PROJECT_CONTROLLER = True
+
 # Full motor order for the modified arm: 7 controllable arm DOF + gripper.
 # Motor IDs must match the physical servo IDs on the Feetech daisy chain.
 REAL_ROBOT_MOTOR_NAMES = [
@@ -367,3 +372,6 @@ FEETECH_ID_FLASH_REQUIRE_ID_REGISTER_MATCH = True
 FEETECH_ID_FLASH_LOCK_EEPROM_AFTER_WRITE = True
 FEETECH_SETUP_POST_WRITE_DELAY_S = 0.80
 FEETECH_SETUP_WRITE_VERIFY_RETRIES = 10
+# Direct Feetech controller communication timing.
+DIRECT_FEETECH_INTER_WRITE_DELAY_S = 0.004
+DIRECT_FEETECH_READ_TIMEOUT_S = 0.08
