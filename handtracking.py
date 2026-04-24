@@ -702,6 +702,14 @@ class HandTracker:
         self.aruco = ArucoGloveTracker()
         self.lerobot_calibration = self._load_lerobot_calibration()
         self._last_ik_solution = None
+        self._filtered_target_xyz = None
+        self._filtered_target_rpy = None
+        self._external_measured_joints = None
+
+    def update_robot_feedback(self, joints_rad):
+        """Optional hook used by main/pick-place code to seed IK with measured joints."""
+        if isinstance(joints_rad, dict):
+            self._external_measured_joints = dict(joints_rad)
 
     def _load_lerobot_calibration(self):
         path = _load_default_lerobot_calibration_path()
@@ -759,81 +767,79 @@ class HandTracker:
             return self._last_open01
 
         hand_lms, label, _score = driver
-        is_closed, open01, _metric, _debug = openness_from_fingertips(hand_lms, label)
+    def _smooth_target_pose(self, xyz, rpy):
+        xyz = np.asarray(xyz, dtype=np.float64).reshape(3)
+        rpy = np.asarray(rpy, dtype=np.float64).reshape(3)
+        alpha = _clip(float(getattr(val, "POSE_SMOOTH_ALPHA", 0.25)), 0.0, 1.0)
+        if self._filtered_target_xyz is None:
+            self._filtered_target_xyz = xyz.copy()
+        else:
+            self._filtered_target_xyz = (1.0 - alpha) * self._filtered_target_xyz + alpha * xyz
+        if self._filtered_target_rpy is None:
+            self._filtered_target_rpy = rpy.copy()
+        else:
+            prev = self._filtered_target_rpy
+            delta = np.array([math.atan2(math.sin(rpy[i] - prev[i]), math.cos(rpy[i] - prev[i])) for i in range(3)], dtype=np.float64)
+            self._filtered_target_rpy = prev + alpha * delta
+            self._filtered_target_rpy = np.array([math.atan2(math.sin(a), math.cos(a)) for a in self._filtered_target_rpy], dtype=np.float64)
+        return self._filtered_target_xyz.copy(), self._filtered_target_rpy.copy()
 
-        if is_closed:
-            open01 = 0.0
+    def _prev_joints_for_ik(self):
+        if isinstance(self._external_measured_joints, dict):
+            return self._external_measured_joints
+        return self._last_ik_solution
 
-        self._last_open01 = _lerp(self._last_open01, open01, self._open_alpha)
-        return self._last_open01
+    def _solve_cartesian_command(self, xyz, rpy, open01):
+        xyz_f, rpy_f = self._smooth_target_pose(xyz, rpy)
+        solved = mm.solve_ik_from_target(
+            target_xyz=xyz_f,
+            target_rpy=rpy_f,
+            gripper_open01=float(open01),
+            lerobot_calibration=self.lerobot_calibration,
+            previous_joints=self._prev_joints_for_ik(),
+        )
+        if not isinstance(solved, dict):
+            return None
+        diag = solved.get("__diagnostics__", {})
+        max_err = float(getattr(val, "HAND_IK_REJECT_POSITION_ERR_M", 0.06))
+        if isinstance(diag, dict) and (not bool(diag.get("reachable", True))) and float(diag.get("position_error_m", 0.0)) > max_err:
+            log_event(f"IK target rejected err={float(diag.get('position_error_m', 0.0)):.3f}m")
+            return None
+        self._last_ik_solution = {
+            "shoulder_pan": float(solved["shoulder_pan"]),
+            "shoulder_lift": float(solved["shoulder_lift"]),
+            "elbow_flex": float(solved["elbow_flex"]),
+            "wrist_flex": float(solved["wrist_flex"]),
+            "wrist_yaw": float(solved["wrist_yaw"]),
+            "wrist_roll": float(solved["wrist_roll"]),
+            "wrist_pitch": float(solved.get("wrist_pitch", 0.0)),
+        }
+        return {
+            "shoulder_pan": float(solved["shoulder_pan"]),
+            "shoulder_lift": float(solved["shoulder_lift"]),
+            "elbow_flex": float(solved["elbow_flex"]),
+            "wrist_flex": float(solved["wrist_flex"]),
+            "wrist_yaw": float(solved["wrist_yaw"]),
+            "wrist_roll": float(solved["wrist_roll"]),
+            "wrist_pitch": float(solved.get("wrist_pitch", 0.0)),
+            "gripper_open01": float(solved.get("gripper_open01", open01)),
+            "__diagnostics__": diag,
+            "ee_target_xyz": xyz_f.tolist(),
+            "ee_target_rpy": rpy_f.tolist(),
+        }
 
     def _aruco_pose_to_command(self, aruco_pose, open01):
         xyz = np.asarray(aruco_pose["workspace_xyz"], dtype=np.float64)
         rpy = np.asarray(aruco_pose["workspace_rpy"], dtype=np.float64)
+        cmd = self._solve_cartesian_command(xyz, rpy, open01)
+        if cmd is not None:
+            return cmd
+        if self._last_ik_solution is not None:
+            out = dict(self._last_ik_solution)
+            out["gripper_open01"] = float(open01)
+            return out
+        return None
 
-        if hasattr(mm, "solve_ik_from_target"):
-            try:
-                solved = mm.solve_ik_from_target(
-                    target_xyz=xyz,
-                    target_rpy=rpy,
-                    gripper_open01=float(open01),
-                    lerobot_calibration=self.lerobot_calibration,
-                    previous_joints=self._last_ik_solution,
-                )
-                if isinstance(solved, dict):
-                    self._last_ik_solution = {
-                        "shoulder_pan": float(solved["shoulder_pan"]),
-                        "shoulder_lift": float(solved["shoulder_lift"]),
-                        "elbow_flex": float(solved["elbow_flex"]),
-                        "wrist_flex": float(solved["wrist_flex"]),
-                        "wrist_yaw": float(solved["wrist_yaw"]),
-                        "wrist_roll": float(solved["wrist_roll"]),
-                        "wrist_pitch": float(solved.get("wrist_pitch", 0.0)),
-                    }
-                    return {
-                        "shoulder_pan": float(solved["shoulder_pan"]),
-                        "shoulder_lift": float(solved["shoulder_lift"]),
-                        "elbow_flex": float(solved["elbow_flex"]),
-                        "wrist_flex": float(solved["wrist_flex"]),
-                        "wrist_yaw": float(solved["wrist_yaw"]),
-                        "wrist_roll": float(solved["wrist_roll"]),
-                        "wrist_pitch": float(solved.get("wrist_pitch", 0.0)),
-                        "gripper_open01": float(solved["gripper_open01"]),
-                    }
-            except Exception:
-                pass
-
-        xyz_norm = self.aruco.normalize_workspace_xyz(xyz)
-
-        pan_lo, pan_hi = _get_limit("BASE_PAN", -1.2, 1.2)
-        lift_lo, lift_hi = _get_limit("SHOULDER_LIFT", -0.8, 1.0)
-        elbow_lo, elbow_hi = _get_limit("ELBOW", -0.9, 1.2)
-        wflex_lo, wflex_hi = _get_limit("WRIST_FLEX", -0.9, 0.9)
-        wyaw_lo, wyaw_hi = _get_limit("WRIST_YAW", -1.5, 1.5)
-        wroll_lo, wroll_hi = _get_limit("WRIST_ROLL", -1.5, 1.5)
-
-        shoulder_pan = _norm_to_range(1.0 - xyz_norm[0], pan_lo, pan_hi)
-        shoulder_lift = _norm_to_range(1.0 - xyz_norm[1], lift_lo, lift_hi)
-        elbow_flex = _norm_to_range(xyz_norm[2], elbow_lo, elbow_hi)
-
-        pitch_norm = _clip((rpy[1] + math.pi / 2.0) / math.pi, 0.0, 1.0)
-        yaw_norm = _clip((rpy[2] + math.pi) / (2.0 * math.pi), 0.0, 1.0)
-        roll_norm = _clip((rpy[0] + math.pi) / (2.0 * math.pi), 0.0, 1.0)
-
-        wrist_flex = _norm_to_range(pitch_norm, wflex_lo, wflex_hi)
-        wrist_yaw = _norm_to_range(yaw_norm, wyaw_lo, wyaw_hi)
-        wrist_roll = _norm_to_range(roll_norm, wroll_lo, wroll_hi)
-
-        return {
-            "shoulder_pan": float(shoulder_pan),
-            "shoulder_lift": float(shoulder_lift),
-            "elbow_flex": float(elbow_flex),
-            "wrist_flex": float(wrist_flex),
-            "wrist_yaw": float(wrist_yaw),
-            "wrist_roll": float(wrist_roll),
-            "wrist_pitch": 0.0,
-            "gripper_open01": float(open01),
-        }
 
     def _draw_aruco_overlay(self, frame, aruco_pose):
         c = np.asarray(aruco_pose["image_corners"], dtype=np.int32)
@@ -893,7 +899,6 @@ class HandTracker:
 
     def _landmarks_to_command(self, hand_lms, label: str):
         lm = hand_lms.landmark
-
         wrist = (lm[0].x, lm[0].y)
         thumb_tip = (lm[4].x, lm[4].y)
         index_mcp = (lm[5].x, lm[5].y)
@@ -903,70 +908,57 @@ class HandTracker:
 
         hand_cx = (wrist[0] + middle_mcp[0] + index_mcp[0] + pinky_mcp[0]) / 4.0
         hand_cy = (wrist[1] + middle_mcp[1] + index_mcp[1] + pinky_mcp[1]) / 4.0
-
         palm_width = mm.dist(index_mcp, pinky_mcp)
         palm_height = mm.dist(wrist, middle_mcp)
         size_metric = 0.5 * (palm_width + palm_height)
 
         is_closed, open01, _metric, _debug = openness_from_fingertips(hand_lms, label)
-
-        pan_lo, pan_hi = _get_limit("BASE_PAN", -1.2, 1.2)
-        lift_lo, lift_hi = _get_limit("SHOULDER_LIFT", -0.8, 1.0)
-        elbow_lo, elbow_hi = _get_limit("ELBOW", -0.9, 1.2)
-        wflex_lo, wflex_hi = _get_limit("WRIST_FLEX", -0.9, 0.9)
-        wyaw_lo, wyaw_hi = _get_limit("WRIST_YAW", -1.5, 1.5)
-        wroll_lo, wroll_hi = _get_limit("WRIST_ROLL", -1.5, 1.5)
-
-        pan_norm = 1.0 - hand_cx
-        lift_norm = 1.0 - hand_cy
-
-        size_lo = float(getattr(val, "HAND_SIZE_NEAR", 0.08))
-        size_hi = float(getattr(val, "HAND_SIZE_FAR", 0.22))
-        if size_hi <= size_lo:
-            size_hi = size_lo + 1e-3
-        depth_norm = (size_metric - size_lo) / (size_hi - size_lo)
-        depth_norm = _clip(depth_norm, 0.0, 1.0)
-
-        palm_tilt = _clip((wrist[1] - middle_mcp[1]) / 0.25, -1.0, 1.0)
-
-        palm_rpy = self._estimate_hand_rpy_from_landmarks(hand_lms)
-        palm_line_angle = _angle_2d(index_mcp, pinky_mcp)
-        wrist_roll_norm = _clip((palm_line_angle + math.pi / 2.0) / math.pi, 0.0, 1.0)
-        wrist_yaw_norm = _clip((float(palm_rpy[2]) + math.pi) / (2.0 * math.pi), 0.0, 1.0)
-
-        shoulder_pan = _norm_to_range(pan_norm, pan_lo, pan_hi)
-        shoulder_lift = _norm_to_range(lift_norm, lift_lo, lift_hi)
-        elbow_flex = _norm_to_range(depth_norm, elbow_lo, elbow_hi)
-        wrist_flex = _norm_to_range(0.5 * (1.0 + palm_tilt), wflex_lo, wflex_hi)
-        wrist_yaw = _norm_to_range(wrist_yaw_norm, wyaw_lo, wyaw_hi)
-        wrist_roll = _norm_to_range(wrist_roll_norm, wroll_lo, wroll_hi)
-
-        if label == "Left":
-            shoulder_pan = -shoulder_pan
-            wrist_yaw = -wrist_yaw
-            wrist_roll = -wrist_roll
-
         pinch_dist = mm.dist(thumb_tip, index_tip)
         pinch_lo = float(getattr(val, "PINCH_CLOSE_DIST", 0.03))
         pinch_hi = float(getattr(val, "PINCH_OPEN_DIST", 0.12))
         if pinch_hi <= pinch_lo:
             pinch_hi = pinch_lo + 1e-3
         pinch_open01 = _clip((pinch_dist - pinch_lo) / (pinch_hi - pinch_lo), 0.0, 1.0)
-
         gripper_open01 = min(open01, pinch_open01)
         if is_closed:
             gripper_open01 = 0.0
-
         self._last_open01 = _lerp(self._last_open01, gripper_open01, self._open_alpha)
         gripper_open01 = self._last_open01
 
+        x = _lerp(float(getattr(val, "WORKSPACE_X_MIN", -0.18)), float(getattr(val, "WORKSPACE_X_MAX", 0.18)), _clip(1.0 - hand_cx, 0.0, 1.0))
+        z = _lerp(float(getattr(val, "WORKSPACE_Z_MIN", 0.04)), float(getattr(val, "WORKSPACE_Z_MAX", 0.28)), _clip(1.0 - hand_cy, 0.0, 1.0))
+        size_near = float(getattr(val, "HAND_SIZE_NEAR", 0.22))
+        size_far = float(getattr(val, "HAND_SIZE_FAR", 0.08))
+        if abs(size_near - size_far) < 1e-6:
+            size_near = size_far + 1e-3
+        reach_norm = _clip((size_metric - size_far) / (size_near - size_far), 0.0, 1.0)
+        y = _lerp(float(getattr(val, "WORKSPACE_Y_MAX", 0.38)), float(getattr(val, "WORKSPACE_Y_MIN", 0.12)), reach_norm)
+
+        palm_rpy = self._estimate_hand_rpy_from_landmarks(hand_lms)
+        palm_line_angle = _angle_2d(index_mcp, pinky_mcp)
+        roll = float(palm_line_angle)
+        pitch = _clip(float(palm_rpy[1]), -1.25, 1.25)
+        yaw = float(palm_rpy[2])
+        if label == "Left":
+            yaw = -yaw
+            roll = -roll
+        rpy = np.array([roll, pitch + float(getattr(val, "HAND_TARGET_PITCH_BIAS_RAD", -0.15)), yaw], dtype=np.float64)
+        xyz = np.array([x, y, z], dtype=np.float64)
+
+        cmd = self._solve_cartesian_command(xyz, rpy, gripper_open01)
+        if cmd is not None:
+            return cmd
+        if self._last_ik_solution is not None:
+            out = dict(self._last_ik_solution)
+            out["gripper_open01"] = gripper_open01
+            return out
         return {
-            "shoulder_pan": shoulder_pan,
-            "shoulder_lift": shoulder_lift,
-            "elbow_flex": elbow_flex,
-            "wrist_flex": wrist_flex,
-            "wrist_yaw": wrist_yaw,
-            "wrist_roll": wrist_roll,
+            "shoulder_pan": 0.0,
+            "shoulder_lift": 0.0,
+            "elbow_flex": 0.0,
+            "wrist_flex": 0.0,
+            "wrist_yaw": 0.0,
+            "wrist_roll": 0.0,
             "wrist_pitch": 0.0,
             "gripper_open01": gripper_open01,
         }

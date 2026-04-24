@@ -717,6 +717,9 @@ class SOArmHardwareController:
             return None
         limited_action = self._apply_velocity_and_acceleration_limits(raw_action)
 
+        if not self._tracking_watchdog_allows(cmd):
+            return None
+
         print(f"[robot_controller] raw_action = {raw_action}")
         print(f"[robot_controller] limited_action = {limited_action}")
 
@@ -734,6 +737,39 @@ class SOArmHardwareController:
         self._last_action = dict(sent)
         self.last_send_time = time.time()
         return sent
+
+    def _tracking_watchdog_allows(self, cmd: JointCommand) -> bool:
+        if not bool(getattr(val, "REAL_ROBOT_ENABLE_TRACKING_WATCHDOG", True)):
+            return True
+        present = self.read_present_joints_rad()
+        if not isinstance(present, dict):
+            return True
+        targets = {
+            "shoulder_pan": cmd.shoulder_pan,
+            "shoulder_lift": cmd.shoulder_lift,
+            "elbow_flex": cmd.elbow_flex,
+            "wrist_flex": cmd.wrist_flex,
+            "wrist_yaw": cmd.wrist_yaw,
+            "wrist_roll": cmd.wrist_roll,
+            "wrist_pitch": cmd.wrist_pitch,
+        }
+        max_err_deg = 0.0
+        for name, target in targets.items():
+            if name not in present:
+                continue
+            try:
+                err_deg = abs(math.degrees(float(target) - float(present[name])))
+            except Exception:
+                continue
+            max_err_deg = max(max_err_deg, err_deg)
+        warn_deg = float(getattr(val, "REAL_ROBOT_TRACKING_WARN_DEG", 10.0))
+        abort_deg = float(getattr(val, "REAL_ROBOT_TRACKING_ABORT_DEG", 22.0))
+        if max_err_deg >= abort_deg:
+            print(f"[robot_controller] tracking watchdog: command blocked, max joint error {max_err_deg:.1f} deg")
+            return False
+        if max_err_deg >= warn_deg:
+            print(f"[robot_controller] tracking watchdog warning: max joint error {max_err_deg:.1f} deg")
+        return True
 
     def _apply_velocity_and_acceleration_limits(self, action: Dict[str, float]) -> Dict[str, float]:
         if self._last_limited_action is None:
