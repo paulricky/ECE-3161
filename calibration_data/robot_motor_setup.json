@@ -1,5 +1,5 @@
 {
-  "created_at_unix": 1777015866.162697,
+  "created_at_unix": 1777020830.091211,
   "motor_names": [
     "shoulder_pan",
     "shoulder_lift",
@@ -20,6 +20,7 @@
     7,
     8
   ],
+  "baudrate": 1000000,
   "motor_baudrates": [
     1000000,
     1000000,
@@ -31,9 +32,14 @@
     1000000
   ],
   "setup_only": true,
+  "safety": {
+    "exactly_one_id_verified_after_each_write": true,
+    "rewrite_valid_configured_ids_requires_confirmation": true,
+    "write_result_not_trusted_without_rescan": true
+  },
   "notes": {
     "purpose": "Records that motor IDs were configured and verified separately from joint calibration.",
-    "workflow": "Setup uses direct Feetech packet-level ID assignment in configured order."
+    "workflow": "Each motor was connected one at a time and verified by read-only scan before/after ID writes."
   },
   "shoulder_pan": {
     "name": "shoulder_pan",
