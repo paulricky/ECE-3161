@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import math
 import time
+import threading
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 import json
@@ -209,17 +210,42 @@ class _DirectFeetechBus:
         raw = max(e["range_min"], min(e["range_max"], raw))
         return int(round(raw))
 
+    def _sync_write_u16_many(self, addr: int, id_raw_pairs: list[tuple[int, int]]) -> bool:
+        if not id_raw_pairs:
+            return True
+        self._ensure_open()
+        params = [int(addr) & 0xFF, 2]
+        for sid, raw in id_raw_pairs:
+            raw = int(round(raw))
+            params.extend([int(sid) & 0xFF, raw & 0xFF, (raw >> 8) & 0xFF])
+        try:
+            # Protocol-1 sync write: broadcast ID, instruction 0x83, no status
+            # packets.  This replaces eight blocking per-motor writes and is the
+            # main serial-latency fix for live teleoperation.
+            self._ser.write(self._packet(0xFE, 0x83, params))
+            self._ser.flush()
+            return True
+        except Exception as exc:
+            print(f"[robot_controller] direct sync-write failed: {exc}")
+            return False
+
     def send_action(self, action: Dict[str, float]) -> Dict[str, float]:
         goal_addr = int(getattr(val, "FEETECH_GOAL_POSITION_ADDR", 42))
         sent = {}
+        pairs = []
         for key, target in action.items():
             motor_name = str(key).removesuffix(".pos")
             if motor_name not in self.motor_names:
                 continue
             raw = self._goal_to_raw(motor_name, float(target))
             sid = self.motor_ids[self.motor_names.index(motor_name)]
-            self._write_u16(int(sid), goal_addr, raw)
+            pairs.append((int(sid), int(raw)))
             sent[key] = float(target)
+        if bool(getattr(val, "DIRECT_FEETECH_USE_SYNC_WRITE", True)):
+            if self._sync_write_u16_many(goal_addr, pairs):
+                return sent
+        for sid, raw in pairs:
+            self._write_u16(int(sid), goal_addr, raw)
         return sent
 
     def get_observation(self) -> Dict[str, float]:
@@ -277,6 +303,10 @@ class SOArmHardwareController:
         }
         self._watchdog_present_cache = None
         self._watchdog_present_cache_time = 0.0
+        self._async_lock = threading.RLock()
+        self._async_stop = threading.Event()
+        self._async_thread = None
+        self._async_latest_cmd = None
 
     def _find_candidate_ports(self) -> List[str]:
         ports = list(list_ports.comports())
@@ -700,6 +730,35 @@ class SOArmHardwareController:
             self._warned_unsupported_action_keys = True
         return out
 
+    def start_async_sender(self) -> None:
+        if self._async_thread is not None and self._async_thread.is_alive():
+            return
+        self._async_stop.clear()
+        self._async_thread = threading.Thread(target=self._async_sender_loop, name="robot-command-sender", daemon=True)
+        self._async_thread.start()
+
+    def stop_async_sender(self) -> None:
+        self._async_stop.set()
+        t = self._async_thread
+        if t is not None and t.is_alive():
+            t.join(timeout=1.0)
+        self._async_thread = None
+
+    def submit_latest_command(self, cmd: JointCommand) -> None:
+        with self._async_lock:
+            self._async_latest_cmd = cmd
+
+    def _async_sender_loop(self) -> None:
+        while not self._async_stop.is_set():
+            with self._async_lock:
+                cmd = self._async_latest_cmd
+            if cmd is not None:
+                try:
+                    self.send_if_due(cmd)
+                except Exception as exc:
+                    print(f"[robot_controller] async send warning: {exc}")
+            self._async_stop.wait(0.002)
+
     def ready_to_send(self) -> bool:
         now = time.time()
         period = 1.0 / max(float(getattr(val, "REAL_ROBOT_HZ", 20.0)), 1e-6)
@@ -726,8 +785,9 @@ class SOArmHardwareController:
         if not self._tracking_watchdog_allows(limited_cmd):
             return None
 
-        print(f"[robot_controller] raw_action = {raw_action}")
-        print(f"[robot_controller] limited_action = {limited_action}")
+        if bool(getattr(val, "REAL_ROBOT_VERBOSE_ACTION_LOG", False)):
+            print(f"[robot_controller] raw_action = {raw_action}")
+            print(f"[robot_controller] limited_action = {limited_action}")
 
         if self._last_action is not None:
             deadband = float(getattr(val, "REAL_ROBOT_ACTION_DEADBAND_DEG", 0.5))
@@ -739,7 +799,8 @@ class SOArmHardwareController:
                 return None
 
         sent = self.robot.send_action(limited_action)
-        print(f"[robot_controller] sent = {sent}")
+        if bool(getattr(val, "REAL_ROBOT_VERBOSE_ACTION_LOG", False)):
+            print(f"[robot_controller] sent = {sent}")
         self._last_action = dict(sent)
         self.last_send_time = time.time()
         return sent

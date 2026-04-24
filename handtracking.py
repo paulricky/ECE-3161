@@ -4,6 +4,7 @@ import json
 import math
 import os
 import time
+import threading
 from collections import deque
 
 import cv2
@@ -709,6 +710,16 @@ class HandTracker:
         self._last_ik_time = 0.0
         self._last_ik_command = None
         self._last_ik_signature = None
+        self._ik_async_enabled = bool(getattr(val, "HAND_IK_ASYNC", True))
+        self._ik_lock = threading.RLock()
+        self._ik_stop = threading.Event()
+        self._ik_request = None
+        self._ik_worker = None
+        self._ik_busy = False
+        self._ik_last_request_time = 0.0
+        if self._ik_async_enabled:
+            self._ik_worker = threading.Thread(target=self._ik_worker_loop, name="hand-ik-worker", daemon=True)
+            self._ik_worker.start()
         self.last_gesture_events = {"snap": False, "clap": False, "per_hand": {}}
 
     def update_robot_feedback(self, joints_rad):
@@ -805,6 +816,16 @@ class HandTracker:
                     info["snap"] = False
         return snap
 
+    def close(self) -> None:
+        self._ik_stop.set()
+        worker = getattr(self, "_ik_worker", None)
+        if worker is not None and worker.is_alive():
+            worker.join(timeout=0.5)
+        try:
+            hands.close()
+        except Exception:
+            pass
+
     def _estimate_gripper_open01(self, detected_hands):
         driver = choose_driver(detected_hands)
         if driver is None:
@@ -871,12 +892,76 @@ class HandTracker:
         out["__diagnostics__"]["ik_cached"] = True
         return out
 
-    def _solve_cartesian_command(self, xyz, rpy, open01):
-        xyz_f, rpy_f = self._smooth_target_pose(xyz, rpy)
-        cached = self._cached_ik_command_if_fresh(xyz_f, rpy_f, open01)
-        if cached is not None:
-            return cached
+    def _ik_base_command(self, open01, xyz_f=None, rpy_f=None, pending=False):
+        """Return immediately using the most recent solved IK command.
 
+        The foreground camera loop must not wait for the full 7-DOF numerical
+        IK refinement.  A background worker updates _last_ik_command whenever a
+        fresh target is available; MediaPipe processing reuses that most recent
+        command and only updates the gripper value.
+        """
+        with self._ik_lock:
+            if isinstance(self._last_ik_command, dict):
+                out = dict(self._last_ik_command)
+            elif isinstance(self._last_ik_solution, dict):
+                out = dict(self._last_ik_solution)
+            else:
+                out = dict(self._last_cmd)
+        out["gripper_open01"] = float(open01)
+        if xyz_f is not None:
+            out["ee_target_xyz"] = np.asarray(xyz_f, dtype=np.float64).reshape(3).tolist()
+        if rpy_f is not None:
+            out["ee_target_rpy"] = np.asarray(rpy_f, dtype=np.float64).reshape(3).tolist()
+        diag = dict(out.get("__diagnostics__", {})) if isinstance(out.get("__diagnostics__", {}), dict) else {}
+        diag["ik_async_pending"] = bool(pending)
+        diag["ik_cached"] = True
+        out["__diagnostics__"] = diag
+        return out
+
+    def _queue_async_ik(self, xyz_f, rpy_f, open01) -> None:
+        now = time.time()
+        with self._ik_lock:
+            # Keep only the newest target.  Old hand positions are overwritten
+            # instead of forming an IK backlog.
+            self._ik_request = {
+                "xyz": np.asarray(xyz_f, dtype=np.float64).reshape(3).copy(),
+                "rpy": np.asarray(rpy_f, dtype=np.float64).reshape(3).copy(),
+                "open01": float(open01),
+                "time": now,
+            }
+            self._ik_last_request_time = now
+
+    def _ik_worker_loop(self) -> None:
+        hz = float(getattr(val, "HAND_IK_HZ", 4.0))
+        period = 1.0 / max(hz, 1e-3) if hz > 0.0 else 0.25
+        last_start = 0.0
+        while not self._ik_stop.is_set():
+            with self._ik_lock:
+                req = self._ik_request
+                self._ik_request = None
+            if req is None:
+                self._ik_stop.wait(0.005)
+                continue
+            wait = period - (time.time() - last_start)
+            if wait > 0.0:
+                self._ik_stop.wait(min(wait, 0.05))
+                with self._ik_lock:
+                    newer = self._ik_request
+                    self._ik_request = None
+                if newer is not None:
+                    req = newer
+            if self._ik_stop.is_set():
+                break
+            last_start = time.time()
+            self._ik_busy = True
+            try:
+                self._solve_ik_now(req["xyz"], req["rpy"], req["open01"])
+            except Exception as exc:
+                log_event(f"IK worker error: {exc}")
+            finally:
+                self._ik_busy = False
+
+    def _solve_ik_now(self, xyz_f, rpy_f, open01):
         solved = mm.solve_ik_from_target(
             target_xyz=xyz_f,
             target_rpy=rpy_f,
@@ -891,15 +976,6 @@ class HandTracker:
         if isinstance(diag, dict) and (not bool(diag.get("reachable", True))) and float(diag.get("position_error_m", 0.0)) > max_err:
             log_event(f"IK target rejected err={float(diag.get('position_error_m', 0.0)):.3f}m")
             return None
-        self._last_ik_solution = {
-            "shoulder_pan": float(solved["shoulder_pan"]),
-            "shoulder_lift": float(solved["shoulder_lift"]),
-            "elbow_flex": float(solved["elbow_flex"]),
-            "wrist_flex": float(solved["wrist_flex"]),
-            "wrist_yaw": float(solved["wrist_yaw"]),
-            "wrist_roll": float(solved["wrist_roll"]),
-            "wrist_pitch": float(solved.get("wrist_pitch", 0.0)),
-        }
         out = {
             "shoulder_pan": float(solved["shoulder_pan"]),
             "shoulder_lift": float(solved["shoulder_lift"]),
@@ -910,13 +986,29 @@ class HandTracker:
             "wrist_pitch": float(solved.get("wrist_pitch", 0.0)),
             "gripper_open01": float(solved.get("gripper_open01", open01)),
             "__diagnostics__": diag,
-            "ee_target_xyz": xyz_f.tolist(),
-            "ee_target_rpy": rpy_f.tolist(),
+            "ee_target_xyz": np.asarray(xyz_f, dtype=np.float64).reshape(3).tolist(),
+            "ee_target_rpy": np.asarray(rpy_f, dtype=np.float64).reshape(3).tolist(),
         }
-        self._last_ik_time = time.time()
-        self._last_ik_command = dict(out)
-        self._last_ik_signature = {"xyz": xyz_f.tolist(), "rpy": rpy_f.tolist()}
+        with self._ik_lock:
+            self._last_ik_solution = {k: float(out[k]) for k in ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_yaw", "wrist_roll", "wrist_pitch")}
+            self._last_ik_time = time.time()
+            self._last_ik_command = dict(out)
+            self._last_ik_signature = {"xyz": out["ee_target_xyz"], "rpy": out["ee_target_rpy"]}
         return out
+
+    def _solve_cartesian_command(self, xyz, rpy, open01):
+        xyz_f, rpy_f = self._smooth_target_pose(xyz, rpy)
+        if self._ik_async_enabled:
+            self._queue_async_ik(xyz_f, rpy_f, open01)
+            return self._ik_base_command(open01, xyz_f, rpy_f, pending=True)
+
+        cached = self._cached_ik_command_if_fresh(xyz_f, rpy_f, open01)
+        if cached is not None:
+            return cached
+        solved = self._solve_ik_now(xyz_f, rpy_f, open01)
+        if solved is not None:
+            return solved
+        return self._ik_base_command(open01, xyz_f, rpy_f, pending=False)
 
     def _aruco_pose_to_command(self, aruco_pose, open01):
         xyz = np.asarray(aruco_pose["workspace_xyz"], dtype=np.float64)

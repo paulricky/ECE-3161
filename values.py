@@ -448,3 +448,23 @@ HANDTRACKING_MIN_TRACKING_CONFIDENCE = 0.6
 HAND_IK_HZ = 6.0
 HAND_IK_FORCE_SOLVE_TARGET_DELTA_M = 0.025
 REAL_ROBOT_WATCHDOG_FEEDBACK_HZ = 5.0
+# ---- Low-latency live handtracking/teleop overrides ----
+# Keep camera, IK, and serial I/O decoupled.  The foreground loop should never
+# block on a full IK solve or eight per-motor serial writes.
+HAND_IK_ASYNC = True
+HAND_IK_HZ = 4.0
+IK_FAST_PREVIOUS_ONLY = True
+IK_FAST_INCLUDE_GEOMETRIC_SEED = True
+IK_DLS_MAX_ITERS = 24
+IK_DLS_ORIENTATION_GAIN = 0.25
+
+REAL_ROBOT_ASYNC_COMMAND_SENDER = True
+REAL_ROBOT_VERBOSE_ACTION_LOG = False
+DIRECT_FEETECH_USE_SYNC_WRITE = True
+DIRECT_FEETECH_INTER_WRITE_DELAY_S = 0.0005
+DIRECT_FEETECH_READ_TIMEOUT_S = 0.025
+
+# Robot feedback is useful for initial seeding/watchdog, but reading every joint
+# over the serial bus is slow.  Keep it sparse during live handtracking.
+MAIN_ROBOT_FEEDBACK_HZ = 1.0
+REAL_ROBOT_WATCHDOG_FEEDBACK_HZ = 1.0

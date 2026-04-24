@@ -130,6 +130,9 @@ def main() -> int:
         try:
             robot.connect()
             print("[main] Real robot connected")
+            if bool(getattr(val, "REAL_ROBOT_ASYNC_COMMAND_SENDER", True)):
+                robot.start_async_sender()
+                print("[main] Robot command sender running asynchronously")
         except Exception as exc:
             print(f"[main] Failed to connect robot: {exc}")
             cap.release()
@@ -185,7 +188,10 @@ def main() -> int:
                 command_to_send = _command_from_hand_data(hand_data)
 
             if command_to_send is not None and real_robot_enabled:
-                robot.send_if_due(command_to_send)
+                if bool(getattr(val, "REAL_ROBOT_ASYNC_COMMAND_SENDER", True)):
+                    robot.submit_latest_command(command_to_send)
+                else:
+                    robot.send_if_due(command_to_send)
 
             _draw_main_hud(frame, pick_runtime, snap_event)
             cv2.imshow("Hand Tracking / Main", frame)
@@ -210,7 +216,12 @@ def main() -> int:
         except Exception:
             pass
         try:
+            tracker.close()
+        except Exception:
+            pass
+        try:
             if real_robot_enabled:
+                robot.stop_async_sender()
                 robot.disconnect()
         except Exception:
             pass

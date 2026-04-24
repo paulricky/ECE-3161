@@ -776,22 +776,28 @@ def solve_ik_from_target(
     R = np.asarray(target_R, dtype=np.float64).reshape(3, 3) if target_R is not None else _rpy_to_matrix(target_rpy)
 
     seeds = []
-    seeds.append(_make_seed_from_previous(previous_joints, limits, gripper_open01))
-    seeds.append(_geometric_seed(xyz, R, limits, gripper_open01))
-    neutral = {name: _joint_mid(*limits[name]) for name in JOINT_NAMES}
-    neutral["elbow_flex"] = _clip(_get_value("IK_PREFERRED_ELBOW_RAD", 0.65), *limits["elbow_flex"])
-    neutral[GRIPPER_NAME] = gripper_open01
-    seeds.append(_clamp_joint_dict(neutral, limits))
+    prev_seed = _make_seed_from_previous(previous_joints, limits, gripper_open01)
+    geo_seed = _geometric_seed(xyz, R, limits, gripper_open01)
+    seeds.append(prev_seed)
 
-    # Add mirrored elbow branch and a few wrist-pitch redundancy seeds.
-    geo = seeds[1]
-    mirrored = dict(geo)
-    mirrored["elbow_flex"] = _clamp_to_joint("elbow_flex", -float(geo["elbow_flex"]), limits)
-    seeds.append(_clamp_joint_dict(mirrored, limits))
-    for w_pitch in (0.0, 0.35, -0.35):
-        s = dict(seeds[0])
-        s["wrist_pitch"] = _clamp_to_joint("wrist_pitch", w_pitch, limits)
-        seeds.append(s)
+    fast_previous = bool(_get_value("IK_FAST_PREVIOUS_ONLY", False)) and previous_joints is not None
+    if not fast_previous:
+        seeds.append(geo_seed)
+        neutral = {name: _joint_mid(*limits[name]) for name in JOINT_NAMES}
+        neutral["elbow_flex"] = _clip(_get_value("IK_PREFERRED_ELBOW_RAD", 0.65), *limits["elbow_flex"])
+        neutral[GRIPPER_NAME] = gripper_open01
+        seeds.append(_clamp_joint_dict(neutral, limits))
+
+        # Add mirrored elbow branch and a few wrist-pitch redundancy seeds.
+        mirrored = dict(geo_seed)
+        mirrored["elbow_flex"] = _clamp_to_joint("elbow_flex", -float(geo_seed["elbow_flex"]), limits)
+        seeds.append(_clamp_joint_dict(mirrored, limits))
+        for w_pitch in (0.0, 0.35, -0.35):
+            s = dict(prev_seed)
+            s["wrist_pitch"] = _clamp_to_joint("wrist_pitch", w_pitch, limits)
+            seeds.append(s)
+    elif bool(_get_value("IK_FAST_INCLUDE_GEOMETRIC_SEED", True)):
+        seeds.append(geo_seed)
 
     best = None
     best_diag = None
