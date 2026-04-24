@@ -125,11 +125,13 @@ ENABLE_REAL_ROBOT = True
 REAL_ROBOT_PORT = ""
 REAL_ROBOT_ID = "my_awesome_follower_arm"
 
-# Use the custom calibration script for the 7-motor arm rather than the stock SO101 auto-calibration flow.
+# Use the custom calibration script for the 8-motor arm rather than the stock SO101 auto-calibration flow.
+# The upstream SO follower driver defaults to a 6-motor SO100/SO101 bus, so
+# robot_controller.py replaces that bus with the configured motor list below.
 REAL_ROBOT_AUTO_CALIBRATE = False
 
-# Joint order for the modified arm (7 pose joints + gripper).
-# wrist_pitch is the "elbow" flexion joint added just before the gripper.
+# Full motor order for the modified arm: 7 controllable arm DOF + gripper.
+# Motor IDs must match the physical servo IDs on the Feetech daisy chain.
 REAL_ROBOT_MOTOR_NAMES = [
     "shoulder_pan",
     "shoulder_lift",
@@ -140,9 +142,13 @@ REAL_ROBOT_MOTOR_NAMES = [
     "wrist_pitch",
     "gripper",
 ]
+REAL_ROBOT_MOTOR_IDS = [1, 2, 3, 4, 5, 6, 7, 8]
+REAL_ROBOT_MOTOR_MODEL = "sts3215"
+REAL_ROBOT_MOTOR_MODELS = ["sts3215"] * len(REAL_ROBOT_MOTOR_NAMES)
 
 # Fine-tuning offsets applied in software after the main calibration is loaded.
 # Order: shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_yaw, wrist_roll, wrist_pitch
+# Do not include the gripper here because it is mapped separately as 0..100%.
 REAL_ROBOT_JOINT_OFFSETS_DEG = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
 # Project-local calibration file produced by robot_calibrate.py

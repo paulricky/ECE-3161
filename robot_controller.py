@@ -180,11 +180,17 @@ class SOArmHardwareController:
         # API and with older SO101-specific APIs.
         import inspect
 
+        max_relative_target = getattr(val, "REAL_ROBOT_MAX_RELATIVE_TARGET_DEG", 2.0)
+        try:
+            max_relative_target = float(max_relative_target)
+        except Exception:
+            max_relative_target = 2.0
+
         kwargs = {
             "port": port,
             "id": robot_id,
             "use_degrees": True,
-            "max_relative_target": float(getattr(val, "REAL_ROBOT_MAX_RELATIVE_TARGET_DEG", 2.0)),
+            "max_relative_target": max_relative_target,
         }
 
         driver_calibration_file = str(getattr(val, "LEROBOT_DRIVER_CALIBRATION_FILE", "")).strip()
@@ -218,6 +224,77 @@ class SOArmHardwareController:
                     pass
             return cfg
 
+    def _configured_motor_names(self) -> list[str]:
+        names = list(getattr(val, "REAL_ROBOT_MOTOR_NAMES", []))
+        if names:
+            return names
+        return [
+            "shoulder_pan",
+            "shoulder_lift",
+            "elbow_flex",
+            "wrist_flex",
+            "wrist_yaw",
+            "wrist_roll",
+            "wrist_pitch",
+            "gripper",
+        ]
+
+    def _configured_motor_ids(self, motor_names: list[str]) -> list[int]:
+        ids = list(getattr(val, "REAL_ROBOT_MOTOR_IDS", []))
+        if len(ids) == len(motor_names):
+            return [int(x) for x in ids]
+        return list(range(1, len(motor_names) + 1))
+
+    def _configured_motor_models(self, motor_names: list[str]) -> list[str]:
+        models = list(getattr(val, "REAL_ROBOT_MOTOR_MODELS", []))
+        if len(models) == len(motor_names):
+            return [str(x) for x in models]
+        model = str(getattr(val, "REAL_ROBOT_MOTOR_MODEL", "sts3215"))
+        return [model for _ in motor_names]
+
+    def _override_lerobot_bus_for_configured_motors(self, robot, cfg) -> None:
+        """Replace LeRobot's stock 6-motor SO bus with this project's configured bus.
+
+        The upstream generic SOFollower currently hard-codes the standard six-motor
+        SO100/SO101 follower bus inside SOFollower.__init__(). This project uses an
+        8-motor chain: seven arm joints plus the gripper. Replacing the bus before
+        robot.connect() makes LeRobot's normal connect/setup/calibrate/send_action
+        methods operate on the configured 8 motors instead of failing with the
+        stock expected IDs {1..6}.
+        """
+        motor_names = self._configured_motor_names()
+        motor_ids = self._configured_motor_ids(motor_names)
+        motor_models = self._configured_motor_models(motor_names)
+
+        try:
+            from lerobot.motors import Motor, MotorNormMode
+            from lerobot.motors.feetech import FeetechMotorsBus
+        except Exception as exc:
+            print(f"[robot_controller] warning: could not import LeRobot motor bus classes for custom 8-motor setup: {exc}")
+            return
+
+        use_degrees = bool(getattr(cfg, "use_degrees", True))
+        body_mode = MotorNormMode.DEGREES if use_degrees else MotorNormMode.RANGE_M100_100
+        gripper_mode = MotorNormMode.RANGE_0_100
+
+        motors = {}
+        for name, motor_id, model in zip(motor_names, motor_ids, motor_models, strict=True):
+            norm_mode = gripper_mode if name.lower() == "gripper" else body_mode
+            motors[name] = Motor(int(motor_id), str(model), norm_mode)
+
+        try:
+            robot.bus = FeetechMotorsBus(
+                port=getattr(cfg, "port", None),
+                motors=motors,
+                calibration=getattr(robot, "calibration", None),
+            )
+            print(
+                "[robot_controller] configured custom motor bus: "
+                + str({name: int(m.id) for name, m in motors.items()})
+            )
+        except Exception as exc:
+            print(f"[robot_controller] warning: failed to install custom 8-motor LeRobot bus: {exc}")
+
     def connect(self):
         SOFollower, SOFollowerConfig = self._import_lerobot_so_follower()
 
@@ -241,6 +318,7 @@ class SOArmHardwareController:
         cfg = self._build_lerobot_config(SOFollowerConfig, port, robot_id)
 
         self.robot = SOFollower(cfg)
+        self._override_lerobot_bus_for_configured_motors(self.robot, cfg)
         self.robot.connect(calibrate=getattr(val, "REAL_ROBOT_AUTO_CALIBRATE", False))
         self.connected = True
         self.last_send_time = 0.0
@@ -286,16 +364,7 @@ class SOArmHardwareController:
         percent = float(getattr(val, "REAL_ROBOT_TORQUE_LIMIT_PERCENT", 20.0))
         percent = max(1.0, min(100.0, percent))
 
-        motor_names = list(getattr(val, "REAL_ROBOT_MOTOR_NAMES", [
-            "shoulder_pan",
-            "shoulder_lift",
-            "elbow_flex",
-            "wrist_flex",
-            "wrist_yaw",
-            "wrist_roll",
-            "wrist_pitch",
-            "gripper",
-        ]))
+        motor_names = self._configured_motor_names()
 
         register_candidates = [
             "Torque_Limit",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import sys
 import time
@@ -100,9 +101,556 @@ def _get_configured_motor_names() -> list[str]:
         "shoulder_lift",
         "elbow_flex",
         "wrist_flex",
+        "wrist_yaw",
         "wrist_roll",
+        "wrist_pitch",
         "gripper",
     ]
+
+
+def _get_configured_motor_ids(motor_names: Sequence[str] | None = None) -> list[int]:
+    if motor_names is None:
+        motor_names = _get_configured_motor_names()
+    ids = list(getattr(val, "REAL_ROBOT_MOTOR_IDS", []))
+    if len(ids) == len(motor_names):
+        return [int(x) for x in ids]
+    return list(range(1, len(motor_names) + 1))
+
+
+def _get_configured_motor_model_numbers(motor_names: Sequence[str] | None = None) -> list[int]:
+    if motor_names is None:
+        motor_names = _get_configured_motor_names()
+    models = list(getattr(val, "REAL_ROBOT_MOTOR_MODEL_NUMBERS", []))
+    if len(models) == len(motor_names):
+        return [int(x) for x in models]
+    model = int(getattr(val, "REAL_ROBOT_MOTOR_MODEL_NUMBER", 777))
+    return [model] * len(motor_names)
+
+
+def _configured_motor_map(motor_names: Sequence[str] | None = None) -> dict[str, int]:
+    if motor_names is None:
+        motor_names = _get_configured_motor_names()
+    motor_ids = _get_configured_motor_ids(motor_names)
+    return {str(name): int(mid) for name, mid in zip(motor_names, motor_ids, strict=True)}
+
+
+def _find_robot_port() -> str:
+    configured = str(getattr(val, "REAL_ROBOT_PORT", "")).strip()
+    if configured:
+        return configured
+    controller = SOArmHardwareController()
+    port = controller._auto_detect_port()
+    if not port:
+        raise RuntimeError("Could not auto-detect the robot serial port. Set values.REAL_ROBOT_PORT manually.")
+    return str(port)
+
+
+def _safe_setattr(obj: Any, name: str, value: Any) -> bool:
+    try:
+        setattr(obj, name, value)
+        return True
+    except Exception:
+        return False
+
+
+def _patch_bus_like_object(bus: Any, port: str, motor_names: Sequence[str], motor_ids: Sequence[int]) -> bool:
+    changed = False
+    motor_map = {str(name): int(mid) for name, mid in zip(motor_names, motor_ids, strict=True)}
+    model_numbers = _get_configured_motor_model_numbers(motor_names)
+    models_by_name = {str(name): int(model) for name, model in zip(motor_names, model_numbers, strict=True)}
+
+    for attr_name in ("port", "serial_port"):
+        if hasattr(bus, attr_name):
+            changed = _safe_setattr(bus, attr_name, port) or changed
+
+    candidate_motor_payloads = [
+        motor_map,
+        {name: (motor_map[name], models_by_name[name]) for name in motor_map},
+        {name: {"id": motor_map[name], "model": models_by_name[name]} for name in motor_map},
+        {name: {"id": motor_map[name], "model_number": models_by_name[name]} for name in motor_map},
+    ]
+    for attr_name in ("motors", "motor_names", "motor_ids", "ids"):
+        if hasattr(bus, attr_name):
+            if attr_name == "motor_names":
+                changed = _safe_setattr(bus, attr_name, list(motor_names)) or changed
+            elif attr_name in {"motor_ids", "ids"}:
+                changed = _safe_setattr(bus, attr_name, list(map(int, motor_ids))) or changed
+            else:
+                for payload in candidate_motor_payloads:
+                    if _safe_setattr(bus, attr_name, payload):
+                        changed = True
+                        break
+    return changed
+
+
+def _patch_config_for_custom_motors(cfg: Any, port: str, motor_names: Sequence[str], motor_ids: Sequence[int]) -> None:
+    _safe_setattr(cfg, "port", port)
+    _safe_setattr(cfg, "motor_names", list(motor_names))
+    _safe_setattr(cfg, "motor_ids", list(map(int, motor_ids)))
+
+    patched = False
+    for attr_name in ("bus", "motors_bus", "arm", "follower_arm", "follower_bus"):
+        obj = getattr(cfg, attr_name, None)
+        if obj is not None:
+            patched = _patch_bus_like_object(obj, port, motor_names, motor_ids) or patched
+
+    for attr_name in ("arms", "follower_arms", "buses", "motor_buses"):
+        mapping = getattr(cfg, attr_name, None)
+        if isinstance(mapping, dict):
+            for obj in mapping.values():
+                patched = _patch_bus_like_object(obj, port, motor_names, motor_ids) or patched
+
+    if hasattr(cfg, "motors"):
+        motor_map = {str(name): int(mid) for name, mid in zip(motor_names, motor_ids, strict=True)}
+        patched = _safe_setattr(cfg, "motors", motor_map) or patched
+
+    if patched:
+        print(f"[calibrate] configured setup/calibration motor list: {_configured_motor_map(motor_names)}")
+
+
+def _make_unconnected_robot_for_setup() -> tuple[SOArmHardwareController, Any, str, list[str], list[int]]:
+    controller = SOArmHardwareController()
+    follower_cls, config_cls = controller._import_lerobot_so_follower()
+    port = _find_robot_port()
+    print(f"[calibrate] using port = {port}")
+    robot_id = getattr(val, "REAL_ROBOT_ID", "my_awesome_follower_arm")
+    cfg = controller._build_lerobot_config(config_cls, port, robot_id)
+    motor_names = _get_configured_motor_names()
+    motor_ids = _get_configured_motor_ids(motor_names)
+    _patch_config_for_custom_motors(cfg, port, motor_names, motor_ids)
+    robot = follower_cls(cfg)
+    return controller, robot, port, motor_names, motor_ids
+
+
+def _import_feetech_bus_classes() -> tuple[Any, Any | None]:
+    """Return (FeetechMotorsBus, FeetechMotorsBusConfig or None) across LeRobot API versions."""
+    candidates = [
+        (
+            "lerobot.motors.feetech.feetech",
+            "FeetechMotorsBus",
+            "FeetechMotorsBusConfig",
+        ),
+        (
+            "lerobot.motors.feetech",
+            "FeetechMotorsBus",
+            "FeetechMotorsBusConfig",
+        ),
+        (
+            "lerobot.common.robot_devices.motors.feetech",
+            "FeetechMotorsBus",
+            "FeetechMotorsBusConfig",
+        ),
+        (
+            "lerobot.common.robot_devices.motors.feetech",
+            "FeetechMotorsBus",
+            None,
+        ),
+    ]
+    errors: list[str] = []
+    for module_name, bus_name, cfg_name in candidates:
+        try:
+            module = importlib.import_module(module_name)
+            bus_cls = getattr(module, bus_name)
+            cfg_cls = getattr(module, cfg_name) if cfg_name else None
+            return bus_cls, cfg_cls
+        except Exception as exc:
+            errors.append(f"{module_name}: {exc}")
+    raise RuntimeError(
+        "Could not import a Feetech motor bus from the installed LeRobot package. "
+        "Tried: " + "; ".join(errors)
+    )
+
+
+def _motor_payload_variants(name: str, motor_id: int, model_number: int) -> list[dict[str, Any]]:
+    """Different LeRobot versions expect different motor-map shapes."""
+    return [
+        {name: int(motor_id)},
+        {name: (int(motor_id), int(model_number))},
+        {name: [int(motor_id), int(model_number)]},
+        {name: {"id": int(motor_id), "model": int(model_number)}},
+        {name: {"id": int(motor_id), "model_number": int(model_number)}},
+    ]
+
+
+def _instantiate_feetech_bus(port: str, name: str, motor_id: int, model_number: int) -> Any:
+    bus_cls, cfg_cls = _import_feetech_bus_classes()
+    last_error: Exception | None = None
+    for motors in _motor_payload_variants(name, motor_id, model_number):
+        constructor_attempts: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        if cfg_cls is not None:
+            cfg_attempts = [
+                ((port, motors), {}),
+                ((), {"port": port, "motors": motors}),
+                ((), {"serial_port": port, "motors": motors}),
+            ]
+            for cfg_args, cfg_kwargs in cfg_attempts:
+                try:
+                    cfg = cfg_cls(*cfg_args, **cfg_kwargs)
+                    constructor_attempts.extend([
+                        ((cfg,), {}),
+                        ((), {"config": cfg}),
+                    ])
+                except Exception as exc:
+                    last_error = exc
+        constructor_attempts.extend([
+            ((port, motors), {}),
+            ((), {"port": port, "motors": motors}),
+            ((), {"serial_port": port, "motors": motors}),
+        ])
+        for args, kwargs in constructor_attempts:
+            try:
+                return bus_cls(*args, **kwargs)
+            except Exception as exc:
+                last_error = exc
+    raise RuntimeError(f"Could not construct a Feetech motor bus: {last_error}")
+
+
+def _connect_bus_no_raise(bus: Any) -> bool:
+    for fn_name in ("connect", "open"):
+        fn = getattr(bus, fn_name, None)
+        if callable(fn):
+            try:
+                fn()
+                return True
+            except Exception:
+                return False
+    return True
+
+
+def _disconnect_bus_no_raise(bus: Any) -> None:
+    for fn_name in ("disconnect", "close"):
+        fn = getattr(bus, fn_name, None)
+        if callable(fn):
+            try:
+                fn()
+            except Exception:
+                pass
+
+
+def _read_one_register(bus: Any, register_names: Sequence[str], motor_name: str) -> list[int] | None:
+    read = getattr(bus, "read", None)
+    if read is None:
+        return None
+    for register in register_names:
+        for args in (
+            (register, motor_name),
+            (register, [motor_name]),
+            (register, (motor_name,)),
+            (register,),
+        ):
+            try:
+                values = _to_list_of_numbers(read(*args))
+                if values:
+                    return values
+            except Exception:
+                pass
+    return None
+
+
+def _write_one_register(bus: Any, register_names: Sequence[str], value: int, motor_name: str) -> bool:
+    methods = [getattr(bus, name, None) for name in ("write", "sync_write")]
+    methods = [method for method in methods if callable(method)]
+    for method in methods:
+        for register in register_names:
+            for args in (
+                (register, int(value), motor_name),
+                (register, int(value), [motor_name]),
+                (register, int(value), (motor_name,)),
+                (register, {motor_name: int(value)}),
+            ):
+                try:
+                    method(*args)
+                    return True
+                except Exception:
+                    pass
+    return False
+
+
+def _probe_single_motor_at_id(port: str, current_id: int, model_number: int) -> Any | None:
+    """Try opening a temporary one-motor bus at a specific ID."""
+    temp_name = "motor"
+    try:
+        bus = _instantiate_feetech_bus(port, temp_name, int(current_id), int(model_number))
+    except Exception:
+        return None
+    if not _connect_bus_no_raise(bus):
+        _disconnect_bus_no_raise(bus)
+        return None
+
+    model = _read_one_register(bus, ("Model_Number", "Model", "model_number", "ModelNumber"), temp_name)
+    if model is not None:
+        if not model or int(model[0]) == int(model_number):
+            return bus
+    # Some LeRobot versions do not expose Model_Number cleanly; Present_Position is enough to
+    # prove there is exactly one readable servo on this temporary bus.
+    pos = _read_one_register(bus, ("Present_Position", "present_position", "Position"), temp_name)
+    if pos is not None:
+        return bus
+
+    _disconnect_bus_no_raise(bus)
+    return None
+
+
+def _scan_single_connected_motor(port: str, model_number: int) -> tuple[Any, int] | None:
+    """Find the currently connected single motor by trying likely Feetech IDs."""
+    preferred_ids = list(range(1, 9)) + [0, 9, 10, 11, 12, 13, 14, 15]
+    all_ids = preferred_ids + [i for i in range(16, 254) if i not in preferred_ids]
+    print("[calibrate] Scanning for the single connected motor ID...")
+    for current_id in all_ids:
+        bus = _probe_single_motor_at_id(port, current_id, model_number)
+        if bus is not None:
+            print(f"[calibrate] Found one motor currently responding as ID {current_id}.")
+            return bus, int(current_id)
+    return None
+
+
+def _manual_setup_one_motor(port: str, name: str, target_id: int, model_number: int) -> bool:
+    _print_header(f"Set motor ID {target_id}: {name}")
+    print(
+        f"Disconnect the full daisy chain. Connect ONLY the '{name}' motor to the controller board.\n"
+        "Power-cycle the controller/servo bus if the previous motor was just disconnected.\n"
+        "Then press Enter.\n\n"
+        "This patched setup first uses a direct Feetech packet scan. If that still cannot see\n"
+        "the servo, the issue is below the Python calibration logic: wrong port, no data line,\n"
+        "wrong baudrate, bad USB/TTL board, or servo stuck at an unknown protocol/baudrate."
+    )
+    input("Ready? ")
+
+    direct = _direct_scan_single_connected_motor(port)
+    if direct is not None:
+        current_id, baudrate = direct
+        if int(current_id) == int(target_id):
+            print(f"[calibrate] '{name}' already has correct ID {target_id}.")
+            return True
+        print(
+            f"[calibrate] Writing ID {target_id} to motor currently at ID {current_id} "
+            f"using direct Feetech packets at baudrate {baudrate}..."
+        )
+        if _direct_write_feetech_id(port, int(current_id), int(target_id), int(baudrate)):
+            print(f"[calibrate] Verified '{name}' as ID {target_id}.")
+            return True
+        print("[calibrate] Direct scan found the motor, but direct ID write/verify failed.")
+        return False
+
+    print(
+        "[calibrate] Direct packet scan could not get any servo response. Trying the LeRobot bus wrapper fallback..."
+    )
+    scanned = _scan_single_connected_motor(port, model_number)
+    if scanned is None:
+        print(
+            "[calibrate] Could not get any data response from the connected motor.\n"
+            "The red LED only confirms power; it does NOT confirm serial communication. Check:\n"
+            "  1) the servo signal plug orientation,\n"
+            "  2) that the controller board data line is connected to the servo bus,\n"
+            "  3) that the selected port is the Feetech controller,\n"
+            "  4) that no other app has the serial port open,\n"
+            "  5) that the motor is an STS/SCS Feetech protocol servo,\n"
+            "  6) whether the servo is at a nonstandard baudrate not in the scan list."
+        )
+        return False
+
+    bus, current_id = scanned
+    try:
+        if current_id == int(target_id):
+            print(f"[calibrate] '{name}' already has correct ID {target_id}.")
+            return True
+
+        print(f"[calibrate] Writing ID {target_id} to motor currently at ID {current_id}...")
+        ok = _write_one_register(bus, ("ID", "Id", "id"), int(target_id), "motor")
+        if not ok:
+            print(
+                "[calibrate] Failed to write the ID register through the detected bus API. "
+                "Your installed LeRobot/Feetech bus exposes a different write signature."
+            )
+            return False
+        time.sleep(0.5)
+    finally:
+        _disconnect_bus_no_raise(bus)
+
+    verify_bus = _probe_single_motor_at_id(port, int(target_id), model_number)
+    if verify_bus is None:
+        print(
+            f"[calibrate] Wrote ID {target_id}, but could not verify it. Power-cycle the bus and rerun setup/identify."
+        )
+        return False
+    _disconnect_bus_no_raise(verify_bus)
+    print(f"[calibrate] Verified '{name}' as ID {target_id}.")
+    return True
+
+
+def _run_manual_motor_setup(port: str, motor_names: Sequence[str], motor_ids: Sequence[int]) -> bool:
+    models = _get_configured_motor_model_numbers(motor_names)
+    print("[calibrate] Manual 8-motor setup order:")
+    for name, mid in zip(motor_names, motor_ids, strict=True):
+        print(f"  {mid}: {name}")
+    print(
+        "\nThis avoids LeRobot's built-in 6-motor SO setup order, which assigns gripper as ID 6.\n"
+        "Each prompt below assigns exactly the configured ID shown above."
+    )
+    for name, mid, model in zip(motor_names, motor_ids, models, strict=True):
+        if not _manual_setup_one_motor(port, str(name), int(mid), int(model)):
+            return False
+    return True
+
+
+
+def _feetech_checksum(packet_tail: Sequence[int]) -> int:
+    return (~sum(int(x) & 0xFF for x in packet_tail)) & 0xFF
+
+
+def _feetech_packet(servo_id: int, instruction: int, params: Sequence[int] = ()) -> bytes:
+    servo_id = int(servo_id) & 0xFF
+    params_b = [int(x) & 0xFF for x in params]
+    length = len(params_b) + 2
+    tail = [servo_id, length, int(instruction) & 0xFF, *params_b]
+    return bytes([0xFF, 0xFF, *tail, _feetech_checksum(tail)])
+
+
+def _feetech_read_status(serial_obj: Any, timeout_s: float = 0.08) -> tuple[int, int, list[int]] | None:
+    """Read one Feetech/ST-series status packet: returns (id, error, params)."""
+    deadline = time.monotonic() + float(timeout_s)
+    window = bytearray()
+    while time.monotonic() < deadline:
+        b = serial_obj.read(1)
+        if not b:
+            continue
+        window += b
+        if len(window) > 2:
+            window[:] = window[-2:]
+        if len(window) == 2 and window[0] == 0xFF and window[1] == 0xFF:
+            header = serial_obj.read(3)
+            if len(header) != 3:
+                return None
+            sid = int(header[0])
+            length = int(header[1])
+            error = int(header[2])
+            rest = serial_obj.read(max(0, length - 1))
+            if len(rest) != max(0, length - 1):
+                return None
+            params = list(rest[:-1]) if rest else []
+            checksum = int(rest[-1]) if rest else -1
+            tail = [sid, length, error, *params]
+            if checksum != _feetech_checksum(tail):
+                return None
+            return sid, error, params
+    return None
+
+
+def _direct_feetech_ping(port: str, servo_id: int, baudrate: int) -> bool:
+    try:
+        import serial
+    except Exception as exc:
+        print(f"[calibrate] pyserial import failed, cannot direct-ping servos: {exc}")
+        return False
+    try:
+        with serial.Serial(str(port), int(baudrate), timeout=0.025, write_timeout=0.1) as ser:
+            try:
+                ser.reset_input_buffer()
+                ser.reset_output_buffer()
+            except Exception:
+                pass
+            ser.write(_feetech_packet(int(servo_id), 0x01, ()))
+            ser.flush()
+            status = _feetech_read_status(ser, timeout_s=0.08)
+            return status is not None and int(status[0]) == int(servo_id)
+    except Exception:
+        return False
+
+
+def _direct_scan_single_connected_motor(port: str) -> tuple[int, int] | None:
+    """Direct packet-level scan independent of LeRobot's bus wrapper."""
+    baudrates = list(dict.fromkeys([
+        int(getattr(val, "REAL_ROBOT_BAUDRATE", 1000000)),
+        1000000,
+        128000,
+        500000,
+        115200,
+        57600,
+        38400,
+        19200,
+        250000,
+    ]))
+    preferred_ids = list(range(1, 9)) + [0, 9, 10, 11, 12, 13, 14, 15]
+    all_ids = preferred_ids + [i for i in range(16, 254) if i not in preferred_ids]
+    print("[calibrate] Direct Feetech packet scan for the connected motor...")
+    for baud in baudrates:
+        print(f"[calibrate]   direct ping baudrate {baud}...")
+        found: list[int] = []
+        for sid in all_ids:
+            if _direct_feetech_ping(port, sid, baud):
+                found.append(int(sid))
+                print(f"[calibrate]     response from ID {sid}")
+                if len(found) > 1:
+                    break
+        if len(found) == 1:
+            print(f"[calibrate] Direct scan found motor ID {found[0]} at baudrate {baud}.")
+            return found[0], int(baud)
+        if len(found) > 1:
+            print(
+                f"[calibrate] More than one motor responded at baudrate {baud}: {found}. "
+                "Disconnect all except the requested motor."
+            )
+            return None
+    return None
+
+
+def _direct_write_feetech_id(port: str, current_id: int, target_id: int, baudrate: int) -> bool:
+    """Write the Feetech/ST-series ID register directly."""
+    try:
+        import serial
+    except Exception as exc:
+        print(f"[calibrate] pyserial import failed, cannot write servo ID directly: {exc}")
+        return False
+    id_register_addr = int(getattr(val, "FEETECH_ID_REGISTER_ADDR", 5))
+    torque_enable_addr = int(getattr(val, "FEETECH_TORQUE_ENABLE_ADDR", 40))
+    try:
+        with serial.Serial(str(port), int(baudrate), timeout=0.05, write_timeout=0.2) as ser:
+            try:
+                ser.reset_input_buffer()
+                ser.reset_output_buffer()
+            except Exception:
+                pass
+            ser.write(_feetech_packet(int(current_id), 0x03, (torque_enable_addr, 0)))
+            ser.flush()
+            _feetech_read_status(ser, timeout_s=0.05)
+            time.sleep(0.05)
+            ser.write(_feetech_packet(int(current_id), 0x03, (id_register_addr, int(target_id))))
+            ser.flush()
+            status = _feetech_read_status(ser, timeout_s=0.15)
+            if status is not None and int(status[1]) != 0:
+                print(f"[calibrate] Servo returned error byte {status[1]} while writing ID.")
+                return False
+            time.sleep(0.5)
+    except Exception as exc:
+        print(f"[calibrate] Direct ID write failed: {exc}")
+        return False
+
+    return _direct_feetech_ping(port, int(target_id), int(baudrate))
+
+def _build_setup_payload_from_config(motor_names: Sequence[str], motor_ids: Sequence[int]) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "created_at_unix": time.time(),
+        "motor_names": list(motor_names),
+        "motor_ids": [int(x) for x in motor_ids],
+        "setup_only": True,
+        "notes": {
+            "purpose": "Records that motor IDs were configured and verified separately from joint calibration.",
+            "workflow": "Setup does not require the full chain to be present; connect one motor at a time when prompted.",
+        },
+    }
+    for name, mid in zip(motor_names, motor_ids, strict=True):
+        payload[str(name)] = {"name": str(name), "id": int(mid)}
+    return payload
+
+
+def _motor_setup_matches_config(motor_names: Sequence[str], motor_ids: Sequence[int] | None) -> bool:
+    configured_names = _get_configured_motor_names()
+    if list(motor_names) != configured_names:
+        return False
+    if motor_ids is None:
+        return False
+    expected_ids = _get_configured_motor_ids(configured_names)
+    return list(map(int, motor_ids)) == expected_ids
 
 
 def _to_list_of_numbers(value: Any) -> list[int]:
@@ -165,8 +713,13 @@ def get_motor_setup_status() -> SetupStatus:
             continue
         motor_names = list(payload.get("motor_names", [])) or configured_names
         motor_ids = _extract_motor_ids(payload, motor_names)
-        if motor_ids is not None:
-            return SetupStatus(True, str(path), motor_names, motor_ids)
+        if _motor_setup_matches_config(motor_names, motor_ids):
+            return SetupStatus(True, str(path), list(motor_names), list(motor_ids))
+        print(
+            f"[calibrate] Ignoring stale/incompatible motor setup file {path}: "
+            f"expected names={configured_names}, ids={_get_configured_motor_ids(configured_names)}; "
+            f"file has names={motor_names}, ids={motor_ids}"
+        )
 
     return SetupStatus(False, None, configured_names, None)
 
@@ -178,11 +731,18 @@ def get_joint_calibration_status() -> CalibrationStatus:
         return CalibrationStatus(False, None, configured_names)
 
     motor_names = list(payload.get("motor_names", [])) or configured_names
+    if motor_names != configured_names:
+        print(
+            f"[calibrate] Ignoring stale/incompatible joint calibration {PROJECT_JSON_PATH}: "
+            f"expected motor_names={configured_names}, file has motor_names={motor_names}"
+        )
+        return CalibrationStatus(False, None, motor_names)
+
     neutral = payload.get("neutral_pos")
     min_pos = payload.get("min_pos")
     max_pos = payload.get("max_pos")
     if isinstance(neutral, list) and isinstance(min_pos, list) and isinstance(max_pos, list):
-        if len(neutral) == len(min_pos) == len(max_pos) == len(motor_names):
+        if len(neutral) == len(min_pos) == len(max_pos) == len(configured_names):
             return CalibrationStatus(True, str(PROJECT_JSON_PATH), motor_names)
 
     return CalibrationStatus(False, None, motor_names)
@@ -604,52 +1164,38 @@ def _best_effort_identify(session: CalibrationSession) -> None:
 def run_motor_setup_only() -> int:
     _print_header("Robot motor setup")
     print(
-        "This stage is separate from joint calibration. It is for assigning/verifying the servo IDs\n"
-        "and any driver-side configuration needed before min/max calibration."
+        "This stage is separate from joint calibration. It assigns/verifies servo IDs before min/max calibration.\n\n"
+        "IMPORTANT: this patched setup does NOT use LeRobot's native setup_motors() order, because\n"
+        "the native SO follower workflow is still based on the old 6-motor arm and can assign\n"
+        "the gripper to ID 6. This workflow assigns IDs manually in your configured 8-motor order."
     )
 
-    try:
-        session = connect_session()
-    except Exception as exc:
-        print(f"[calibrate] Failed to connect to robot: {exc}")
+    motor_names = _get_configured_motor_names()
+    motor_ids = _get_configured_motor_ids(motor_names)
+    if len(motor_names) != len(motor_ids):
+        print(f"[calibrate] Invalid motor configuration: names={motor_names}, ids={motor_ids}")
         return 1
 
     try:
-        print(f"[calibrate] Connected. Motor names: {session.motor_names}")
-        setup_motors = getattr(session.robot, "setup_motors", None)
-        if callable(setup_motors):
-            print("[calibrate] Running native LeRobot setup_motors() workflow...")
-            setup_motors()
-            time.sleep(0.5)
-        else:
-            print(
-                "[calibrate] The connected driver does not expose setup_motors().\n"
-                "Skipping native ID assignment and only recording the currently visible IDs."
-            )
+        port = _find_robot_port()
+    except Exception as exc:
+        print(f"[calibrate] Failed to locate robot serial port: {exc}")
+        return 1
 
-        try:
-            session.motor_names = list(getattr(session.bus, "motor_names", [])) or session.motor_names
-        except Exception:
-            pass
-        motor_ids = _read_motor_ids_from_bus(session.bus, session.motor_names)
-        _best_effort_identify(session)
+    print(f"[calibrate] using port = {port}")
+    ok = _run_manual_motor_setup(port, motor_names, motor_ids)
+    if not ok:
+        print("[calibrate] Manual motor setup did not complete. No setup file was written.")
+        return 1
 
-        payload = _build_setup_payload(session, motor_ids)
-        path = write_setup_output(payload)
-        print(f"[calibrate] Saved motor-setup metadata to: {path}")
-
-        if motor_ids is None:
-            print(
-                "[calibrate] Warning: the bus did not expose readable motor IDs after setup.\n"
-                "Calibration can still proceed, but automatic detection of 'setup already done' may not be reliable."
-            )
-        return 0
-    finally:
-        try:
-            session.controller.disconnect()
-        except Exception:
-            pass
-
+    payload = _build_setup_payload_from_config(motor_names, motor_ids)
+    path = write_setup_output(payload)
+    print(f"[calibrate] Saved motor-setup metadata to: {path}")
+    print(
+        "[calibrate] Motor setup complete. Reconnect the full daisy chain, then run\n"
+        "            option 4 to verify or option 3 to calibrate joints."
+    )
+    return 0
 
 def run_calibration_only() -> int:
     setup_status = get_motor_setup_status()

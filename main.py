@@ -21,7 +21,10 @@ DEFAULT_ROBOT_CALIBRATION_FILE = Path(__file__).resolve().parent / "calibration_
 def _robot_calibration_path() -> Path:
     configured = getattr(val, "ROBOT_JOINT_CALIBRATION_FILE", "")
     if configured:
-        return Path(configured).expanduser().resolve()
+        path = Path(configured).expanduser()
+        if not path.is_absolute():
+            path = Path(__file__).resolve().parent / path
+        return path.resolve()
     return DEFAULT_ROBOT_CALIBRATION_FILE
 
 
