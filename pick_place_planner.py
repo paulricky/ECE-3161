@@ -1,12 +1,3 @@
-"""Pick-and-place state machine.
-
-Consumes detection frames from ObjectDetector and drop-marker poses from
-TopdownArucoDetector, produces a stream of JointCommands that drive the arm
-through: HOME -> approach -> descend -> close -> lift -> transit -> descend
--> open -> lift -> HOME. Uses `solve_ik_from_target` for Cartesian waypoints
-and a direct joint command for HOME. Arrival detection prefers robot joint
-feedback; falls back to time estimate when feedback is unavailable.
-"""
 from __future__ import annotations
 
 import math
@@ -464,6 +455,8 @@ class PickPlacePlanner:
                 gripper_open01=float(wp.gripper_open01),
                 lerobot_calibration=self.lerobot_calibration,
                 previous_joints=prev,
+                ik_mode="planning",
+                strict_reachability=True,
             )
         except Exception as exc:
             self._log(f"[planner] IK exception at '{wp.label}': {exc}")

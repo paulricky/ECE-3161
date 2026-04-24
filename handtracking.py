@@ -968,6 +968,8 @@ class HandTracker:
             gripper_open01=float(open01),
             lerobot_calibration=self.lerobot_calibration,
             previous_joints=self._prev_joints_for_ik(),
+            ik_mode="teleop",
+            strict_reachability=False,
         )
         if not isinstance(solved, dict):
             return None
