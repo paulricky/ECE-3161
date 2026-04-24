@@ -115,6 +115,13 @@ def main() -> int:
     if not cap.isOpened():
         raise RuntimeError(f"Could not open hand-tracking camera index {hand_cam_index}")
 
+    # Keep the preview responsive on macOS/OpenCV. A large camera buffer makes
+    # the display show old frames whenever IK or serial I/O briefly stalls.
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(getattr(val, "MAIN_CAMERA_FRAME_WIDTH", 640)))
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(getattr(val, "MAIN_CAMERA_FRAME_HEIGHT", 480)))
+    cap.set(cv2.CAP_PROP_FPS, int(getattr(val, "MAIN_CAMERA_FPS", 30)))
+
     tracker = HandTracker()
     robot = SOArmHardwareController()
     real_robot_enabled = bool(getattr(val, "ENABLE_REAL_ROBOT", False))
@@ -134,9 +141,12 @@ def main() -> int:
     trigger_key = str(getattr(val, "PICKPLACE_TRIGGER_KEY", "p"))[:1].lower() or "p"
     trigger_key_code = ord(trigger_key)
 
-    hz = float(getattr(val, "REAL_ROBOT_HZ", 20.0))
+    hz = float(getattr(val, "MAIN_LOOP_HZ", getattr(val, "REAL_ROBOT_HZ", 20.0)))
     period = 1.0 / max(hz, 1e-3)
-    last_time = time.time()
+    feedback_hz = float(getattr(val, "MAIN_ROBOT_FEEDBACK_HZ", 5.0))
+    feedback_period = 1.0 / max(feedback_hz, 1e-3) if feedback_hz > 0.0 else float("inf")
+    last_feedback_time = 0.0
+    robot_feedback: Optional[dict] = None
 
     try:
         while True:
@@ -148,15 +158,20 @@ def main() -> int:
 
             frame = cv2.flip(frame, 1)
 
-            robot_feedback: Optional[dict] = None
-            if real_robot_enabled and bool(getattr(val, "MAIN_READ_ROBOT_FEEDBACK", True)):
+            now = time.time()
+            if (
+                real_robot_enabled
+                and bool(getattr(val, "MAIN_READ_ROBOT_FEEDBACK", True))
+                and (now - last_feedback_time) >= feedback_period
+            ):
                 try:
-                    robot_feedback = robot.read_present_joints_rad()
+                    fresh_feedback = robot.read_present_joints_rad()
+                    if fresh_feedback is not None:
+                        robot_feedback = fresh_feedback
+                        tracker.update_robot_feedback(robot_feedback)
                 except Exception as exc:
                     print(f"[main] warning: robot feedback read failed: {exc}")
-                    robot_feedback = None
-            if robot_feedback is not None:
-                tracker.update_robot_feedback(robot_feedback)
+                last_feedback_time = now
 
             hand_data = tracker.process(frame)
             snap_event = tracker.consume_snap_event()
@@ -187,7 +202,8 @@ def main() -> int:
             sleep = period - elapsed
             if sleep > 0:
                 time.sleep(sleep)
-            last_time = time.time()
+            # No work is scheduled here; the sleep above only rate-limits this
+            # foreground loop so the camera UI and serial bus stay stable.
     finally:
         try:
             pick_runtime.close()

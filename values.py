@@ -375,7 +375,6 @@ FEETECH_SETUP_WRITE_VERIFY_RETRIES = 10
 # Direct Feetech controller communication timing.
 DIRECT_FEETECH_INTER_WRITE_DELAY_S = 0.004
 DIRECT_FEETECH_READ_TIMEOUT_S = 0.08
-
 # ---- 7-DOF calibrated IK / null-space tuning ----
 IK_MODEL_CALIBRATION_FILE = "calibration_data/robot_model_calibration.json"
 IK_DLS_STEP_GAIN = 0.85
@@ -417,7 +416,6 @@ IK_DLS_POSITION_GAIN = 6.0
 IK_DLS_ORIENTATION_GAIN = 0.35
 IK_COST_POSITION = 120.0
 IK_COST_ORIENTATION = 0.20
-
 # ---- Main-loop integration ----
 # main.py is the only interactive application entry point. Calibration scripts
 # remain runnable on their own.
@@ -425,8 +423,28 @@ HANDTRACKING_CAMERA_INDEX = 0
 MAIN_READ_ROBOT_FEEDBACK = True
 PICKPLACE_TRIGGER_KEY = "p"
 PICKPLACE_TRIGGER_ON_SNAP = True
-
 # Triggered pick-and-place should complete one pick/place cycle and then stop.
 # Set this True only if you intentionally want repeated autonomous cycles.
 PICKPLACE_TRIGGER_CONTINUOUS_MODE = False
 PICKPLACE_WINDOW_NAME = "Pick and Place"
+
+# ---- Main-loop / handtracking performance safety ----
+# These are intentionally placed at the end so they override earlier defaults.
+MAIN_LOOP_HZ = 30.0
+MAIN_CAMERA_FRAME_WIDTH = 640
+MAIN_CAMERA_FRAME_HEIGHT = 480
+MAIN_CAMERA_FPS = 30
+MAIN_ROBOT_FEEDBACK_HZ = 5.0
+
+# MediaPipe model_complexity=0 is much faster and is usually stable enough for
+# real-time robot teleop. Increase to 1 only if landmark quality is too low.
+HANDTRACKING_MODEL_COMPLEXITY = 0
+HANDTRACKING_MAX_NUM_HANDS = 2
+HANDTRACKING_MIN_DETECTION_CONFIDENCE = 0.6
+HANDTRACKING_MIN_TRACKING_CONFIDENCE = 0.6
+
+# Full 7-DOF IK is expensive; solve it at a controlled rate and reuse the last
+# solution between solves so the camera preview does not freeze.
+HAND_IK_HZ = 6.0
+HAND_IK_FORCE_SOLVE_TARGET_DELTA_M = 0.025
+REAL_ROBOT_WATCHDOG_FEEDBACK_HZ = 5.0

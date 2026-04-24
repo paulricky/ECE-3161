@@ -275,6 +275,8 @@ class SOArmHardwareController:
             "wrist_pitch.pos": 0.0,
             "gripper.pos": 0.0,
         }
+        self._watchdog_present_cache = None
+        self._watchdog_present_cache_time = 0.0
 
     def _find_candidate_ports(self) -> List[str]:
         ports = list(list_ports.comports())
@@ -717,7 +719,11 @@ class SOArmHardwareController:
             return None
         limited_action = self._apply_velocity_and_acceleration_limits(raw_action)
 
-        if not self._tracking_watchdog_allows(cmd):
+        # The watchdog must validate the velocity/acceleration-limited target,
+        # not the raw hand/IK target.  Otherwise any distant target is blocked
+        # before the limiter can ramp toward it safely.
+        limited_cmd = self._action_to_joint_command(limited_action, fallback=cmd)
+        if not self._tracking_watchdog_allows(limited_cmd):
             return None
 
         print(f"[robot_controller] raw_action = {raw_action}")
@@ -738,10 +744,75 @@ class SOArmHardwareController:
         self.last_send_time = time.time()
         return sent
 
+    def _action_to_joint_command(self, action: Dict[str, float], fallback: Optional[JointCommand] = None) -> JointCommand:
+        names = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_yaw", "wrist_roll", "wrist_pitch"]
+        vals = []
+        action_mask = []
+        for idx, name in enumerate(names):
+            key = f"{name}.pos"
+            if key in action:
+                vals.append(math.radians(float(action[key])))
+                action_mask.append(True)
+            elif fallback is not None:
+                vals.append(float(getattr(fallback, name)))
+                action_mask.append(False)
+            else:
+                vals.append(0.0)
+                action_mask.append(False)
+
+        offsets_deg = getattr(val, "REAL_ROBOT_JOINT_OFFSETS_DEG", [0.0] * 7)
+        offsets_rad = [math.radians(float(x)) for x in offsets_deg] if len(offsets_deg) == 7 else [0.0] * 7
+        for i in range(7):
+            if action_mask[i]:
+                vals[i] -= offsets_rad[i]
+
+        if action_mask[0] and getattr(val, "INVERT_BASE_PAN", False):
+            vals[0] = -vals[0]
+        if action_mask[1] and getattr(val, "INVERT_SHOULDER_LIFT", False):
+            vals[1] = -vals[1]
+        if action_mask[2] and getattr(val, "INVERT_ELBOW", False):
+            vals[2] = -vals[2]
+        if action_mask[3] and getattr(val, "INVERT_WRIST_FLEX", False):
+            vals[3] = -vals[3]
+        if action_mask[4] and getattr(val, "INVERT_WRIST_YAW", False):
+            vals[4] = -vals[4]
+        if action_mask[5] and getattr(val, "INVERT_WRIST_ROLL", False):
+            vals[5] = -vals[5]
+        if action_mask[6] and getattr(val, "INVERT_WRIST_PITCH", False):
+            vals[6] = -vals[6]
+
+        if "gripper.pos" in action:
+            grip = float(np.clip(float(action["gripper.pos"]) / 100.0, 0.0, 1.0))
+            if getattr(val, "INVERT_GRIPPER", False):
+                grip = 1.0 - grip
+        elif fallback is not None:
+            grip = float(fallback.gripper_open01)
+        else:
+            grip = 1.0
+
+        return JointCommand(
+            shoulder_pan=vals[0],
+            shoulder_lift=vals[1],
+            elbow_flex=vals[2],
+            wrist_flex=vals[3],
+            wrist_yaw=vals[4],
+            wrist_roll=vals[5],
+            wrist_pitch=vals[6],
+            gripper_open01=grip,
+        )
+
     def _tracking_watchdog_allows(self, cmd: JointCommand) -> bool:
         if not bool(getattr(val, "REAL_ROBOT_ENABLE_TRACKING_WATCHDOG", True)):
             return True
-        present = self.read_present_joints_rad()
+        now = time.time()
+        hz = float(getattr(val, "REAL_ROBOT_WATCHDOG_FEEDBACK_HZ", 5.0))
+        period = 1.0 / max(hz, 1e-3) if hz > 0.0 else 0.0
+        present = self._watchdog_present_cache
+        if present is None or (now - self._watchdog_present_cache_time) >= period:
+            present = self.read_present_joints_rad()
+            if isinstance(present, dict):
+                self._watchdog_present_cache = dict(present)
+                self._watchdog_present_cache_time = now
         if not isinstance(present, dict):
             return True
         targets = {
@@ -774,11 +845,29 @@ class SOArmHardwareController:
     def _apply_velocity_and_acceleration_limits(self, action: Dict[str, float]) -> Dict[str, float]:
         if self._last_limited_action is None:
             self._last_limited_action = {}
+            seed_action = {}
+            try:
+                present = self.read_present_joints_rad()
+                if isinstance(present, dict):
+                    seed_action = self._joint_command_to_action(JointCommand(
+                        shoulder_pan=float(present.get("shoulder_pan", 0.0)),
+                        shoulder_lift=float(present.get("shoulder_lift", 0.0)),
+                        elbow_flex=float(present.get("elbow_flex", 0.0)),
+                        wrist_flex=float(present.get("wrist_flex", 0.0)),
+                        wrist_yaw=float(present.get("wrist_yaw", 0.0)),
+                        wrist_roll=float(present.get("wrist_roll", 0.0)),
+                        wrist_pitch=float(present.get("wrist_pitch", 0.0)),
+                        gripper_open01=float(present.get("gripper_open01", 1.0)),
+                    ))
+            except Exception:
+                seed_action = {}
             for key, target in action.items():
-                if key == "gripper.pos":
+                if key in seed_action and math.isfinite(float(seed_action[key])):
+                    self._last_limited_action[key] = float(seed_action[key])
+                elif key == "gripper.pos":
                     self._last_limited_action[key] = 50.0
                 else:
-                    self._last_limited_action[key] = 0.0
+                    self._last_limited_action[key] = float(target)
                 self._last_velocity.setdefault(key, 0.0)
             return self._apply_velocity_and_acceleration_limits(action)
 

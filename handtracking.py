@@ -33,10 +33,10 @@ mp_styles = mp.solutions.drawing_styles
 
 hands = mp_hands.Hands(
     static_image_mode=False,
-    max_num_hands=2,
-    model_complexity=1,
-    min_detection_confidence=0.6,
-    min_tracking_confidence=0.6,
+    max_num_hands=int(getattr(val, "HANDTRACKING_MAX_NUM_HANDS", 2)),
+    model_complexity=int(getattr(val, "HANDTRACKING_MODEL_COMPLEXITY", 0)),
+    min_detection_confidence=float(getattr(val, "HANDTRACKING_MIN_DETECTION_CONFIDENCE", 0.6)),
+    min_tracking_confidence=float(getattr(val, "HANDTRACKING_MIN_TRACKING_CONFIDENCE", 0.6)),
 )
 
 
@@ -705,12 +705,40 @@ class HandTracker:
         self._filtered_target_xyz = None
         self._filtered_target_rpy = None
         self._external_measured_joints = None
+        self._feedback_seeded_last_command = False
+        self._last_ik_time = 0.0
+        self._last_ik_command = None
+        self._last_ik_signature = None
         self.last_gesture_events = {"snap": False, "clap": False, "per_hand": {}}
 
     def update_robot_feedback(self, joints_rad):
-        """Optional hook used by main/pick-place code to seed IK with measured joints."""
+        """Optional hook used by main/pick-place code to seed IK with measured joints.
+
+        The first valid feedback packet is also used to initialize the smoothed
+        hand command. Without this, the command smoother starts near all zeros,
+        which can create a huge first target and trip the tracking watchdog.
+        """
         if isinstance(joints_rad, dict):
-            self._external_measured_joints = dict(joints_rad)
+            clean = {}
+            for k in self._last_cmd:
+                if k in joints_rad:
+                    try:
+                        clean[k] = float(joints_rad[k])
+                    except Exception:
+                        pass
+            if clean:
+                self._external_measured_joints = dict(clean)
+                if not self._feedback_seeded_last_command:
+                    for k, v in clean.items():
+                        if k in self._last_cmd and math.isfinite(float(v)):
+                            self._last_cmd[k] = float(v)
+                    if "gripper_open01" not in clean or not math.isfinite(float(clean.get("gripper_open01", float("nan")))):
+                        self._last_cmd["gripper_open01"] = self._last_open01
+                    self._last_ik_solution = {
+                        k: float(self._last_cmd[k])
+                        for k in ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_yaw", "wrist_roll", "wrist_pitch")
+                    }
+                    self._feedback_seeded_last_command = True
 
     def _load_lerobot_calibration(self):
         path = _load_default_lerobot_calibration_path()
@@ -806,12 +834,49 @@ class HandTracker:
         return self._filtered_target_xyz.copy(), self._filtered_target_rpy.copy()
 
     def _prev_joints_for_ik(self):
+        # Prefer the last solved IK posture once it exists. Measured feedback is
+        # best as a cold-start seed, but repeatedly using lagging robot feedback
+        # as the seed makes the solver jump around while the arm ramps.
+        if isinstance(self._last_ik_solution, dict):
+            return self._last_ik_solution
         if isinstance(self._external_measured_joints, dict):
             return self._external_measured_joints
-        return self._last_ik_solution
+        return None
+
+    def _cached_ik_command_if_fresh(self, xyz_f, rpy_f, open01):
+        if self._last_ik_command is None:
+            return None
+        hz = float(getattr(val, "HAND_IK_HZ", 6.0))
+        if hz <= 0.0:
+            return None
+        now = time.time()
+        period = 1.0 / max(hz, 1e-3)
+        if (now - self._last_ik_time) >= period:
+            return None
+        max_delta = float(getattr(val, "HAND_IK_FORCE_SOLVE_TARGET_DELTA_M", 0.025))
+        sig = self._last_ik_signature
+        if isinstance(sig, dict):
+            try:
+                old_xyz = np.asarray(sig.get("xyz"), dtype=np.float64).reshape(3)
+                delta = float(np.linalg.norm(np.asarray(xyz_f, dtype=np.float64).reshape(3) - old_xyz))
+                if delta > max_delta:
+                    return None
+            except Exception:
+                return None
+        out = dict(self._last_ik_command)
+        out["gripper_open01"] = float(open01)
+        out["ee_target_xyz"] = np.asarray(xyz_f, dtype=np.float64).reshape(3).tolist()
+        out["ee_target_rpy"] = np.asarray(rpy_f, dtype=np.float64).reshape(3).tolist()
+        out["__diagnostics__"] = dict(out.get("__diagnostics__", {}))
+        out["__diagnostics__"]["ik_cached"] = True
+        return out
 
     def _solve_cartesian_command(self, xyz, rpy, open01):
         xyz_f, rpy_f = self._smooth_target_pose(xyz, rpy)
+        cached = self._cached_ik_command_if_fresh(xyz_f, rpy_f, open01)
+        if cached is not None:
+            return cached
+
         solved = mm.solve_ik_from_target(
             target_xyz=xyz_f,
             target_rpy=rpy_f,
@@ -835,7 +900,7 @@ class HandTracker:
             "wrist_roll": float(solved["wrist_roll"]),
             "wrist_pitch": float(solved.get("wrist_pitch", 0.0)),
         }
-        return {
+        out = {
             "shoulder_pan": float(solved["shoulder_pan"]),
             "shoulder_lift": float(solved["shoulder_lift"]),
             "elbow_flex": float(solved["elbow_flex"]),
@@ -848,6 +913,10 @@ class HandTracker:
             "ee_target_xyz": xyz_f.tolist(),
             "ee_target_rpy": rpy_f.tolist(),
         }
+        self._last_ik_time = time.time()
+        self._last_ik_command = dict(out)
+        self._last_ik_signature = {"xyz": xyz_f.tolist(), "rpy": rpy_f.tolist()}
+        return out
 
     def _aruco_pose_to_command(self, aruco_pose, open01):
         xyz = np.asarray(aruco_pose["workspace_xyz"], dtype=np.float64)
