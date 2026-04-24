@@ -230,3 +230,96 @@ PICKPLACE_MAX_ABORTS_BEFORE_ERROR = 3
 PICKPLACE_CONTINUOUS_MODE = True
 PICKPLACE_SCAN_DETECTION_REQUIRED_FRAMES = 2
 PICKPLACE_PICKING_POLICY = "highest_confidence"
+
+# ---- Direct Feetech calibration diagnostics/read behavior ----
+# Startup chain verification is intentionally disabled so calibration does not
+# appear frozen in a long serial timeout scan. Reads are checked during capture.
+FEETECH_STARTUP_CHAIN_VERIFY = False
+
+# Enable full baud scanning during capture/identify diagnostics. This is slower,
+# but it proves whether IDs 1, 7, or 8 are actually at a non-1Mbps baudrate.
+FEETECH_CAPTURE_FULL_BAUD_SCAN = False
+
+# Baudrates to try when FEETECH_CAPTURE_FULL_BAUD_SCAN is enabled.
+REAL_ROBOT_SCAN_BAUDRATES = [
+    1000000,
+    500000,
+    250000,
+    128000,
+    115200,
+    57600,
+    38400,
+    19200,
+]
+
+# STS3215 Present_Position is normally 56. The extra addresses are diagnostic
+# fallbacks in case one servo/table variant is different.
+FEETECH_PRESENT_POSITION_ADDR_CANDIDATES = [
+    56,
+    58,
+    60,
+    48,
+    46,
+    44,
+    42,
+    40,
+    38,
+    36,
+    34,
+    32,
+    30,
+    28,
+]
+FEETECH_CAPTURE_POSITION_ADDR_CANDIDATES = FEETECH_PRESENT_POSITION_ADDR_CANDIDATES
+
+# Slightly longer reads help with long 8-motor daisy chains.
+FEETECH_DIRECT_PACKET_TIMEOUT_S = 0.30
+FEETECH_CAPTURE_READ_RETRIES = 6
+FEETECH_CAPTURE_INTER_RETRY_S = 0.03
+FEETECH_LIVE_TABLE_PERIOD_S = 0.50
+
+
+# ---- No-freeze identify/calibration defaults ----
+# Keep these defaults quick. Turn the full scans on only for intentional slow diagnostics.
+FEETECH_STARTUP_CHAIN_VERIFY = False
+FEETECH_CAPTURE_FULL_BAUD_SCAN = False
+FEETECH_IDENTIFY_FULL_BAUD_SCAN = False
+FEETECH_IDENTIFY_READ_RETRIES = 2
+FEETECH_IDENTIFY_INTER_RETRY_S = 0.015
+FEETECH_IDENTIFY_POSITION_ADDR_CANDIDATES = [56]
+FEETECH_CAPTURE_READ_RETRIES = 2
+FEETECH_CAPTURE_INTER_RETRY_S = 0.015
+FEETECH_CAPTURE_POSITION_ADDR_CANDIDATES = [56]
+FEETECH_PRESENT_POSITION_ADDR_CANDIDATES = [56]
+FEETECH_DIRECT_PACKET_TIMEOUT_S = 0.18
+
+
+# ---- No-freeze motor setup defaults ----
+# Keep setup scans short. Turn full scans on only when a motor has an unknown ID/baud.
+FEETECH_SETUP_FULL_BAUD_SCAN = False
+FEETECH_SETUP_FULL_ID_SCAN = False
+FEETECH_SETUP_SCAN_MAX_ID = 20
+FEETECH_SETUP_EXTRA_SCAN_IDS = [0, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+FEETECH_SETUP_PROBE_TIMEOUT_S = 0.07
+FEETECH_SETUP_INTER_PROBE_DELAY_S = 0.005
+
+# Stable persistent motor-bus communication. This keeps the serial port open
+# during identify/calibration instead of reopening it for every motor read.
+FEETECH_STABLE_BUS_ENABLED = True
+FEETECH_STABLE_BUS_PACKET_TIMEOUT_S = 0.10
+FEETECH_STABLE_BUS_READ_RETRIES = 5
+FEETECH_STABLE_BUS_WRITE_RETRIES = 3
+FEETECH_STABLE_BUS_INTER_PACKET_DELAY_S = 0.006
+FEETECH_STABLE_BUS_DRAIN_BEFORE_TX = True
+FEETECH_STABLE_IDENTIFY_ATTEMPTS = 3
+FEETECH_STABLE_BAUD_SWITCH_DELAY_S = 0.08
+
+
+
+# ---- Read-only ID scan defaults ----
+# Option 5 uses these settings. It never writes/flashes IDs.
+FEETECH_READONLY_SCAN_MAX_ID = 20
+FEETECH_READONLY_SCAN_EXTRA_IDS = [0]
+FEETECH_READONLY_SCAN_FULL_BAUD_SCAN = False
+FEETECH_READONLY_SCAN_READ_RETRIES = 2
+FEETECH_READONLY_SCAN_SHOW_MISSES = False

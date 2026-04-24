@@ -892,11 +892,11 @@ def _best_effort_identify(session: DirectCalibrationSession) -> None:
     _print_header("Identify / verify motors")
     for name, sid in zip(session.motor_names, session.motor_ids, strict=True):
         preferred = [session.baud_for_id(sid)]
-        baud = _direct_detect_baud_for_id(session.port, sid, preferred)
+        baud = _direct_detect_baud_for_id(session.port, sid, _get_scan_baudrates(preferred))
         if baud is not None:
             session.set_baud_for_id(sid, baud)
         model = _direct_read_model(session.port, sid, session.baud_for_id(sid)) if baud is not None else None
-        pos, pos_baud = _direct_read_position_any_baud(session.port, sid, [session.baud_for_id(sid)])
+        pos, pos_baud = _direct_read_position_any_baud(session.port, sid, _baud_candidates_for_session(session, sid))
         if pos is not None:
             session.set_baud_for_id(sid, pos_baud)
         print(f"  {name:16s} id={sid:3d} baud={session.baud_for_id(sid):7d} model={str(model):>5s} position={str(pos):>6s}")
@@ -914,7 +914,7 @@ def _best_effort_identify(session: DirectCalibrationSession) -> None:
 # ID 7/8 once.  Instead, setup metadata is used as the authoritative motor list,
 # and individual motor reads are retried heavily during each capture.
 
-TRUST_SETUP_METADATA_FOR_CHAIN = bool(getattr(val, "REAL_ROBOT_TRUST_SETUP_METADATA", True))
+TRUST_SETUP_METADATA_FOR_CHAIN = bool(getattr(val, "REAL_ROBOT_TRUST_SETUP_METADATA", False))
 CHAIN_VERIFY_EXTRA_RETRIES = int(getattr(val, "FEETECH_CHAIN_VERIFY_EXTRA_RETRIES", 8))
 CHAIN_READ_EXTRA_RETRIES = int(getattr(val, "FEETECH_CHAIN_READ_EXTRA_RETRIES", 12))
 CHAIN_INTER_MOTOR_DELAY_S = float(getattr(val, "FEETECH_CHAIN_INTER_MOTOR_DELAY_S", 0.035))
@@ -991,13 +991,12 @@ def _detect_chain_baudrates(
 
 
 def connect_session() -> DirectCalibrationSession:
-    """Create a direct calibration session quickly from saved setup metadata.
+    """Create a direct calibration session for the configured motor chain.
 
-    The previous version still ran a full per-motor/per-baud pre-check here. On an
-    8-motor daisy chain that can take minutes and can falsely mark later motors
-    missing even after setup succeeded. Calibration should trust the setup file for
-    the motor list and only fail when an actual capture cannot read a specific
-    motor position.
+    Motor setup is performed one servo at a time, so setup metadata only proves
+    that each ID was assigned individually. Calibration must verify that the
+    assembled daisy chain can read every configured ID before continuing. This
+    prevents the live table from silently starting with motors 7/8 unreachable.
     """
     ports = _candidate_robot_ports()
     if not ports:
@@ -1013,16 +1012,15 @@ def connect_session() -> DirectCalibrationSession:
     else:
         motor_baudrates = [DEFAULT_BAUDRATE] * len(motor_ids)
 
-    # Prefer the configured / first detected port. Do not run a blocking full-chain
-    # scan here; that was the source of the apparent freeze before the neutral-pose
-    # prompt. Actual position capture below still verifies every motor by reading it.
+    # Prefer the configured / first detected port, then verify the assembled chain
+    # unless the user explicitly opts back into trusting setup metadata.
     port = str(ports[0])
     print(f"[calibrate] using direct port = {port}")
     if setup_status.configured and TRUST_SETUP_METADATA_FOR_CHAIN:
         print(
-            "[calibrate] Using saved motor setup metadata as the startup source of truth.\n"
-            "            Skipping slow full-chain pre-scan; capture steps will read each motor\n"
-            "            directly and report the exact motor/ID only if a read truly fails."
+            "[calibrate] WARNING: values.REAL_ROBOT_TRUST_SETUP_METADATA is True, so the saved setup file\n"
+            "            is being used without full-chain verification. This is not recommended for\n"
+            "            debugging motors 7/8; set it to False to prove the daisy chain is readable."
         )
         for name, sid, baud in zip(motor_names, motor_ids, motor_baudrates, strict=True):
             print(f"  {name:16s} id={int(sid):3d} baud={int(baud)}")
@@ -1185,16 +1183,15 @@ LIVE_TABLE_MAX_SECONDS = float(getattr(val, "FEETECH_LIVE_TABLE_MAX_SECONDS", 0.
 
 
 def _baud_candidates_for_session(session: DirectCalibrationSession, servo_id: int) -> list[int]:
-    candidates = [session.baud_for_id(int(servo_id)), DEFAULT_BAUDRATE, 1000000]
-    out: list[int] = []
-    for baud in candidates:
-        try:
-            baud = int(baud)
-        except Exception:
-            continue
-        if baud > 0 and baud not in out:
-            out.append(baud)
-    return out or [DEFAULT_BAUDRATE]
+    """Return the complete baud search order for a live capture read.
+
+    The setup stage may find a motor at a non-default baudrate, and older setup
+    files may not contain per-motor baudrates at all. The previous live-table
+    code only tried the session baud, DEFAULT_BAUDRATE, and 1 Mbps, which could
+    make motors 7/8 appear dead even though the setup scanner could see them.
+    Use the same full scan list everywhere, with the current per-ID baud first.
+    """
+    return _get_scan_baudrates([session.baud_for_id(int(servo_id)), DEFAULT_BAUDRATE, 1000000])
 
 
 def _read_position_fast(session: DirectCalibrationSession, servo_id: int) -> tuple[int | None, int]:
@@ -1849,8 +1846,952 @@ def _best_effort_identify(session: DirectCalibrationSession) -> None:
     print("+" + "-" * 18 + "+" + "-" * 6 + "+" + "-" * 10 + "+" + "-" * 10 + "+" + "-" * 12 + "+" + "-" * 10 + "+")
     if failures:
         print("Unreadable: " + ", ".join(failures))
-        print(_diagnose_unreadable_ids(session, failures))
 
+
+
+
+# ---------------------------------------------------------------------------
+# No-freeze connection/capture overrides
+# ---------------------------------------------------------------------------
+# The previous patched file still performed a long full-chain pre-check when
+# REAL_ROBOT_TRUST_SETUP_METADATA was False. With 8 motors, several baudrates,
+# many position-register candidates, and repeated serial-open timeouts, that can
+# look like the program is frozen at:
+#   "No trusted setup metadata found; running bounded direct chain check..."
+# These final overrides intentionally make startup non-blocking: setup metadata
+# defines the expected 8-motor chain, and actual readability is tested at the
+# neutral/range capture steps with bounded, visible per-motor reads.
+
+STARTUP_CHAIN_VERIFY = bool(getattr(val, "FEETECH_STARTUP_CHAIN_VERIFY", False))
+CAPTURE_FULL_BAUD_SCAN = bool(getattr(val, "FEETECH_CAPTURE_FULL_BAUD_SCAN", False))
+
+# Capture read address list. Prefer the new explicit capture constant, but also
+# honor the older FEETECH_PRESENT_POSITION_ADDR_CANDIDATES name if it exists.
+_DEFAULT_CAPTURE_POSITION_ADDR_CANDIDATES = [
+    FEETECH_PRESENT_POSITION_ADDR, 56, 58, 60, 48, 46, 44, 42, 40, 38, 36, 34, 32, 30, 28
+]
+_CAPTURE_ADDR_RAW = getattr(
+    val,
+    "FEETECH_CAPTURE_POSITION_ADDR_CANDIDATES",
+    getattr(val, "FEETECH_PRESENT_POSITION_ADDR_CANDIDATES", _DEFAULT_CAPTURE_POSITION_ADDR_CANDIDATES),
+)
+CAPTURE_POSITION_ADDR_CANDIDATES = list(dict.fromkeys(int(x) for x in _CAPTURE_ADDR_RAW))
+CAPTURE_READ_RETRIES = int(getattr(val, "FEETECH_CAPTURE_READ_RETRIES", 6))
+CAPTURE_INTER_RETRY_S = float(getattr(val, "FEETECH_CAPTURE_INTER_RETRY_S", 0.03))
+
+
+def _setup_paths_message() -> str:
+    return f"checked setup paths: {SETUP_JSON_PATH} and {_get_driver_calibration_path()}"
+
+
+def _baud_candidates_for_session(session: DirectCalibrationSession, servo_id: int) -> list[int]:
+    """Short, non-freezing baud search order for capture reads."""
+    base = [session.baud_for_id(int(servo_id)), DEFAULT_BAUDRATE, 1000000]
+    return _get_scan_baudrates(base) if CAPTURE_FULL_BAUD_SCAN else list(dict.fromkeys(int(b) for b in base if int(b) > 0))
+
+
+def connect_session() -> DirectCalibrationSession:
+    """Create a session without a long blocking startup chain scan."""
+    ports = _candidate_robot_ports()
+    if not ports:
+        raise RuntimeError("Could not auto-detect the robot serial port. Set values.REAL_ROBOT_PORT manually.")
+
+    setup_status = get_motor_setup_status()
+    if not setup_status.configured:
+        raise RuntimeError(
+            "Motor setup metadata was not found or did not match values.REAL_ROBOT_MOTOR_NAMES / "
+            "values.REAL_ROBOT_MOTOR_IDS. Run option 2 first, or fix calibration_data/robot_motor_setup.json; "
+            + _setup_paths_message()
+        )
+
+    motor_names = list(setup_status.motor_names)
+    motor_ids = list(setup_status.motor_ids or _get_configured_motor_ids(motor_names))
+    model_numbers = _get_configured_motor_model_numbers(motor_names)
+    if setup_status.motor_baudrates and len(setup_status.motor_baudrates) == len(motor_ids):
+        motor_baudrates = [int(x) for x in setup_status.motor_baudrates]
+    else:
+        motor_baudrates = [DEFAULT_BAUDRATE] * len(motor_ids)
+
+    port = str(ports[0])
+    print(f"[calibrate] using direct port = {port}", flush=True)
+    print(f"[calibrate] using setup metadata = {setup_status.source}", flush=True)
+    print("[calibrate] startup full-chain scan is disabled to avoid long serial timeouts.", flush=True)
+    print("[calibrate] Each motor will be read with bounded per-motor time during capture.", flush=True)
+    for name, sid, baud in zip(motor_names, motor_ids, motor_baudrates, strict=True):
+        print(f"  {name:16s} id={int(sid):3d} baud={int(baud)}", flush=True)
+
+    session = DirectCalibrationSession(port, list(motor_names), list(motor_ids), list(model_numbers), list(motor_baudrates))
+
+    if STARTUP_CHAIN_VERIFY:
+        print("[calibrate] FEETECH_STARTUP_CHAIN_VERIFY=True; running one quick read pass...", flush=True)
+        positions, failures = _read_positions_partial(session)
+        print(f"[calibrate] quick readable motors: {sorted(positions.keys())}", flush=True)
+        if failures:
+            print(f"[calibrate] quick unreadable motors: {', '.join(failures)}", flush=True)
+    return session
+
+
+def _read_position_fast(session: DirectCalibrationSession, servo_id: int) -> tuple[int | None, int]:
+    """Fast bounded Present_Position read for one motor."""
+    fallback_baud = session.baud_for_id(int(servo_id))
+    known_addr = getattr(session, "_position_addr_by_id", {}).get(int(servo_id)) if hasattr(session, "_position_addr_by_id") else None
+    addr_candidates = ([known_addr] if known_addr is not None else []) + CAPTURE_POSITION_ADDR_CANDIDATES
+    addr_candidates = list(dict.fromkeys(int(a) for a in addr_candidates if a is not None))
+
+    for baud in _baud_candidates_for_session(session, int(servo_id)):
+        for _ in range(max(1, CAPTURE_READ_RETRIES)):
+            pos, addr = _read_position_with_addr_candidates(session.port, int(servo_id), int(baud), addr_candidates)
+            if pos is not None:
+                if not hasattr(session, "_position_addr_by_id"):
+                    setattr(session, "_position_addr_by_id", {})
+                session._position_addr_by_id[int(servo_id)] = int(addr)
+                return int(pos), int(baud)
+            time.sleep(CAPTURE_INTER_RETRY_S)
+    return None, int(fallback_baud)
+
+
+def _read_all_positions_one_baud_open(
+    session: DirectCalibrationSession,
+    baudrate: int,
+    include_names: Sequence[str] | None = None,
+) -> tuple[dict[str, int], dict[int, int], list[str]]:
+    """Read selected motors using one persistent serial connection at one baudrate."""
+    selected = set(include_names) if include_names is not None else set(session.motor_names)
+    positions: dict[str, int] = {}
+    addr_hits: dict[int, int] = {}
+    failures: list[str] = []
+
+    try:
+        with _open_serial(session.port, int(baudrate), timeout=0.06) as ser:
+            for name, sid in zip(session.motor_names, session.motor_ids, strict=True):
+                if name not in selected:
+                    continue
+                known_addr = getattr(session, "_position_addr_by_id", {}).get(int(sid)) if hasattr(session, "_position_addr_by_id") else None
+                addr_candidates = ([known_addr] if known_addr is not None else []) + CAPTURE_POSITION_ADDR_CANDIDATES
+                addr_candidates = list(dict.fromkeys(int(a) for a in addr_candidates if a is not None))
+                pos = None
+                addr = None
+                for _ in range(max(1, CAPTURE_READ_RETRIES)):
+                    pos, addr = _read_position_with_addr_candidates_open(ser, int(sid), addr_candidates)
+                    if pos is not None:
+                        break
+                    time.sleep(CAPTURE_INTER_RETRY_S)
+                if pos is None:
+                    failures.append(f"{name}/ID{sid}")
+                    continue
+                positions[name] = int(pos)
+                addr_hits[int(sid)] = int(addr)
+    except Exception:
+        failures = [f"{name}/ID{sid}" for name, sid in zip(session.motor_names, session.motor_ids, strict=True) if name in selected]
+    return positions, addr_hits, failures
+
+
+def _diagnose_unreadable_ids(session: DirectCalibrationSession, failures: Sequence[str]) -> str:
+    """Return no extra diagnostic text; keep errors/output concise."""
+    return ""
+
+
+def read_positions(session: DirectCalibrationSession) -> dict[str, int]:
+    """Read all motor positions with visible progress and bounded time."""
+    print("[calibrate] Reading current positions from all configured motors...", flush=True)
+    positions, failures = _read_positions_partial(session)
+    for idx, (name, sid) in enumerate(zip(session.motor_names, session.motor_ids, strict=True), start=1):
+        if name in positions:
+            addr = getattr(session, "_position_addr_by_id", {}).get(int(sid), FEETECH_PRESENT_POSITION_ADDR)
+            print(
+                f"[calibrate]   ({idx}/{len(session.motor_ids)}) {name}/ID{sid}: "
+                f"{positions[name]}  baud={session.baud_for_id(int(sid))}  pos_addr={addr}",
+                flush=True,
+            )
+        else:
+            print(f"[calibrate]   ({idx}/{len(session.motor_ids)}) {name}/ID{sid}: FAILED", flush=True)
+
+    if failures:
+        raise RuntimeError(
+            "Could not read Present_Position from: "
+            + ", ".join(failures)
+            + ". Calibration cannot continue until every configured motor returns position data."
+            + _diagnose_unreadable_ids(session, failures)
+        )
+    return positions
+
+
+# ---------------------------------------------------------------------------
+# Final no-freeze identify/read overrides
+# ---------------------------------------------------------------------------
+IDENTIFY_FULL_BAUD_SCAN = bool(getattr(val, "FEETECH_IDENTIFY_FULL_BAUD_SCAN", False))
+IDENTIFY_READ_RETRIES = int(getattr(val, "FEETECH_IDENTIFY_READ_RETRIES", 2))
+IDENTIFY_INTER_RETRY_S = float(getattr(val, "FEETECH_IDENTIFY_INTER_RETRY_S", 0.015))
+IDENTIFY_POSITION_ADDR_CANDIDATES = list(dict.fromkeys(
+    int(x) for x in getattr(val, "FEETECH_IDENTIFY_POSITION_ADDR_CANDIDATES", [FEETECH_PRESENT_POSITION_ADDR, 56])
+))
+
+
+def _quick_baud_candidates_for_session(session: DirectCalibrationSession, servo_id: int) -> list[int]:
+    base = [session.baud_for_id(int(servo_id)), DEFAULT_BAUDRATE, 1000000]
+    base = [int(b) for b in base if int(b) > 0]
+    if IDENTIFY_FULL_BAUD_SCAN:
+        return _get_scan_baudrates(base)
+    return list(dict.fromkeys(base))
+
+
+def _read_position_quick_identify(session: DirectCalibrationSession, servo_id: int) -> tuple[int | None, int, int | None]:
+    fallback_baud = session.baud_for_id(int(servo_id))
+    known_addr = getattr(session, "_position_addr_by_id", {}).get(int(servo_id)) if hasattr(session, "_position_addr_by_id") else None
+    addr_candidates = ([known_addr] if known_addr is not None else []) + IDENTIFY_POSITION_ADDR_CANDIDATES
+    addr_candidates = list(dict.fromkeys(int(a) for a in addr_candidates if a is not None))
+    for baud in _quick_baud_candidates_for_session(session, int(servo_id)):
+        for addr in addr_candidates:
+            for _ in range(max(1, IDENTIFY_READ_RETRIES)):
+                pos, hit_addr = _read_position_with_addr_candidates(session.port, int(servo_id), int(baud), [int(addr)])
+                if pos is not None:
+                    if not hasattr(session, "_position_addr_by_id"):
+                        setattr(session, "_position_addr_by_id", {})
+                    session._position_addr_by_id[int(servo_id)] = int(hit_addr)
+                    return int(pos), int(baud), int(hit_addr)
+                time.sleep(IDENTIFY_INTER_RETRY_S)
+    return None, int(fallback_baud), None
+
+
+def _best_effort_identify(session: DirectCalibrationSession) -> None:
+    _print_header("Identify / verify motors")
+    print("Fast verification table. A position of ---- means that ID did not return Present_Position.", flush=True)
+    print("This mode does not run a long raw full-chain scan by default.", flush=True)
+    print("Set FEETECH_IDENTIFY_FULL_BAUD_SCAN = True in values.py only for a slow exhaustive scan.\n", flush=True)
+
+    border = "+" + "-" * 18 + "+" + "-" * 6 + "+" + "-" * 10 + "+" + "-" * 10 + "+" + "-" * 10 + "+"
+    print(border, flush=True)
+    print(f"| {'motor':16s} | {'id':>4s} | {'baud':>8s} | {'position':>8s} | {'pos_addr':>8s} |", flush=True)
+    print(border, flush=True)
+
+    failures: list[str] = []
+    for name, sid in zip(session.motor_names, session.motor_ids, strict=True):
+        print(f"[calibrate] testing {name}/ID{int(sid)}...", flush=True)
+        pos, baud, addr = _read_position_quick_identify(session, int(sid))
+        if pos is not None:
+            session.set_baud_for_id(int(sid), int(baud))
+            pos_txt = str(int(pos))
+            addr_txt = str(int(addr)) if addr is not None else "----"
+        else:
+            failures.append(f"{name}/ID{int(sid)}")
+            pos_txt = "----"
+            addr_txt = "----"
+        print(f"| {name:16s} | {int(sid):4d} | {session.baud_for_id(int(sid)):8d} | {pos_txt:>8s} | {addr_txt:>8s} |", flush=True)
+
+    print(border, flush=True)
+    if failures:
+        print("Unreadable: " + ", ".join(failures), flush=True)
+        print(_diagnose_unreadable_ids(session, failures), flush=True)
+
+
+def _read_positions_partial(session: DirectCalibrationSession) -> tuple[dict[str, int], list[str]]:
+    positions: dict[str, int] = {}
+    failures: list[str] = []
+    for name, sid in zip(session.motor_names, session.motor_ids, strict=True):
+        pos, baud = _read_position_fast(session, int(sid))
+        if pos is None:
+            failures.append(f"{name}/ID{int(sid)}")
+            continue
+        session.set_baud_for_id(int(sid), int(baud))
+        positions[str(name)] = int(pos)
+    return positions, failures
+
+
+# ---------------------------------------------------------------------------
+# No-freeze motor setup + quiet diagnostics overrides
+# ---------------------------------------------------------------------------
+# Motor setup previously scanned every ID up to 253 at every baudrate using slow
+# multi-retry helpers. If the only connected motor did not answer quickly, option
+# 2 looked frozen. These final overrides keep setup bounded and visible: scan the
+# expected target ID first, then a small configurable ID set, and only perform a
+# full slow scan if explicitly enabled in values.py.
+
+SETUP_FULL_BAUD_SCAN = bool(getattr(val, "FEETECH_SETUP_FULL_BAUD_SCAN", False))
+SETUP_FULL_ID_SCAN = bool(getattr(val, "FEETECH_SETUP_FULL_ID_SCAN", False))
+SETUP_MAX_ID = int(getattr(val, "FEETECH_SETUP_SCAN_MAX_ID", 20))
+SETUP_PROBE_TIMEOUT_S = float(getattr(val, "FEETECH_SETUP_PROBE_TIMEOUT_S", 0.07))
+SETUP_INTER_PROBE_DELAY_S = float(getattr(val, "FEETECH_SETUP_INTER_PROBE_DELAY_S", 0.005))
+SETUP_EXTRA_SCAN_IDS = [int(x) for x in getattr(val, "FEETECH_SETUP_EXTRA_SCAN_IDS", [0, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20])]
+
+
+def _diagnose_unreadable_ids(session: DirectCalibrationSession, failures: Sequence[str]) -> str:
+    return ""
+
+
+def _setup_baud_candidates() -> list[int]:
+    base = [DEFAULT_BAUDRATE, 1000000]
+    if SETUP_FULL_BAUD_SCAN:
+        return _get_scan_baudrates(base)
+    return list(dict.fromkeys(int(b) for b in base if int(b) > 0))
+
+
+def _setup_id_candidates(target_id: int | None = None) -> list[int]:
+    ids: list[int] = []
+    if target_id is not None:
+        ids.append(int(target_id))
+    ids.extend(_get_configured_motor_ids(_get_configured_motor_names()))
+    ids.extend(SETUP_EXTRA_SCAN_IDS)
+    if SETUP_FULL_ID_SCAN:
+        ids.extend(range(0, 254))
+    elif SETUP_MAX_ID > 0:
+        ids.extend(range(0, SETUP_MAX_ID + 1))
+    out: list[int] = []
+    for sid in ids:
+        sid = int(sid)
+        if 0 <= sid <= 253 and sid not in out:
+            out.append(sid)
+    return out
+
+
+def _quick_probe_open(ser: Any, servo_id: int) -> bool:
+    sid = int(servo_id)
+    try:
+        try:
+            ser.reset_input_buffer()
+            ser.reset_output_buffer()
+        except Exception:
+            pass
+        ser.write(_feetech_packet(sid, 0x01, ()))
+        ser.flush()
+        status = _read_status(ser, timeout_s=SETUP_PROBE_TIMEOUT_S)
+        if status is not None and int(status[0]) == sid:
+            return True
+    except Exception:
+        pass
+    for addr in (FEETECH_MODEL_NUMBER_ADDR, FEETECH_PRESENT_POSITION_ADDR):
+        try:
+            try:
+                ser.reset_input_buffer()
+            except Exception:
+                pass
+            ser.write(_feetech_packet(sid, 0x02, (int(addr), 2)))
+            ser.flush()
+            status = _read_status(ser, timeout_s=SETUP_PROBE_TIMEOUT_S)
+            if status is not None and int(status[0]) == sid and int(status[1]) == 0:
+                if len(list(status[2])) >= 2:
+                    return True
+        except Exception:
+            pass
+    return False
+
+
+def _quick_probe_id_at_baud(port: str, servo_id: int, baudrate: int) -> bool:
+    try:
+        with _open_serial(str(port), int(baudrate), timeout=min(0.04, SETUP_PROBE_TIMEOUT_S)) as ser:
+            return _quick_probe_open(ser, int(servo_id))
+    except Exception:
+        return False
+
+
+def _scan_single_connected_motor(port: str, target_id: int | None = None) -> tuple[int, int] | None:
+    ids = _setup_id_candidates(target_id)
+    bauds = _setup_baud_candidates()
+    print("[calibrate] Fast direct Feetech scan for the single connected motor...", flush=True)
+    print(f"[calibrate]   baud candidates: {bauds}", flush=True)
+    print(f"[calibrate]   id candidates: {ids}", flush=True)
+    if not SETUP_FULL_ID_SCAN:
+        print("[calibrate]   full 0..253 ID scan disabled to avoid setup freezes.", flush=True)
+        print("[calibrate]   Set FEETECH_SETUP_FULL_ID_SCAN = True only for a slow exhaustive scan.", flush=True)
+    for baud in bauds:
+        print(f"[calibrate]   scanning baudrate {baud}...", flush=True)
+        found: list[int] = []
+        try:
+            with _open_serial(str(port), int(baud), timeout=min(0.04, SETUP_PROBE_TIMEOUT_S)) as ser:
+                for sid in ids:
+                    if _quick_probe_open(ser, int(sid)):
+                        found.append(int(sid))
+                        print(f"[calibrate]     response from ID {sid}", flush=True)
+                        if len(found) > 1:
+                            print("[calibrate] More than one motor responded. Connect ONLY the requested motor.", flush=True)
+                            return None
+                    time.sleep(SETUP_INTER_PROBE_DELAY_S)
+        except Exception as exc:
+            print(f"[calibrate]   baudrate {baud} scan failed to open/read: {exc}", flush=True)
+            continue
+        if len(found) == 1:
+            print(f"[calibrate] Found motor ID {found[0]} at baudrate {baud}.", flush=True)
+            return int(found[0]), int(baud)
+    print("[calibrate] No motor responded in the fast setup scan.", flush=True)
+    print("[calibrate] If this motor has an unknown ID outside the displayed candidates, enable FEETECH_SETUP_FULL_ID_SCAN.", flush=True)
+    return None
+
+
+def _manual_setup_one_motor(port: str, name: str, target_id: int) -> int | None:
+    _print_header(f"Set motor ID {target_id}: {name}")
+    print(
+        f"Disconnect the full daisy chain. Connect ONLY the '{name}' motor to the controller board.\n"
+        "Power-cycle the controller/servo bus if the previous motor was just disconnected.\n"
+        "Then press Enter."
+    )
+    input("Ready? ")
+    scanned = _scan_single_connected_motor(port, int(target_id))
+    if scanned is None:
+        print(
+            "[calibrate] Could not get any data response from the connected motor.\n"
+            "The red LED only confirms power; it does NOT confirm serial communication. Check cable orientation,\n"
+            "port, data line, bus power ground, and that no other app has the serial port open."
+        )
+        return None
+    current_id, baudrate = scanned
+    if current_id == int(target_id):
+        print(f"[calibrate] '{name}' already has correct ID {target_id}.", flush=True)
+        return int(baudrate)
+    print(f"[calibrate] Writing ID {target_id} to motor currently at ID {current_id}...", flush=True)
+    if not _direct_write_feetech_id(port, int(current_id), int(target_id), int(baudrate)):
+        print(f"[calibrate] Failed to write/verify ID {target_id}.", flush=True)
+        return None
+    if not _quick_probe_id_at_baud(port, int(target_id), int(baudrate)):
+        print(f"[calibrate] ID write appeared to finish, but ID {target_id} did not answer the fast verification read.", flush=True)
+        return None
+    print(f"[calibrate] Verified '{name}' as ID {target_id} at baudrate {baudrate}.", flush=True)
+    return int(baudrate)
+
+
+def _best_effort_identify(session: DirectCalibrationSession) -> None:
+    _print_header("Identify / verify motors")
+    print("Fast verification table. A position of ---- means that ID did not return Present_Position.", flush=True)
+    print("This mode does not run a long raw full-chain scan by default.\n", flush=True)
+    border = "+" + "-" * 18 + "+" + "-" * 6 + "+" + "-" * 10 + "+" + "-" * 10 + "+" + "-" * 10 + "+"
+    print(border, flush=True)
+    print(f"| {'motor':16s} | {'id':>4s} | {'baud':>8s} | {'position':>8s} | {'pos_addr':>8s} |", flush=True)
+    print(border, flush=True)
+    failures: list[str] = []
+    for name, sid in zip(session.motor_names, session.motor_ids, strict=True):
+        print(f"[calibrate] testing {name}/ID{int(sid)}...", flush=True)
+        pos, baud, addr = _read_position_quick_identify(session, int(sid))
+        if pos is not None:
+            session.set_baud_for_id(int(sid), int(baud))
+            pos_txt = str(int(pos))
+            addr_txt = str(int(addr)) if addr is not None else "----"
+        else:
+            failures.append(f"{name}/ID{int(sid)}")
+            pos_txt = "----"
+            addr_txt = "----"
+        print(f"| {name:16s} | {int(sid):4d} | {session.baud_for_id(int(sid)):8d} | {pos_txt:>8s} | {addr_txt:>8s} |", flush=True)
+    print(border, flush=True)
+    if failures:
+        print("Unreadable: " + ", ".join(failures), flush=True)
+
+
+
+# ---------------------------------------------------------------------------
+# Stable persistent motor-bus communication overrides
+# ---------------------------------------------------------------------------
+# These final overrides make the calibration/identify path behave much more like
+# a real motor bus session: keep one serial connection open, avoid repeated
+# open/close/reset cycles for every motor, retry inside that persistent session,
+# and report a success count during identify. This is intentionally placed at the
+# end of the file so it overrides the earlier direct one-shot helpers.
+
+import threading
+
+STABLE_BUS_ENABLED = bool(getattr(val, "FEETECH_STABLE_BUS_ENABLED", True))
+STABLE_BUS_PACKET_TIMEOUT_S = float(getattr(val, "FEETECH_STABLE_BUS_PACKET_TIMEOUT_S", 0.10))
+STABLE_BUS_READ_RETRIES = int(getattr(val, "FEETECH_STABLE_BUS_READ_RETRIES", 5))
+STABLE_BUS_WRITE_RETRIES = int(getattr(val, "FEETECH_STABLE_BUS_WRITE_RETRIES", 3))
+STABLE_BUS_INTER_PACKET_DELAY_S = float(getattr(val, "FEETECH_STABLE_BUS_INTER_PACKET_DELAY_S", 0.006))
+STABLE_BUS_DRAIN_BEFORE_TX = bool(getattr(val, "FEETECH_STABLE_BUS_DRAIN_BEFORE_TX", True))
+STABLE_IDENTIFY_ATTEMPTS = int(getattr(val, "FEETECH_STABLE_IDENTIFY_ATTEMPTS", 3))
+STABLE_BAUD_SWITCH_DELAY_S = float(getattr(val, "FEETECH_STABLE_BAUD_SWITCH_DELAY_S", 0.08))
+
+
+def _stable_position_addr_candidates() -> list[int]:
+    candidates = getattr(val, "FEETECH_PRESENT_POSITION_ADDR_CANDIDATES", None)
+    if candidates is None:
+        candidates = getattr(val, "FEETECH_CAPTURE_POSITION_ADDR_CANDIDATES", [FEETECH_PRESENT_POSITION_ADDR, 56])
+    out: list[int] = []
+    for addr in candidates:
+        try:
+            addr_i = int(addr)
+        except Exception:
+            continue
+        if addr_i not in out:
+            out.append(addr_i)
+    return out or [FEETECH_PRESENT_POSITION_ADDR]
+
+
+class StableFeetechBus:
+    """Persistent Feetech serial bus wrapper for a long daisy chain."""
+
+    def __init__(self, port: str, baudrate: int) -> None:
+        self.port = str(port)
+        self.baudrate = int(baudrate)
+        self.ser: Any = None
+        self._lock = threading.RLock()
+        self.open()
+
+    def open(self) -> None:
+        if self.ser is not None and getattr(self.ser, "is_open", True):
+            return
+        if serial is None:
+            raise RuntimeError("pyserial is not installed/importable; install pyserial to use direct calibration.")
+        self.ser = serial.Serial(
+            self.port,
+            int(self.baudrate),
+            timeout=min(0.05, max(0.01, STABLE_BUS_PACKET_TIMEOUT_S / 2.0)),
+            write_timeout=0.25,
+        )
+        time.sleep(0.02)
+        self.drain()
+
+    def close(self) -> None:
+        with self._lock:
+            try:
+                if self.ser is not None:
+                    self.ser.close()
+            except Exception:
+                pass
+            self.ser = None
+
+    def set_baudrate(self, baudrate: int) -> None:
+        baudrate = int(baudrate)
+        with self._lock:
+            if baudrate == self.baudrate and self.ser is not None:
+                return
+            self.close()
+            self.baudrate = baudrate
+            time.sleep(STABLE_BAUD_SWITCH_DELAY_S)
+            self.open()
+
+    def drain(self) -> None:
+        if self.ser is None:
+            return
+        try:
+            waiting = int(getattr(self.ser, "in_waiting", 0) or 0)
+            if waiting > 0:
+                self.ser.read(waiting)
+        except Exception:
+            try:
+                self.ser.reset_input_buffer()
+            except Exception:
+                pass
+
+    def transact(self, servo_id: int, instruction: int, params: Sequence[int] = (), timeout_s: float | None = None) -> tuple[int, int, list[int]] | None:
+        timeout = STABLE_BUS_PACKET_TIMEOUT_S if timeout_s is None else float(timeout_s)
+        packet = _feetech_packet(int(servo_id), int(instruction), params)
+        with self._lock:
+            self.open()
+            try:
+                if STABLE_BUS_DRAIN_BEFORE_TX:
+                    self.drain()
+                self.ser.write(packet)
+                self.ser.flush()
+                status = _read_status(self.ser, timeout_s=timeout)
+                time.sleep(STABLE_BUS_INTER_PACKET_DELAY_S)
+                return status
+            except Exception:
+                try:
+                    self.close()
+                    self.open()
+                except Exception:
+                    pass
+                time.sleep(STABLE_BUS_INTER_PACKET_DELAY_S)
+                return None
+
+    def read_register(self, servo_id: int, addr: int, length: int, retries: int | None = None) -> list[int] | None:
+        sid = int(servo_id)
+        attempts = max(1, int(retries if retries is not None else STABLE_BUS_READ_RETRIES))
+        for _ in range(attempts):
+            status = self.transact(sid, 0x02, (int(addr), int(length)))
+            if status is None:
+                continue
+            rx_id, err, params = status
+            if int(rx_id) == sid and int(err) == 0 and len(params) >= int(length):
+                return list(params[: int(length)])
+        return None
+
+    def read_u16(self, servo_id: int, addr: int, retries: int | None = None) -> int | None:
+        data = self.read_register(int(servo_id), int(addr), 2, retries=retries)
+        if data is None or len(data) < 2:
+            return None
+        return int(data[0]) | (int(data[1]) << 8)
+
+    def write_register(self, servo_id: int, addr: int, data: Sequence[int], retries: int | None = None, require_status: bool = False) -> bool:
+        sid = int(servo_id)
+        attempts = max(1, int(retries if retries is not None else STABLE_BUS_WRITE_RETRIES))
+        payload = (int(addr), *[int(x) & 0xFF for x in data])
+        for _ in range(attempts):
+            status = self.transact(sid, 0x03, payload)
+            if status is None:
+                if not require_status:
+                    return True
+                continue
+            if int(status[0]) == sid and int(status[1]) == 0:
+                return True
+        return False
+
+    def write_u8(self, servo_id: int, addr: int, value: int) -> bool:
+        return self.write_register(int(servo_id), int(addr), [int(value) & 0xFF])
+
+    def write_u16(self, servo_id: int, addr: int, value: int) -> bool:
+        value = int(value)
+        return self.write_register(int(servo_id), int(addr), [value & 0xFF, (value >> 8) & 0xFF])
+
+
+def _get_stable_bus(session: DirectCalibrationSession, baudrate: int | None = None) -> StableFeetechBus:
+    baud = int(baudrate if baudrate is not None else session.baudrate)
+    bus = getattr(session, "_stable_bus", None)
+    if bus is None or not isinstance(bus, StableFeetechBus):
+        bus = StableFeetechBus(session.port, baud)
+        setattr(session, "_stable_bus", bus)
+    else:
+        bus.set_baudrate(baud)
+    return bus
+
+
+def _close_stable_bus(session: DirectCalibrationSession) -> None:
+    bus = getattr(session, "_stable_bus", None)
+    if isinstance(bus, StableFeetechBus):
+        bus.close()
+
+
+def _stable_read_position_at_baud(session: DirectCalibrationSession, servo_id: int, baudrate: int) -> tuple[int | None, int | None]:
+    bus = _get_stable_bus(session, int(baudrate))
+    known_addr = getattr(session, "_position_addr_by_id", {}).get(int(servo_id)) if hasattr(session, "_position_addr_by_id") else None
+    addr_candidates = ([known_addr] if known_addr is not None else []) + _stable_position_addr_candidates()
+    addr_candidates = list(dict.fromkeys(int(a) for a in addr_candidates if a is not None))
+    for addr in addr_candidates:
+        value = bus.read_u16(int(servo_id), int(addr), retries=STABLE_BUS_READ_RETRIES)
+        if value is not None:
+            if not hasattr(session, "_position_addr_by_id"):
+                setattr(session, "_position_addr_by_id", {})
+            session._position_addr_by_id[int(servo_id)] = int(addr)
+            return int(value), int(addr)
+    return None, None
+
+
+def _stable_baud_candidates_for_session(session: DirectCalibrationSession, servo_id: int) -> list[int]:
+    base = [session.baud_for_id(int(servo_id)), DEFAULT_BAUDRATE, 1000000]
+    if bool(getattr(val, "FEETECH_CAPTURE_FULL_BAUD_SCAN", False)):
+        return _get_scan_baudrates(base)
+    return list(dict.fromkeys(int(b) for b in base if int(b) > 0))
+
+
+def _read_position_fast(session: DirectCalibrationSession, servo_id: int) -> tuple[int | None, int]:
+    fallback_baud = session.baud_for_id(int(servo_id))
+    if not STABLE_BUS_ENABLED:
+        for baud in _stable_baud_candidates_for_session(session, int(servo_id)):
+            pos, _addr = _read_position_with_addr_candidates(session.port, int(servo_id), int(baud), _stable_position_addr_candidates())
+            if pos is not None:
+                return int(pos), int(baud)
+        return None, int(fallback_baud)
+    for baud in _stable_baud_candidates_for_session(session, int(servo_id)):
+        pos, _addr = _stable_read_position_at_baud(session, int(servo_id), int(baud))
+        if pos is not None:
+            return int(pos), int(baud)
+    return None, int(fallback_baud)
+
+
+def _read_positions_partial(session: DirectCalibrationSession) -> tuple[dict[str, int], list[str]]:
+    positions: dict[str, int] = {}
+    failures: list[str] = []
+    for name, sid in zip(session.motor_names, session.motor_ids, strict=True):
+        pos, baud = _read_position_fast(session, int(sid))
+        if pos is None:
+            failures.append(f"{name}/ID{int(sid)}")
+            continue
+        session.set_baud_for_id(int(sid), int(baud))
+        positions[str(name)] = int(pos)
+    return positions, failures
+
+
+def read_positions(session: DirectCalibrationSession) -> dict[str, int]:
+    print("[calibrate] Reading current positions from all configured motors using stable persistent bus...", flush=True)
+    positions, failures = _read_positions_partial(session)
+    for idx, (name, sid) in enumerate(zip(session.motor_names, session.motor_ids, strict=True), start=1):
+        if name in positions:
+            addr = getattr(session, "_position_addr_by_id", {}).get(int(sid), FEETECH_PRESENT_POSITION_ADDR)
+            print(f"[calibrate]   ({idx}/{len(session.motor_ids)}) {name}/ID{int(sid)}: {positions[name]}  baud={session.baud_for_id(int(sid))}  pos_addr={addr}", flush=True)
+        else:
+            print(f"[calibrate]   ({idx}/{len(session.motor_ids)}) {name}/ID{int(sid)}: FAILED", flush=True)
+    if failures:
+        raise RuntimeError("Could not read Present_Position from: " + ", ".join(failures) + ". Calibration cannot continue until every configured motor returns position data.")
+    return positions
+
+
+def set_torque(session: DirectCalibrationSession, enabled: bool) -> None:
+    value = 1 if enabled else 0
+    failed: list[str] = []
+    for name, sid in zip(session.motor_names, session.motor_ids, strict=True):
+        baud = session.baud_for_id(int(sid))
+        try:
+            bus = _get_stable_bus(session, baud)
+            ok = bus.write_u8(int(sid), FEETECH_TORQUE_ENABLE_ADDR, value)
+        except Exception:
+            ok = _direct_write_u8(session.port, int(sid), FEETECH_TORQUE_ENABLE_ADDR, value, baud)
+        if not ok:
+            failed.append(f"{name}/ID{int(sid)}")
+    if failed:
+        print(f"[calibrate] Warning: torque write failed for: {', '.join(failed)}", flush=True)
+    else:
+        print(f"[calibrate] Torque {'ENABLED' if enabled else 'DISABLED'} for {len(session.motor_names)} motors.", flush=True)
+
+
+def connect_session() -> DirectCalibrationSession:
+    ports = _candidate_robot_ports()
+    if not ports:
+        raise RuntimeError("Could not auto-detect the robot serial port. Set values.REAL_ROBOT_PORT manually.")
+    setup_status = get_motor_setup_status()
+    if not setup_status.configured:
+        raise RuntimeError("Motor setup metadata was not found or did not match the configured motor names/IDs. Run option 2 first, or fix calibration_data/robot_motor_setup.json.")
+    motor_names = list(setup_status.motor_names)
+    motor_ids = list(setup_status.motor_ids or _get_configured_motor_ids(motor_names))
+    model_numbers = _get_configured_motor_model_numbers(motor_names)
+    if setup_status.motor_baudrates and len(setup_status.motor_baudrates) == len(motor_ids):
+        motor_baudrates = [int(x) for x in setup_status.motor_baudrates]
+    else:
+        motor_baudrates = [DEFAULT_BAUDRATE] * len(motor_ids)
+    port = str(ports[0])
+    print(f"[calibrate] using direct port = {port}", flush=True)
+    print(f"[calibrate] using setup metadata = {setup_status.source}", flush=True)
+    print("[calibrate] using stable persistent serial motor-bus session." if STABLE_BUS_ENABLED else "[calibrate] stable bus disabled; using direct one-shot serial reads.", flush=True)
+    for name, sid, baud in zip(motor_names, motor_ids, motor_baudrates, strict=True):
+        print(f"  {name:16s} id={int(sid):3d} baud={int(baud)}", flush=True)
+    session = DirectCalibrationSession(port, list(motor_names), list(motor_ids), list(model_numbers), list(motor_baudrates))
+    if STABLE_BUS_ENABLED:
+        _get_stable_bus(session, session.baudrate)
+    return session
+
+
+def _read_position_quick_identify(session: DirectCalibrationSession, servo_id: int) -> tuple[int | None, int, int | None, int, int]:
+    attempts = max(1, STABLE_IDENTIFY_ATTEMPTS)
+    successes = 0
+    first_pos: int | None = None
+    first_baud = session.baud_for_id(int(servo_id))
+    first_addr: int | None = None
+    for _ in range(attempts):
+        pos, baud = _read_position_fast(session, int(servo_id))
+        if pos is not None:
+            successes += 1
+            session.set_baud_for_id(int(servo_id), int(baud))
+            if first_pos is None:
+                first_pos = int(pos)
+                first_baud = int(baud)
+                first_addr = getattr(session, "_position_addr_by_id", {}).get(int(servo_id), FEETECH_PRESENT_POSITION_ADDR)
+    return first_pos, int(first_baud), first_addr, int(successes), int(attempts)
+
+
+def _best_effort_identify(session: DirectCalibrationSession) -> None:
+    _print_header("Identify / verify motors")
+    print("Stable verification table. Each motor is read several times through one persistent bus session.", flush=True)
+    print("A position of ---- means that ID did not return Present_Position in this pass.\n", flush=True)
+    border = "+" + "-" * 18 + "+" + "-" * 6 + "+" + "-" * 10 + "+" + "-" * 10 + "+" + "-" * 10 + "+" + "-" * 10 + "+"
+    print(border, flush=True)
+    print(f"| {'motor':16s} | {'id':>4s} | {'baud':>8s} | {'position':>8s} | {'pos_addr':>8s} | {'ok/try':>8s} |", flush=True)
+    print(border, flush=True)
+    failures: list[str] = []
+    for name, sid in zip(session.motor_names, session.motor_ids, strict=True):
+        print(f"[calibrate] testing {name}/ID{int(sid)}...", flush=True)
+        pos, baud, addr, ok_count, tries = _read_position_quick_identify(session, int(sid))
+        if pos is not None:
+            session.set_baud_for_id(int(sid), int(baud))
+            pos_txt = str(int(pos))
+            addr_txt = str(int(addr)) if addr is not None else "----"
+        else:
+            failures.append(f"{name}/ID{int(sid)}")
+            pos_txt = "----"
+            addr_txt = "----"
+        print(f"| {name:16s} | {int(sid):4d} | {session.baud_for_id(int(sid)):8d} | {pos_txt:>8s} | {addr_txt:>8s} | {f'{ok_count}/{tries}':>8s} |", flush=True)
+    print(border, flush=True)
+    if failures:
+        print("Unreadable: " + ", ".join(failures), flush=True)
+    _close_stable_bus(session)
+
+
+def run_calibration_only() -> int:
+    setup_status = get_motor_setup_status()
+    if not setup_status.configured:
+        print("[calibrate] Motor-ID setup was not detected. Run setup first so calibration behaves like LeRobot:\nfirst setup motor IDs, then perform neutral/min/max calibration.")
+        return 1
+    _print_header("Interactive robot calibration")
+    print("This stage uses a stable persistent Feetech motor-bus session. It records a neutral pose and then\ncaptures per-joint minimum and maximum positions for the current hardware setup.")
+    try:
+        session = connect_session()
+    except Exception as exc:
+        print(f"[calibrate] Failed to connect to robot through direct bus: {exc}")
+        return 1
+    print(f"[calibrate] Connected. Motor names: {session.motor_names}")
+    try:
+        set_torque(session, enabled=False)
+        neutral = prompt_capture(session, "Capture NEUTRAL pose", "Move the arm into your desired neutral/zero pose. Center all wrist joints and set gripper neutral.")
+        min_pos, max_pos = capture_joint_limits(session)
+        payload = build_calibration_payload(session, neutral, min_pos, max_pos, session.motor_ids)
+        output_paths = write_outputs(payload)
+        _print_header("Calibration complete")
+        print("Saved JSON calibration to:")
+        for path in output_paths:
+            print(f"  {path}")
+        print(f"Saved text summary to:     {TXT_PATH}")
+        return 0
+    finally:
+        try:
+            set_torque(session, enabled=True)
+        except Exception:
+            pass
+        _close_stable_bus(session)
+
+
+
+# ---------------------------------------------------------------------------
+# Read-only ID scan mode
+# ---------------------------------------------------------------------------
+# This mode never writes to a servo. It only reads/pings possible IDs so a single
+# connected motor can be identified without running the flashing/setup workflow.
+
+READONLY_SCAN_MAX_ID = int(getattr(val, "FEETECH_READONLY_SCAN_MAX_ID", 20))
+READONLY_SCAN_EXTRA_IDS = list(getattr(val, "FEETECH_READONLY_SCAN_EXTRA_IDS", [0]))
+READONLY_SCAN_FULL_BAUD_SCAN = bool(getattr(val, "FEETECH_READONLY_SCAN_FULL_BAUD_SCAN", False))
+READONLY_SCAN_READ_RETRIES = int(getattr(val, "FEETECH_READONLY_SCAN_READ_RETRIES", 2))
+READONLY_SCAN_SHOW_MISSES = bool(getattr(val, "FEETECH_READONLY_SCAN_SHOW_MISSES", False))
+
+
+def _readonly_scan_id_candidates() -> list[int]:
+    ids = list(range(1, READONLY_SCAN_MAX_ID + 1)) + [int(x) for x in READONLY_SCAN_EXTRA_IDS]
+    out: list[int] = []
+    for sid in ids:
+        try:
+            sid = int(sid)
+        except Exception:
+            continue
+        if 0 <= sid <= 253 and sid not in out:
+            out.append(sid)
+    return out
+
+
+def _readonly_scan_baud_candidates() -> list[int]:
+    base = [DEFAULT_BAUDRATE, 1000000]
+    if READONLY_SCAN_FULL_BAUD_SCAN:
+        return _get_scan_baudrates(base)
+    out: list[int] = []
+    for baud in base:
+        baud = int(baud)
+        if baud > 0 and baud not in out:
+            out.append(baud)
+    return out
+
+
+def _readonly_scan_read_position(bus: StableFeetechBus, servo_id: int) -> tuple[int | None, int | None]:
+    for addr in _stable_position_addr_candidates():
+        pos = bus.read_u16(int(servo_id), int(addr), retries=max(1, READONLY_SCAN_READ_RETRIES))
+        if pos is not None:
+            return int(pos), int(addr)
+    return None, None
+
+
+def run_readonly_scan() -> int:
+    _print_header("Read-only motor ID scan")
+    print("This mode does NOT write, flash, or change servo IDs.", flush=True)
+    print("Connect one motor, or a small motor segment, then use this to see which IDs actually respond.", flush=True)
+    ports = _candidate_robot_ports()
+    if not ports:
+        print("[scan] Could not auto-detect the robot serial port. Set values.REAL_ROBOT_PORT manually.", flush=True)
+        return 1
+    port = str(ports[0])
+    ids = _readonly_scan_id_candidates()
+    bauds = _readonly_scan_baud_candidates()
+    print(f"[scan] port = {port}", flush=True)
+    print(f"[scan] baud candidates = {bauds}", flush=True)
+    print(f"[scan] ID candidates = {ids}", flush=True)
+    if not READONLY_SCAN_FULL_BAUD_SCAN:
+        print("[scan] full baud scan disabled for speed. Set FEETECH_READONLY_SCAN_FULL_BAUD_SCAN = True for slow exhaustive baud scan.", flush=True)
+    print("", flush=True)
+
+    found: list[tuple[int, int, int | None, int | None, int | None]] = []
+    for baud in bauds:
+        print(f"[scan] scanning baudrate {baud}...", flush=True)
+        bus = None
+        try:
+            bus = StableFeetechBus(port, int(baud)) if STABLE_BUS_ENABLED else None
+        except Exception as exc:
+            print(f"[scan]   could not open {port} at {baud}: {exc}", flush=True)
+            continue
+        try:
+            for sid in ids:
+                if any(existing_sid == int(sid) for existing_sid, *_ in found):
+                    continue
+                pos = None
+                pos_addr = None
+                model = None
+                if bus is not None:
+                    pos, pos_addr = _readonly_scan_read_position(bus, int(sid))
+                    model = bus.read_u16(int(sid), FEETECH_MODEL_NUMBER_ADDR, retries=1)
+                else:
+                    for addr in _stable_position_addr_candidates():
+                        pos = _direct_read_u16(port, int(sid), int(addr), int(baud))
+                        if pos is not None:
+                            pos_addr = int(addr)
+                            break
+                    model = _direct_read_model(port, int(sid), int(baud))
+                if pos is not None or model is not None:
+                    found.append((int(sid), int(baud), int(pos) if pos is not None else None, int(pos_addr) if pos_addr is not None else None, int(model) if model is not None else None))
+                    print(f"[scan]   FOUND id={int(sid):3d} baud={int(baud):7d} position={str(pos):>6s} pos_addr={str(pos_addr):>4s} model={str(model):>5s}", flush=True)
+                elif READONLY_SCAN_SHOW_MISSES:
+                    print(f"[scan]   no response id={int(sid):3d}", flush=True)
+        finally:
+            try:
+                if bus is not None:
+                    bus.close()
+            except Exception:
+                pass
+
+    print("", flush=True)
+    if not found:
+        print("[scan] No responding IDs found in the selected range.", flush=True)
+        print("[scan] If the motor has an unknown baudrate, enable FEETECH_READONLY_SCAN_FULL_BAUD_SCAN in values.py and retry.", flush=True)
+        return 0
+
+    border = "+" + "-" * 6 + "+" + "-" * 10 + "+" + "-" * 10 + "+" + "-" * 10 + "+" + "-" * 10 + "+"
+    print(border, flush=True)
+    print(f"| {'id':>4s} | {'baud':>8s} | {'position':>8s} | {'pos_addr':>8s} | {'model':>8s} |", flush=True)
+    print(border, flush=True)
+    for sid, baud, pos, pos_addr, model in found:
+        print(f"| {sid:4d} | {baud:8d} | {str(pos) if pos is not None else '----':>8s} | {str(pos_addr) if pos_addr is not None else '----':>8s} | {str(model) if model is not None else '----':>8s} |", flush=True)
+    print(border, flush=True)
+    if len(found) > 1:
+        print("[scan] More than one ID responded. If you intended to check one motor, disconnect all other motors.", flush=True)
+    return 0
+
+
+def run_workflow(mode: str) -> int:
+    mode = str(mode).strip().lower()
+    if mode in {"full", "setup+calibration", "setup_and_calibration"}:
+        return run_setup_and_calibration()
+    if mode in {"setup", "setup_only", "motor_setup"}:
+        return run_motor_setup_only()
+    if mode in {"calibration", "calibrate", "calibration_only"}:
+        return run_calibration_only()
+    if mode in {"identify", "identify_only"}:
+        try:
+            session = connect_session()
+        except Exception as exc:
+            print(f"[calibrate] Failed to connect to robot through direct bus: {exc}")
+            return 1
+        _best_effort_identify(session)
+        return 0
+    if mode in {"scan", "readonly_scan", "read_only_scan", "id_scan"}:
+        return run_readonly_scan()
+    print(f"Unknown workflow mode: {mode}")
+    return 1
+
+
+def _interactive_menu_choice() -> str:
+    setup_status = get_motor_setup_status()
+    calib_status = get_joint_calibration_status()
+    _print_header("Robot setup / calibration")
+    print(f"Motor-ID setup detected: {'yes' if setup_status.configured else 'no'}")
+    if setup_status.source:
+        print(f"  source: {setup_status.source}")
+    print(f"Joint calibration detected: {'yes' if calib_status.configured else 'no'}")
+    if calib_status.source:
+        print(f"  source: {calib_status.source}")
+    print("\nChoose an action:")
+    print("  1) Full workflow (setup motors, then calibrate joints)")
+    print("  2) Setup motors only")
+    print("  3) Calibrate joints only")
+    print("  4) Identify/verify configured motors only")
+    print("  5) Read-only scan connected motor IDs")
+    reply = input("Selection [1/2/3/4/5]: ").strip()
+    return {"1": "full", "2": "setup", "3": "calibration", "4": "identify", "5": "scan"}.get(reply, "full")
 
 
 if __name__ == "__main__":

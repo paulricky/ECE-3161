@@ -1,5 +1,5 @@
 {
-  "created_at_unix": 1777006537.7087061,
+  "created_at_unix": 1777015866.162697,
   "motor_names": [
     "shoulder_pan",
     "shoulder_lift",
@@ -20,41 +20,59 @@
     7,
     8
   ],
+  "motor_baudrates": [
+    1000000,
+    1000000,
+    1000000,
+    1000000,
+    1000000,
+    1000000,
+    1000000,
+    1000000
+  ],
   "setup_only": true,
   "notes": {
     "purpose": "Records that motor IDs were configured and verified separately from joint calibration.",
-    "workflow": "Setup does not require the full chain to be present; connect one motor at a time when prompted."
+    "workflow": "Setup uses direct Feetech packet-level ID assignment in configured order."
   },
   "shoulder_pan": {
     "name": "shoulder_pan",
-    "id": 1
+    "id": 1,
+    "baudrate": 1000000
   },
   "shoulder_lift": {
     "name": "shoulder_lift",
-    "id": 2
+    "id": 2,
+    "baudrate": 1000000
   },
   "elbow_flex": {
     "name": "elbow_flex",
-    "id": 3
+    "id": 3,
+    "baudrate": 1000000
   },
   "wrist_flex": {
     "name": "wrist_flex",
-    "id": 4
+    "id": 4,
+    "baudrate": 1000000
   },
   "wrist_yaw": {
     "name": "wrist_yaw",
-    "id": 5
+    "id": 5,
+    "baudrate": 1000000
   },
   "wrist_roll": {
     "name": "wrist_roll",
-    "id": 6
+    "id": 6,
+    "baudrate": 1000000
   },
   "wrist_pitch": {
     "name": "wrist_pitch",
-    "id": 7
+    "id": 7,
+    "baudrate": 1000000
   },
   "gripper": {
     "name": "gripper",
-    "id": 8
+    "id": 8,
+    "baudrate": 1000000
   }
 }
