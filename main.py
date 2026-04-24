@@ -1,18 +1,20 @@
+from __future__ import annotations
+
 import time
 from pathlib import Path
+from typing import Optional
 
 import cv2
 
 import values as val
-from robot_controller import SOArmHardwareController, JointCommand
 from handtracking import HandTracker
+from pick_place_runtime import PickAndPlaceRuntime
 from robot_calibrate import (
     get_joint_calibration_status,
     get_motor_setup_status,
     run_workflow as run_robot_calibration_workflow,
 )
-
-
+from robot_controller import JointCommand, SOArmHardwareController
 
 
 DEFAULT_ROBOT_CALIBRATION_FILE = Path(__file__).resolve().parent / "calibration_data" / "robot_joint_calibration.json"
@@ -77,75 +79,130 @@ def _ensure_robot_calibration() -> bool:
     return True
 
 
-def main():
-    if not _ensure_robot_calibration():
-        return
+def _command_from_hand_data(hand_data: dict) -> JointCommand:
+    return JointCommand(
+        shoulder_pan=float(hand_data["shoulder_pan"]),
+        shoulder_lift=float(hand_data["shoulder_lift"]),
+        elbow_flex=float(hand_data["elbow_flex"]),
+        wrist_flex=float(hand_data["wrist_flex"]),
+        wrist_yaw=float(hand_data["wrist_yaw"]),
+        wrist_roll=float(hand_data["wrist_roll"]),
+        wrist_pitch=float(hand_data.get("wrist_pitch", 0.0)),
+        gripper_open01=float(hand_data["gripper_open01"]),
+    )
 
-    cap = cv2.VideoCapture(0)
+
+def _draw_main_hud(frame, pick_runtime: PickAndPlaceRuntime, snap_event: bool) -> None:
+    key = str(getattr(val, "PICKPLACE_TRIGGER_KEY", "p"))[:1] or "p"
+    lines = [
+        f"ESC: quit   {key}: pick/place   c: cancel pick/place",
+        f"snap trigger: {'YES' if snap_event else 'no'}   pick/place: {'ACTIVE' if pick_runtime.active else 'idle'}",
+    ]
+    if pick_runtime.initialized and not pick_runtime.available:
+        lines.append(f"pick/place unavailable: {pick_runtime.last_error}")
+    for i, line in enumerate(lines):
+        y = 24 + i * 24
+        cv2.putText(frame, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(frame, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+
+
+def main() -> int:
+    if not _ensure_robot_calibration():
+        return 1
+
+    hand_cam_index = int(getattr(val, "HANDTRACKING_CAMERA_INDEX", 0))
+    cap = cv2.VideoCapture(hand_cam_index)
     if not cap.isOpened():
-        raise RuntimeError("Could not open camera")
+        raise RuntimeError(f"Could not open hand-tracking camera index {hand_cam_index}")
 
     tracker = HandTracker()
-
     robot = SOArmHardwareController()
+    real_robot_enabled = bool(getattr(val, "ENABLE_REAL_ROBOT", False))
 
-    if val.ENABLE_REAL_ROBOT:
+    if real_robot_enabled:
         try:
             robot.connect()
             print("[main] Real robot connected")
-        except Exception as e:
-            print(f"[main] Failed to connect robot: {e}")
+        except Exception as exc:
+            print(f"[main] Failed to connect robot: {exc}")
             cap.release()
-            return
+            return 1
     else:
-        print("[main] Real robot disabled")
-        cap.release()
-        return
+        print("[main] ENABLE_REAL_ROBOT=False; commands will be displayed but not sent")
 
+    pick_runtime = PickAndPlaceRuntime(real_robot_enabled=real_robot_enabled)
+    trigger_key = str(getattr(val, "PICKPLACE_TRIGGER_KEY", "p"))[:1].lower() or "p"
+    trigger_key_code = ord(trigger_key)
+
+    hz = float(getattr(val, "REAL_ROBOT_HZ", 20.0))
+    period = 1.0 / max(hz, 1e-3)
     last_time = time.time()
 
     try:
         while True:
+            loop_start = time.time()
             ret, frame = cap.read()
             if not ret:
+                print("[main] hand-tracking camera read failed")
                 break
 
             frame = cv2.flip(frame, 1)
 
+            robot_feedback: Optional[dict] = None
+            if real_robot_enabled and bool(getattr(val, "MAIN_READ_ROBOT_FEEDBACK", True)):
+                try:
+                    robot_feedback = robot.read_present_joints_rad()
+                except Exception as exc:
+                    print(f"[main] warning: robot feedback read failed: {exc}")
+                    robot_feedback = None
+            if robot_feedback is not None:
+                tracker.update_robot_feedback(robot_feedback)
+
             hand_data = tracker.process(frame)
+            snap_event = tracker.consume_snap_event()
+            if snap_event and bool(getattr(val, "PICKPLACE_TRIGGER_ON_SNAP", True)):
+                pick_runtime.request_start("snap")
 
-            if hand_data is not None:
-                cmd = JointCommand(
-                    shoulder_pan=float(hand_data["shoulder_pan"]),
-                    shoulder_lift=float(hand_data["shoulder_lift"]),
-                    elbow_flex=float(hand_data["elbow_flex"]),
-                    wrist_flex=float(hand_data["wrist_flex"]),
-                    wrist_yaw=float(hand_data["wrist_yaw"]),
-                    wrist_roll=float(hand_data["wrist_roll"]),
-                    wrist_pitch=float(hand_data.get("wrist_pitch", 0.0)),
-                    gripper_open01=float(hand_data["gripper_open01"]),
-                )
+            command_to_send = None
+            if pick_runtime.active:
+                command_to_send = pick_runtime.tick(robot_feedback=robot_feedback)
+            elif hand_data is not None:
+                command_to_send = _command_from_hand_data(hand_data)
 
-                robot.send_if_due(cmd)
+            if command_to_send is not None and real_robot_enabled:
+                robot.send_if_due(command_to_send)
 
-            cv2.imshow("Hand Tracking", frame)
+            _draw_main_hud(frame, pick_runtime, snap_event)
+            cv2.imshow("Hand Tracking / Main", frame)
 
-            if cv2.waitKey(1) & 0xFF == 27:
+            key = cv2.waitKey(1) & 0xFF
+            if key == 27:
                 break
+            if key == trigger_key_code:
+                pick_runtime.request_start(f"key '{trigger_key}'")
+            elif key == ord("c"):
+                pick_runtime.cancel()
 
-            now = time.time()
-            dt = now - last_time
-            if dt < 1.0 / val.REAL_ROBOT_HZ:
-                time.sleep((1.0 / val.REAL_ROBOT_HZ) - dt)
+            elapsed = time.time() - loop_start
+            sleep = period - elapsed
+            if sleep > 0:
+                time.sleep(sleep)
             last_time = time.time()
     finally:
         try:
-            robot.disconnect()
+            pick_runtime.close()
+        except Exception:
+            pass
+        try:
+            if real_robot_enabled:
+                robot.disconnect()
         except Exception:
             pass
         cap.release()
         cv2.destroyAllWindows()
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

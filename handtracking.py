@@ -705,6 +705,7 @@ class HandTracker:
         self._filtered_target_xyz = None
         self._filtered_target_rpy = None
         self._external_measured_joints = None
+        self.last_gesture_events = {"snap": False, "clap": False, "per_hand": {}}
 
     def update_robot_feedback(self, joints_rad):
         """Optional hook used by main/pick-place code to seed IK with measured joints."""
@@ -729,7 +730,9 @@ class HandTracker:
         results = hands.process(rgb)
         detected_hands = build_detected_hands(results)
 
-        draw_and_update_gestures(frame, detected_hands, now, dt)
+        clap_event, per_hand = draw_and_update_gestures(frame, detected_hands, now, dt)
+        snap_event = any(bool(info.get("snap", False)) for info in per_hand.values())
+        self.last_gesture_events = {"snap": snap_event, "clap": bool(clap_event), "per_hand": per_hand}
 
         aruco_pose = self.aruco.detect(frame)
         self.aruco.draw_debug(frame, aruco_pose)
@@ -740,6 +743,8 @@ class HandTracker:
             if cmd is not None:
                 out = self._smooth_command(cmd)
                 out["mode"] = "aruco"
+                out["snap_event"] = snap_event
+                out["clap_event"] = bool(clap_event)
                 out["ee_target_xyz"] = aruco_pose["workspace_xyz"].tolist()
                 self._draw_command_overlay(frame, out)
                 self._draw_aruco_overlay(frame, aruco_pose)
@@ -753,6 +758,8 @@ class HandTracker:
         cmd = self._landmarks_to_command(hand_lms, label)
         out = self._smooth_command(cmd)
         out["mode"] = "mediapipe"
+        out["snap_event"] = snap_event
+        out["clap_event"] = bool(clap_event)
         self._draw_command_overlay(frame, out)
         return out
 
@@ -761,12 +768,26 @@ class HandTracker:
             self._last_cmd[k] = _lerp(self._last_cmd[k], float(cmd[k]), self._alpha)
         return dict(self._last_cmd)
 
+    def consume_snap_event(self) -> bool:
+        snap = bool(self.last_gesture_events.get("snap", False))
+        if snap:
+            self.last_gesture_events["snap"] = False
+            for info in self.last_gesture_events.get("per_hand", {}).values():
+                if isinstance(info, dict):
+                    info["snap"] = False
+        return snap
+
     def _estimate_gripper_open01(self, detected_hands):
         driver = choose_driver(detected_hands)
         if driver is None:
             return self._last_open01
 
         hand_lms, label, _score = driver
+        is_closed, open01, _metric, _debug = openness_from_fingertips(hand_lms, label)
+        gripper_open01 = 0.0 if is_closed else float(open01)
+        self._last_open01 = _lerp(self._last_open01, gripper_open01, self._open_alpha)
+        return self._last_open01
+
     def _smooth_target_pose(self, xyz, rpy):
         xyz = np.asarray(xyz, dtype=np.float64).reshape(3)
         rpy = np.asarray(rpy, dtype=np.float64).reshape(3)
