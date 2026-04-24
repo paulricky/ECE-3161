@@ -1,0 +1,60 @@
+{
+  "created_at_unix": 1777006537.7087061,
+  "motor_names": [
+    "shoulder_pan",
+    "shoulder_lift",
+    "elbow_flex",
+    "wrist_flex",
+    "wrist_yaw",
+    "wrist_roll",
+    "wrist_pitch",
+    "gripper"
+  ],
+  "motor_ids": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+  ],
+  "setup_only": true,
+  "notes": {
+    "purpose": "Records that motor IDs were configured and verified separately from joint calibration.",
+    "workflow": "Setup does not require the full chain to be present; connect one motor at a time when prompted."
+  },
+  "shoulder_pan": {
+    "name": "shoulder_pan",
+    "id": 1
+  },
+  "shoulder_lift": {
+    "name": "shoulder_lift",
+    "id": 2
+  },
+  "elbow_flex": {
+    "name": "elbow_flex",
+    "id": 3
+  },
+  "wrist_flex": {
+    "name": "wrist_flex",
+    "id": 4
+  },
+  "wrist_yaw": {
+    "name": "wrist_yaw",
+    "id": 5
+  },
+  "wrist_roll": {
+    "name": "wrist_roll",
+    "id": 6
+  },
+  "wrist_pitch": {
+    "name": "wrist_pitch",
+    "id": 7
+  },
+  "gripper": {
+    "name": "gripper",
+    "id": 8
+  }
+}
