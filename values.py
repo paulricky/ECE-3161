@@ -353,3 +353,17 @@ FEETECH_DIRECT_PACKET_TIMEOUT_S = 0.18
 FEETECH_DIRECT_READ_RETRIES = 3
 FEETECH_STABLE_BUS_INTER_PACKET_DELAY_S = 0.006
 FEETECH_LIVE_TABLE_PERIOD_S = 0.50
+# ---------------------------------------------------------------------------
+# Safe one-motor ID flashing / verification
+# ---------------------------------------------------------------------------
+# STS/SMS/Feetech servo ID is stored in EEPROM. Unlock before writing ID and
+# verify by a read-only scan afterward. The script must not trust write ACKs.
+FEETECH_LOCK_REGISTER_ADDR = 55
+FEETECH_LOCK_UNLOCK_VALUE = 0
+FEETECH_LOCK_LOCK_VALUE = 1
+FEETECH_ID_FLASH_VERIFY_RETRIES = 10
+FEETECH_ID_FLASH_VERIFY_DELAY_S = 0.30
+FEETECH_ID_FLASH_REQUIRE_ID_REGISTER_MATCH = True
+FEETECH_ID_FLASH_LOCK_EEPROM_AFTER_WRITE = True
+FEETECH_SETUP_POST_WRITE_DELAY_S = 0.80
+FEETECH_SETUP_WRITE_VERIFY_RETRIES = 10

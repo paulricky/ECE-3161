@@ -1,0 +1,78 @@
+Robot joint calibration summary
+========================================
+JSON files:
+  /Users/ricky/PycharmProjects/ECE3161/calibration_data/robot_joint_calibration.json
+  /Users/ricky/.cache/huggingface/lerobot/calibration/robots/so_follower/my_awesome_follower_arm.json
+
+shoulder_pan:
+  id            = 1
+  baudrate      = 1000000
+  neutral_pos   = 2130
+  min_pos       = 719
+  max_pos       = 3590
+  homing_offset = -2130
+  drive_mode    = 0
+
+shoulder_lift:
+  id            = 2
+  baudrate      = 1000000
+  neutral_pos   = 2033
+  min_pos       = 839
+  max_pos       = 3296
+  homing_offset = -2033
+  drive_mode    = 0
+
+elbow_flex:
+  id            = 3
+  baudrate      = 1000000
+  neutral_pos   = 2369
+  min_pos       = 1233
+  max_pos       = 3479
+  homing_offset = -2369
+  drive_mode    = 0
+
+wrist_flex:
+  id            = 4
+  baudrate      = 1000000
+  neutral_pos   = 2676
+  min_pos       = 1342
+  max_pos       = 3888
+  homing_offset = -2676
+  drive_mode    = 0
+
+wrist_yaw:
+  id            = 5
+  baudrate      = 1000000
+  neutral_pos   = 2760
+  min_pos       = 1
+  max_pos       = 4088
+  homing_offset = -2760
+  drive_mode    = 0
+
+wrist_roll:
+  id            = 6
+  baudrate      = 1000000
+  neutral_pos   = 559
+  min_pos       = 185
+  max_pos       = 4084
+  homing_offset = -559
+  drive_mode    = 0
+
+wrist_pitch:
+  id            = 7
+  baudrate      = 1000000
+  neutral_pos   = 3558
+  min_pos       = 5
+  max_pos       = 4061
+  homing_offset = -3558
+  drive_mode    = 0
+
+gripper:
+  id            = 8
+  baudrate      = 1000000
+  neutral_pos   = 1150
+  min_pos       = 592
+  max_pos       = 2051
+  homing_offset = -1150
+  drive_mode    = 0
+

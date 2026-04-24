@@ -24,6 +24,9 @@ TXT_PATH = CALIB_DIR / "robot_joint_calibration_summary.txt"
 
 FEETECH_MODEL_NUMBER_ADDR = int(getattr(val, "FEETECH_MODEL_NUMBER_ADDR", 3))
 FEETECH_ID_REGISTER_ADDR = int(getattr(val, "FEETECH_ID_REGISTER_ADDR", 5))
+FEETECH_LOCK_REGISTER_ADDR = int(getattr(val, "FEETECH_LOCK_REGISTER_ADDR", 55))
+FEETECH_LOCK_UNLOCK_VALUE = int(getattr(val, "FEETECH_LOCK_UNLOCK_VALUE", 0))
+FEETECH_LOCK_LOCK_VALUE = int(getattr(val, "FEETECH_LOCK_LOCK_VALUE", 1))
 FEETECH_TORQUE_ENABLE_ADDR = int(getattr(val, "FEETECH_TORQUE_ENABLE_ADDR", 40))
 FEETECH_GOAL_POSITION_ADDR = int(getattr(val, "FEETECH_GOAL_POSITION_ADDR", 42))
 FEETECH_PRESENT_POSITION_ADDR = int(getattr(val, "FEETECH_PRESENT_POSITION_ADDR", 56))
@@ -46,6 +49,10 @@ SETUP_EXTRA_SCAN_IDS = [int(x) for x in getattr(val, "FEETECH_SETUP_EXTRA_SCAN_I
 SETUP_READ_RETRIES = int(getattr(val, "FEETECH_SETUP_READ_RETRIES", 2))
 SETUP_WRITE_VERIFY_RETRIES = int(getattr(val, "FEETECH_SETUP_WRITE_VERIFY_RETRIES", 8))
 SETUP_POST_WRITE_DELAY_S = float(getattr(val, "FEETECH_SETUP_POST_WRITE_DELAY_S", 0.8))
+ID_FLASH_VERIFY_RETRIES = int(getattr(val, "FEETECH_ID_FLASH_VERIFY_RETRIES", 10))
+ID_FLASH_VERIFY_DELAY_S = float(getattr(val, "FEETECH_ID_FLASH_VERIFY_DELAY_S", 0.30))
+ID_FLASH_REQUIRE_ID_REGISTER_MATCH = bool(getattr(val, "FEETECH_ID_FLASH_REQUIRE_ID_REGISTER_MATCH", True))
+ID_FLASH_LOCK_EEPROM_AFTER_WRITE = bool(getattr(val, "FEETECH_ID_FLASH_LOCK_EEPROM_AFTER_WRITE", True))
 
 IDENTIFY_ATTEMPTS = int(getattr(val, "FEETECH_STABLE_IDENTIFY_ATTEMPTS", 3))
 IDENTIFY_FULL_BAUD_SCAN = bool(getattr(val, "FEETECH_IDENTIFY_FULL_BAUD_SCAN", False))
@@ -662,51 +669,111 @@ def _scan_single_connected_motor(port: str, target_id: int | None = None) -> tup
     return int(found[0]["id"]), int(found[0]["baud"])
 
 
-def _verify_unique_id_after_write(port: str, target_id: int, baudrate: int, old_id: int | None = None) -> bool:
-    ids = [int(target_id)]
+def _verify_single_connected_id_by_readonly_scan(
+    port: str,
+    target_id: int,
+    baudrate: int,
+    old_id: int | None = None,
+    attempts: int | None = None,
+    delay_s: float | None = None,
+) -> bool:
+    """Verify an ID change using the same raw read-only scan method as option 5.
+
+    This is the safety-critical check. It does not trust write acknowledgements.
+    A flash is accepted only when a read-only scan sees exactly one responding
+    servo, the responding packet ID is target_id, and the ID register read from
+    that servo also reports target_id.
+    """
+    ids: list[int] = [int(target_id)]
     if old_id is not None:
         ids.append(int(old_id))
     ids.extend(_get_configured_motor_ids(_get_configured_motor_names()))
     ids.extend(SETUP_EXTRA_SCAN_IDS)
-    ids.extend(_id_candidates(SETUP_MAX_ID))
+    ids.extend(_id_candidates(max(SETUP_MAX_ID, READONLY_SCAN_MAX_ID), READONLY_SCAN_EXTRA_IDS))
     ids = list(dict.fromkeys(int(x) for x in ids if 0 <= int(x) <= 253))
-    for attempt in range(1, max(1, SETUP_WRITE_VERIFY_RETRIES) + 1):
-        print(f"[calibrate]   verify write scan attempt {attempt}/{SETUP_WRITE_VERIFY_RETRIES}...", flush=True)
-        found = _scan_ids_readonly(port, ids, [int(baudrate)], retries=1, show_misses=False)
+    attempts = max(1, int(attempts if attempts is not None else ID_FLASH_VERIFY_RETRIES))
+    delay_s = float(delay_s if delay_s is not None else ID_FLASH_VERIFY_DELAY_S)
+
+    for attempt in range(1, attempts + 1):
+        print(f"[flash] verify by read-only scan attempt {attempt}/{attempts}...", flush=True)
+        found = _scan_ids_readonly(port, ids, [int(baudrate)], retries=max(1, SETUP_READ_RETRIES), show_misses=False)
         found_ids = [int(x["id"]) for x in found]
-        if found_ids == [int(target_id)]:
-            print(f"[calibrate]   verified exactly one responding ID: {target_id}", flush=True)
-            return True
-        print(f"[calibrate]   verification saw IDs: {found_ids}", flush=True)
-        time.sleep(0.25)
+        if len(found) == 1:
+            item = found[0]
+            packet_id = int(item["id"])
+            id_reg = item.get("id_register")
+            id_reg_ok = (id_reg is not None and int(id_reg) == int(target_id))
+            if packet_id == int(target_id) and (id_reg_ok or not ID_FLASH_REQUIRE_ID_REGISTER_MATCH):
+                print(
+                    f"[flash] VERIFIED: exactly one motor responded as ID{target_id}; "
+                    f"id_reg={id_reg}, baud={int(item['baud'])}, position={item.get('position')}",
+                    flush=True,
+                )
+                return True
+        print(f"[flash] verification saw IDs {found_ids}; target ID{target_id} not proven yet.", flush=True)
+        time.sleep(delay_s)
     return False
 
 
+def _verify_unique_id_after_write(port: str, target_id: int, baudrate: int, old_id: int | None = None) -> bool:
+    return _verify_single_connected_id_by_readonly_scan(port, target_id, baudrate, old_id=old_id)
+
+
 def _write_feetech_id_safely(port: str, current_id: int, target_id: int, baudrate: int) -> bool:
+    """Safely flash one connected Feetech/ST servo ID.
+
+    This follows the LeRobot-style EEPROM sequence: torque off, unlock EEPROM,
+    write ID, close/reopen the bus, then verify with a read-only scan. The write
+    packet return value is never treated as proof of success.
+    """
     current_id = int(current_id)
     target_id = int(target_id)
     baudrate = int(baudrate)
-    print(f"[calibrate] Writing ID {target_id} to the single connected motor currently at ID {current_id}...", flush=True)
+    if not (0 <= target_id <= 253):
+        print(f"[flash] Invalid target ID {target_id}. Must be 0..253.", flush=True)
+        return False
+
+    print(f"[flash] Preparing to write ID {target_id} to the single connected motor currently at ID {current_id}.", flush=True)
+    print("[flash] Step 1/4: torque off and EEPROM unlock...", flush=True)
     try:
         bus = StableFeetechBus(port, baudrate)
     except Exception as exc:
-        print(f"[calibrate] Could not open bus for ID write: {exc}", flush=True)
+        print(f"[flash] Could not open bus for ID write: {exc}", flush=True)
         return False
+
     try:
-        # Torque-off is best effort only. ID write verification is the real proof.
-        bus.write_u8(current_id, FEETECH_TORQUE_ENABLE_ADDR, 0, retries=1)
+        bus.write_u8(current_id, FEETECH_TORQUE_ENABLE_ADDR, 0, retries=WRITE_RETRIES)
         time.sleep(0.05)
+        bus.write_u8(current_id, FEETECH_LOCK_REGISTER_ADDR, FEETECH_LOCK_UNLOCK_VALUE, retries=WRITE_RETRIES)
+        time.sleep(0.08)
+        print(f"[flash] Step 2/4: writing ID register addr {FEETECH_ID_REGISTER_ADDR} = {target_id}...", flush=True)
         bus.write_u8(current_id, FEETECH_ID_REGISTER_ADDR, target_id, retries=WRITE_RETRIES)
+        time.sleep(0.10)
     finally:
         bus.close()
+
+    print("[flash] Step 3/4: waiting for servo to apply new ID...", flush=True)
     time.sleep(SETUP_POST_WRITE_DELAY_S)
     if SETUP_POWER_CYCLE_AFTER_ID_WRITE:
         input("Power-cycle the servo bus now, then press Enter to verify the new ID... ")
-    if not SETUP_VERIFY_RESCAN_AFTER_WRITE:
-        pos, _baud, _addr = _read_position_any_baud(port, target_id, [baudrate])
-        return pos is not None
-    return _verify_unique_id_after_write(port, target_id, baudrate, old_id=current_id)
 
+    print("[flash] Step 4/4: verifying with the exact same read-only scan method as option 5...", flush=True)
+    verified = _verify_single_connected_id_by_readonly_scan(port, target_id, baudrate, old_id=current_id)
+    if not verified:
+        print("[flash] FAILED: read-only scan did not prove the new ID. The motor ID was not trusted as changed.", flush=True)
+        return False
+
+    if ID_FLASH_LOCK_EEPROM_AFTER_WRITE:
+        try:
+            bus = StableFeetechBus(port, baudrate)
+            try:
+                bus.write_u8(target_id, FEETECH_LOCK_REGISTER_ADDR, FEETECH_LOCK_LOCK_VALUE, retries=WRITE_RETRIES)
+            finally:
+                bus.close()
+            print(f"[flash] EEPROM lock restored using ID{target_id}.", flush=True)
+        except Exception as exc:
+            print(f"[flash] Warning: ID was verified, but EEPROM relock write failed: {exc}", flush=True)
+    return True
 
 def _manual_setup_one_motor(port: str, name: str, target_id: int) -> int | None:
     _print_header(f"Set motor ID {target_id}: {name}")
@@ -1152,6 +1219,65 @@ def run_readonly_scan() -> int:
     return 0
 
 
+def run_flash_one_motor_id() -> int:
+    _print_header("Flash one connected motor ID")
+    print("This mode changes exactly one connected servo ID.")
+    print("Disconnect every other servo before continuing. The script will reject multiple responding IDs.")
+    ports = _candidate_robot_ports()
+    if not ports:
+        print("[flash] Could not auto-detect the robot serial port. Set values.REAL_ROBOT_PORT manually.")
+        return 1
+    port = str(ports[0])
+    print(f"[flash] port = {port}")
+    raw = input("Enter target ID to flash this single connected motor to [0-253]: ").strip()
+    try:
+        target_id = int(raw)
+    except Exception:
+        print(f"[flash] Invalid target ID: {raw!r}")
+        return 1
+    if not (0 <= target_id <= 253):
+        print("[flash] Invalid target ID. Must be in range 0..253.")
+        return 1
+
+    input("Connect ONLY the one motor to be flashed, power-cycle the bus, then press Enter... ")
+    print("[flash] Pre-write read-only scan. No IDs are written during this scan.", flush=True)
+    scanned = _scan_single_connected_motor(port, target_id=target_id)
+    if scanned is None:
+        print("[flash] Aborting: could not prove that exactly one motor is connected.", flush=True)
+        return 1
+    current_id, baudrate = scanned
+    print(f"[flash] Single connected motor currently responds as ID{current_id} at baud {baudrate}.", flush=True)
+
+    if int(current_id) == int(target_id):
+        print(f"[flash] Motor is already ID{target_id}. Verifying with option-5-style read-only scan before returning success...", flush=True)
+        if _verify_single_connected_id_by_readonly_scan(port, target_id, baudrate, old_id=None):
+            print(f"[flash] SUCCESS: single connected motor is verified as ID{target_id}.", flush=True)
+            return 0
+        print(f"[flash] FAILED: motor appeared as ID{target_id}, but exact read-only verification failed.", flush=True)
+        return 1
+
+    configured_id_to_name = dict(zip(_get_configured_motor_ids(_get_configured_motor_names()), _get_configured_motor_names(), strict=True))
+    if current_id in configured_id_to_name:
+        print("\n[flash] SAFETY WARNING:", flush=True)
+        print(f"  The connected motor currently responds as ID{current_id}, configured as '{configured_id_to_name[current_id]}'.", flush=True)
+        print(f"  You are about to rewrite it to ID{target_id}.", flush=True)
+        print("  Continue only if this is the physical motor you intend to reassign.", flush=True)
+        reply = input("Type YES to flash this connected motor anyway: ").strip()
+        if reply != "YES":
+            print("[flash] Cancelled. No write attempted.", flush=True)
+            return 1
+    else:
+        reply = input(f"Type YES to flash connected motor ID{current_id} -> ID{target_id}: ").strip()
+        if reply != "YES":
+            print("[flash] Cancelled. No write attempted.", flush=True)
+            return 1
+
+    if not _write_feetech_id_safely(port, current_id, target_id, baudrate):
+        print("[flash] FAILED: ID flash was not verified. Do not trust that the motor changed IDs.", flush=True)
+        return 1
+    print(f"[flash] SUCCESS: motor was verified as ID{target_id} by read-only scan.", flush=True)
+    return 0
+
 def run_setup_and_calibration() -> int:
     rc = run_motor_setup_only()
     if rc != 0:
@@ -1180,6 +1306,8 @@ def run_workflow(mode: str) -> int:
             session.disconnect()
     if mode in {"scan", "readonly_scan", "read_only_scan", "id_scan"}:
         return run_readonly_scan()
+    if mode in {"flash", "flash_one", "flash_one_motor", "set_id", "write_id"}:
+        return run_flash_one_motor_id()
     print(f"Unknown workflow mode: {mode}")
     return 1
 
@@ -1200,8 +1328,9 @@ def _interactive_menu_choice() -> str:
     print("  3) Calibrate joints only")
     print("  4) Identify/verify configured motors only")
     print("  5) Read-only scan connected motor IDs")
-    reply = input("Selection [1/2/3/4/5]: ").strip()
-    return {"1": "full", "2": "setup", "3": "calibration", "4": "identify", "5": "scan"}.get(reply, "full")
+    print("  6) Flash one connected motor ID")
+    reply = input("Selection [1/2/3/4/5/6]: ").strip()
+    return {"1": "full", "2": "setup", "3": "calibration", "4": "identify", "5": "scan", "6": "flash"}.get(reply, "full")
 
 
 def main(mode: str | None = None) -> int:
