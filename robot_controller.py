@@ -131,18 +131,25 @@ class SOArmHardwareController:
             )
         return payload
 
-    def _import_lerobot_follower(self):
+    def _import_lerobot_so_follower(self):
         attempts = [
-            # Current LeRobot GitHub API. This is the path you verified works:
-            #   from lerobot.robots.so_follower.so_follower import SOFollower
+            # New LeRobot API: generic SO follower implementation.
+            # IMPORTANT: use SO101FollowerConfig/SOFollowerRobotConfig, not the
+            # plain SOFollowerConfig mixin, because the plain mixin does not
+            # include RobotConfig fields such as `id` and `calibration_dir`.
             (
                 "lerobot.robots.so_follower.so_follower",
                 "SOFollower",
                 "lerobot.robots.so_follower.config_so_follower",
-                "SOFollowerConfig",
+                "SO101FollowerConfig",
             ),
-            # Older LeRobot SO101-specific API. Kept as a fallback so the same
-            # project still works if you later switch to an older SO101 checkout.
+            (
+                "lerobot.robots.so_follower.so_follower",
+                "SOFollower",
+                "lerobot.robots.so_follower.config_so_follower",
+                "SOFollowerRobotConfig",
+            ),
+            # Older LeRobot API fallback.
             (
                 "lerobot.robots.so101_follower.so101_follower",
                 "SO101Follower",
@@ -163,73 +170,56 @@ class SOArmHardwareController:
                 import_errors.append(f"{follower_module} failed: {e}")
 
         raise RealRobotUnavailableError(
-            "Could not import a compatible LeRobot SO follower driver. "
+            "Could not import a compatible SO follower driver from LeRobot. "
             + " | ".join(import_errors)
         )
 
-    def _make_follower_config(self, config_cls, *, port: str, robot_id: str):
-        import dataclasses
+    def _build_lerobot_config(self, config_cls, port: str, robot_id: str):
+        # Different LeRobot releases expose slightly different config classes.
+        # Build kwargs defensively so this works with the new generic SOFollower
+        # API and with older SO101-specific APIs.
         import inspect
 
-        desired_kwargs = {
+        kwargs = {
             "port": port,
             "id": robot_id,
-            "robot_id": robot_id,
             "use_degrees": True,
             "max_relative_target": float(getattr(val, "REAL_ROBOT_MAX_RELATIVE_TARGET_DEG", 2.0)),
         }
 
-        filtered_candidates = []
-
-        try:
-            if dataclasses.is_dataclass(config_cls):
-                field_names = {f.name for f in dataclasses.fields(config_cls)}
-                filtered_candidates.append({k: v for k, v in desired_kwargs.items() if k in field_names})
-        except Exception:
-            pass
+        driver_calibration_file = str(getattr(val, "LEROBOT_DRIVER_CALIBRATION_FILE", "")).strip()
+        if driver_calibration_file:
+            calibration_path = Path(driver_calibration_file).expanduser()
+            if calibration_path.suffix.lower() == ".json":
+                kwargs["calibration_dir"] = calibration_path.parent
+            else:
+                kwargs["calibration_dir"] = calibration_path
 
         try:
             sig = inspect.signature(config_cls)
-            params = sig.parameters
-            accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
-            if accepts_kwargs:
-                filtered_candidates.append(dict(desired_kwargs))
-            else:
-                filtered_candidates.append({k: v for k, v in desired_kwargs.items() if k in params})
+            accepted = set(sig.parameters.keys())
+            filtered = {k: v for k, v in kwargs.items() if k in accepted}
         except Exception:
-            pass
+            filtered = kwargs
 
-        filtered_candidates.extend([
-            {"port": port, "id": robot_id, "use_degrees": True},
-            {"port": port, "id": robot_id},
-            {"port": port, "robot_id": robot_id},
-            {"port": port},
-            {},
-        ])
-
-        seen = set()
-        errors = []
-        for kwargs in filtered_candidates:
-            key = tuple(sorted(kwargs.items()))
-            if key in seen:
-                continue
-            seen.add(key)
-            try:
-                cfg = config_cls(**kwargs)
-                for attr, value in desired_kwargs.items():
-                    try:
-                        if hasattr(cfg, attr):
-                            setattr(cfg, attr, value)
-                    except Exception:
-                        pass
-                return cfg
-            except Exception as exc:
-                errors.append(f"{config_cls.__name__}(**{kwargs}) failed: {exc}")
-
-        raise RealRobotUnavailableError("Could not construct LeRobot follower config. " + " | ".join(errors))
+        try:
+            return config_cls(**filtered)
+        except TypeError:
+            # Last-resort compatibility path: construct the config with the
+            # required port only, then attach optional attributes if the object
+            # supports them. This intentionally avoids passing unknown kwargs.
+            cfg = config_cls(port=port)
+            for key, value in kwargs.items():
+                if key == "port":
+                    continue
+                try:
+                    setattr(cfg, key, value)
+                except Exception:
+                    pass
+            return cfg
 
     def connect(self):
-        SOFollower, SOFollowerConfig = self._import_lerobot_follower()
+        SOFollower, SOFollowerConfig = self._import_lerobot_so_follower()
 
         port = getattr(val, "REAL_ROBOT_PORT", "").strip()
 
@@ -248,16 +238,10 @@ class SOArmHardwareController:
 
         robot_id = getattr(val, "REAL_ROBOT_ID", "my_awesome_follower_arm")
 
-        cfg = self._make_follower_config(SOFollowerConfig, port=port, robot_id=robot_id)
+        cfg = self._build_lerobot_config(SOFollowerConfig, port, robot_id)
 
         self.robot = SOFollower(cfg)
-        connect_fn = getattr(self.robot, "connect", None)
-        if connect_fn is None:
-            raise RealRobotUnavailableError("The LeRobot follower object does not expose connect().")
-        try:
-            connect_fn(calibrate=getattr(val, "REAL_ROBOT_AUTO_CALIBRATE", False))
-        except TypeError:
-            connect_fn()
+        self.robot.connect(calibrate=getattr(val, "REAL_ROBOT_AUTO_CALIBRATE", False))
         self.connected = True
         self.last_send_time = 0.0
         self._last_action = None
@@ -280,7 +264,7 @@ class SOArmHardwareController:
         else:
             path = self._resolve_project_calibration_file()
             if path is not None:
-                print(f"[robot_controller] project calibration file not found at {path}; run robot_calibrate.py first")
+                print(f"[robot_controller] project calibration file not found at {path}; run calibrate_robot_joints.py first")
 
         print(f"[robot_controller] connected on {port} with id={robot_id}")
 
@@ -351,6 +335,38 @@ class SOArmHardwareController:
         if not applied:
             print("[robot_controller] torque limit register not applied; using motion limits only")
 
+    def _supported_action_keys(self) -> set[str] | None:
+        if self.robot is None:
+            return None
+        try:
+            features = getattr(self.robot, "action_features", None)
+            if isinstance(features, dict) and features:
+                return set(features.keys())
+        except Exception:
+            pass
+        bus = getattr(self.robot, "bus", None)
+        motors = getattr(bus, "motors", None)
+        if isinstance(motors, dict) and motors:
+            return {f"{name}.pos" for name in motors.keys()}
+        motor_names = getattr(bus, "motor_names", None)
+        if motor_names:
+            return {f"{name}.pos" for name in motor_names}
+        return None
+
+    def _filter_action_to_supported_keys(self, action: Dict[str, float]) -> Dict[str, float]:
+        supported = self._supported_action_keys()
+        if not supported:
+            return dict(action)
+        out = {k: v for k, v in action.items() if k in supported}
+        missing = sorted(set(action.keys()) - set(out.keys()))
+        if missing and not getattr(self, "_warned_unsupported_action_keys", False):
+            print(
+                "[robot_controller] warning: LeRobot driver does not expose these action keys, "
+                f"so they will not be sent: {missing}"
+            )
+            self._warned_unsupported_action_keys = True
+        return out
+
     def ready_to_send(self) -> bool:
         now = time.time()
         period = 1.0 / max(float(getattr(val, "REAL_ROBOT_HZ", 20.0)), 1e-6)
@@ -364,7 +380,10 @@ class SOArmHardwareController:
         if not self.ready_to_send():
             return None
 
-        raw_action = self._joint_command_to_action(cmd)
+        raw_action = self._filter_action_to_supported_keys(self._joint_command_to_action(cmd))
+        if not raw_action:
+            print("[robot_controller] send skipped: no command keys match this LeRobot driver")
+            return None
         limited_action = self._apply_velocity_and_acceleration_limits(raw_action)
 
         print(f"[robot_controller] raw_action = {raw_action}")
@@ -387,17 +406,19 @@ class SOArmHardwareController:
 
     def _apply_velocity_and_acceleration_limits(self, action: Dict[str, float]) -> Dict[str, float]:
         if self._last_limited_action is None:
-            self._last_limited_action = {
-                "shoulder_pan.pos": 0.0,
-                "shoulder_lift.pos": 0.0,
-                "elbow_flex.pos": 0.0,
-                "wrist_flex.pos": 0.0,
-                "wrist_yaw.pos": 0.0,
-                "wrist_roll.pos": 0.0,
-                "wrist_pitch.pos": 0.0,
-                "gripper.pos": 50.0,
-            }
+            self._last_limited_action = {}
+            for key, target in action.items():
+                if key == "gripper.pos":
+                    self._last_limited_action[key] = 50.0
+                else:
+                    self._last_limited_action[key] = 0.0
+                self._last_velocity.setdefault(key, 0.0)
             return self._apply_velocity_and_acceleration_limits(action)
+
+        for key, target in action.items():
+            if key not in self._last_limited_action:
+                self._last_limited_action[key] = 50.0 if key == "gripper.pos" else float(target)
+            self._last_velocity.setdefault(key, 0.0)
 
         dt = 1.0 / max(float(getattr(val, "REAL_ROBOT_HZ", 20.0)), 1e-6)
         vmax = float(getattr(val, "REAL_ROBOT_MAX_VELOCITY_DEG", 25.0))
@@ -467,7 +488,7 @@ class SOArmHardwareController:
         (radians for joints, 0-1 for gripper). Returns None on any error, so
         callers can fall back to time-based waypoint arrival.
 
-        The LeRobot SO101Follower driver, when configured with `use_degrees=True`,
+        The LeRobot SO follower driver, when configured with `use_degrees=True`,
         exposes `{name}.pos` observation keys in degrees. We convert to radians
         and then invert both `apply_joint_direction_conventions` (offsets + sign
         flips) and the gripper-percent mapping so the returned dict matches what

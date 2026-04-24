@@ -100,9 +100,7 @@ def _get_configured_motor_names() -> list[str]:
         "shoulder_lift",
         "elbow_flex",
         "wrist_flex",
-        "wrist_yaw",
         "wrist_roll",
-        "wrist_pitch",
         "gripper",
     ]
 
