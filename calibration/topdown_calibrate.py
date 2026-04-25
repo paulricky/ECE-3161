@@ -28,8 +28,8 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
-import values as val
-from aruco_marker import (
+from config import values as val
+from vision.aruco_marker import (
     aruco_dict_id_from_name,
     build_aruco_detector,
     marker_object_points,
