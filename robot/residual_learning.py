@@ -7,7 +7,7 @@ from typing import Optional, Sequence, Tuple
 
 import numpy as np
 
-import values as val
+from config import values as val
 
 
 @dataclass

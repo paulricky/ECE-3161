@@ -13,7 +13,7 @@ import numpy as np
 import serial
 from serial.tools import list_ports
 
-import values as val
+from config import values as val
 
 
 class RealRobotUnavailableError(RuntimeError):

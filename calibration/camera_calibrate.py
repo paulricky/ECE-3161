@@ -9,7 +9,7 @@ from typing import Dict, Iterable, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
-import values as val
+from config import values as val
 
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))

@@ -7,11 +7,11 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 
-import values as val
-from aruco_marker import TopdownArucoDetector, aruco_dict_id_from_name
-from object_detector import ObjectDetector
-from pick_place_planner import PickPlaceConfig, PickPlacePlanner, PickPlaceState
-from pixel_to_workspace import PixelToWorkspace
+from config import values as val
+from vision.aruco_marker import TopdownArucoDetector, aruco_dict_id_from_name
+from vision.object_detector import ObjectDetector
+from pick_place.planner import PickPlaceConfig, PickPlacePlanner, PickPlaceState
+from vision.pixel_to_workspace import PixelToWorkspace
 
 
 _THIS_DIR = Path(__file__).resolve().parent

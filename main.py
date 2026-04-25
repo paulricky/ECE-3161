@@ -6,19 +6,18 @@ from typing import Optional
 
 import cv2
 
-import values as val
-from handtracking import HandTracker
-from pick_place_runtime import PickAndPlaceRuntime
-from robot_calibrate import (
+from config import values as val
+from vision.handtracking import HandTracker
+from pick_place.runtime import PickAndPlaceRuntime
+from calibration.robot_calibrate import (
     get_joint_calibration_status,
     get_motor_setup_status,
     run_workflow as run_robot_calibration_workflow,
 )
-from robot_controller import JointCommand, SOArmHardwareController
+from robot.controller import JointCommand, SOArmHardwareController
 
 
 DEFAULT_ROBOT_CALIBRATION_FILE = Path(__file__).resolve().parent / "calibration_data" / "robot_joint_calibration.json"
-
 
 def _robot_calibration_path() -> Path:
     configured = getattr(val, "ROBOT_JOINT_CALIBRATION_FILE", "")
