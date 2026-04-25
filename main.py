@@ -19,7 +19,6 @@ from robot.controller import JointCommand, SOArmHardwareController
 
 DEFAULT_ROBOT_CALIBRATION_FILE = Path(__file__).resolve().parent / "calibration_data" / "robot_joint_calibration.json"
 
-
 def _robot_calibration_path() -> Path:
     configured = getattr(val, "ROBOT_JOINT_CALIBRATION_FILE", "")
     if configured:
