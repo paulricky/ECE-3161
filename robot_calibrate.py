@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
-from config import values as val
+import values as val
 
 try:
     import serial

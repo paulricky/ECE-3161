@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, Optional, Sequence, Tuple
 
 import numpy as np
 
-from config import values as val
+import values as val
 
 JOINT_NAMES = (
     "shoulder_pan",

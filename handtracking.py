@@ -11,8 +11,8 @@ import cv2
 import mediapipe as mp
 import numpy as np
 
-from robot import mathmodel as mm
-from config import values as val
+import mathmodel as mm
+import values as val
 
 
 action_log = deque(maxlen=val.LOG_MAX)

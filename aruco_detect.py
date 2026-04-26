@@ -4,7 +4,7 @@ import math
 
 from ultralytics import YOLO
 
-from config import values as val
+import values as val
 
 MARKER_SIZE_MM = 100
 ORIGIN_ID = 0

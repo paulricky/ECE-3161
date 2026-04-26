@@ -8,12 +8,12 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from config import values as val
-from robot.mathmodel import solve_ik_from_target, _fk_arm_position, _ee_geom
-from robot.controller import JointCommand
-from vision.object_detector import Detection, DetectionFrame
-from vision.aruco_marker import MarkerPose
-from vision.pixel_to_workspace import PixelToWorkspace, in_bounds_xy
+import values as val
+from mathmodel import solve_ik_from_target, _fk_arm_position, _ee_geom
+from robot_controller import JointCommand
+from object_detector import Detection, DetectionFrame
+from aruco_marker import MarkerPose
+from pixel_to_workspace import PixelToWorkspace, in_bounds_xy
 
 
 _JOINT_NAMES = (

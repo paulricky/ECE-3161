@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
-from robot import mathmodel as mm
+import mathmodel as mm
 
 
 class DepthCalibrator:

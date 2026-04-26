@@ -8,9 +8,9 @@
 # import pybullet as p
 # import pybullet_data
 #
-# from config import values as val
-# from robot import mathmodel as mm
-# from vision import depthcalibrator as dc
+# import values as val
+# import mathmodel as mm
+# import depthcalibrator as dc
 #
 #
 # _INTR = None
