@@ -1084,9 +1084,7 @@ class HandTracker:
     def _landmarks_to_command(self, hand_lms, label: str):
         lm = hand_lms.landmark
         wrist = (lm[0].x, lm[0].y)
-        thumb_tip = (lm[4].x, lm[4].y)
         index_mcp = (lm[5].x, lm[5].y)
-        index_tip = (lm[8].x, lm[8].y)
         middle_mcp = (lm[9].x, lm[9].y)
         pinky_mcp = (lm[17].x, lm[17].y)
 
@@ -1097,52 +1095,81 @@ class HandTracker:
         size_metric = 0.5 * (palm_width + palm_height)
 
         is_closed, open01, _metric, _debug = openness_from_fingertips(hand_lms, label)
-        pinch_dist = mm.dist(thumb_tip, index_tip)
-        pinch_lo = float(getattr(val, "PINCH_CLOSE_DIST", 0.03))
-        pinch_hi = float(getattr(val, "PINCH_OPEN_DIST", 0.12))
-        if pinch_hi <= pinch_lo:
-            pinch_hi = pinch_lo + 1e-3
-        pinch_open01 = _clip((pinch_dist - pinch_lo) / (pinch_hi - pinch_lo), 0.0, 1.0)
-        gripper_open01 = min(open01, pinch_open01)
-        if is_closed:
-            gripper_open01 = 0.0
+        gripper_open01 = 0.0 if is_closed else float(open01)
         self._last_open01 = _lerp(self._last_open01, gripper_open01, self._open_alpha)
         gripper_open01 = self._last_open01
 
-        x = _lerp(float(getattr(val, "WORKSPACE_X_MIN", -0.18)), float(getattr(val, "WORKSPACE_X_MAX", 0.18)), _clip(1.0 - hand_cx, 0.0, 1.0))
-        z = _lerp(float(getattr(val, "WORKSPACE_Z_MIN", 0.04)), float(getattr(val, "WORKSPACE_Z_MAX", 0.28)), _clip(1.0 - hand_cy, 0.0, 1.0))
+        # Hand position to (forward, height) target in the arm's vertical plane.
+        # palm_size large (hand close to camera) -> arm pulls back.
+        # hand high in frame                     -> end-effector high.
         size_near = float(getattr(val, "HAND_SIZE_NEAR", 0.22))
         size_far = float(getattr(val, "HAND_SIZE_FAR", 0.08))
         if abs(size_near - size_far) < 1e-6:
             size_near = size_far + 1e-3
         reach_norm = _clip((size_metric - size_far) / (size_near - size_far), 0.0, 1.0)
-        y = _lerp(float(getattr(val, "WORKSPACE_Y_MAX", 0.38)), float(getattr(val, "WORKSPACE_Y_MIN", 0.12)), reach_norm)
 
-        palm_rpy = self._estimate_hand_rpy_from_landmarks(hand_lms)
-        palm_line_angle = _angle_2d(index_mcp, pinky_mcp)
-        roll = float(palm_line_angle)
-        pitch = _clip(float(palm_rpy[1]), -1.25, 1.25)
-        yaw = float(palm_rpy[2])
-        if label == "Left":
-            yaw = -yaw
-            roll = -roll
-        rpy = np.array([roll, pitch + float(getattr(val, "HAND_TARGET_PITCH_BIAS_RAD", -0.15)), yaw], dtype=np.float64)
-        xyz = np.array([x, y, z], dtype=np.float64)
+        forward = _lerp(float(getattr(val, "WORKSPACE_Y_MAX", 0.22)),
+                        float(getattr(val, "WORKSPACE_Y_MIN", 0.10)),
+                        reach_norm)
+        z_world = _lerp(float(getattr(val, "WORKSPACE_Z_MIN", 0.00)),
+                        float(getattr(val, "WORKSPACE_Z_MAX", 0.22)),
+                        _clip(1.0 - hand_cy, 0.0, 1.0))
 
-        cmd = self._solve_cartesian_command(xyz, rpy, gripper_open01)
-        if cmd is not None:
-            return cmd
-        if self._last_ik_solution is not None:
-            out = dict(self._last_ik_solution)
-            out["gripper_open01"] = gripper_open01
-            return out
+        # Closed-form 3-DOF planar IK with a gripper-horizontal constraint, so
+        # wrist_flex (motor 4) actively participates instead of sitting at zero.
+        # Three links in the vertical plane: upper_arm L1, forearm L2, tool L3.
+        # We require theta1 + theta2 + theta3 = 0 (last segment parallel to
+        # ground), which means the wrist center sits L3 in front of the EE.
+        L1 = float(getattr(val, "IK_LINK1_M", 0.115))
+        L2 = float(getattr(val, "IK_LINK2_M", 0.115))
+        L3 = (float(getattr(val, "IK_TOOL_A_M", 0.025))
+              + float(getattr(val, "IK_TOOL_B_M", 0.025)))
+        shoulder_z = float(getattr(val, "IK_SHOULDER_Z_M", 0.06))
+
+        forward_wc = forward - L3
+        height_wc = z_world - shoulder_z
+
+        target_dist = math.sqrt(forward_wc * forward_wc + height_wc * height_wc)
+
+        # Clamp the wrist-center target to the reachable annulus so cos(elbow)
+        # stays in [-1, 1] and the arm never has to extend past its limits.
+        max_reach = (L1 + L2) * 0.98
+        min_reach = max(abs(L1 - L2) + 0.01, 1e-3)
+        if target_dist > max_reach:
+            scale = max_reach / max(target_dist, 1e-6)
+            forward_wc *= scale
+            height_wc *= scale
+            target_dist = max_reach
+        elif target_dist < min_reach:
+            scale = min_reach / max(target_dist, 1e-6)
+            forward_wc *= scale
+            height_wc *= scale
+            target_dist = min_reach
+
+        cos_t2 = (target_dist * target_dist - L1 * L1 - L2 * L2) / (2.0 * L1 * L2)
+        cos_t2 = max(-1.0, min(1.0, cos_t2))
+        theta2 = math.acos(cos_t2)
+
+        alpha = math.atan2(height_wc, max(forward_wc, 1e-6))
+        beta = math.atan2(L2 * math.sin(theta2), L1 + L2 * math.cos(theta2))
+        theta1 = alpha - beta
+
+        # shoulder_pan: direct mapping (mirror-flipped frame, so hand_cx=0 is
+        # the user's left side of the image -> pan_lo).
+        pan_lo, pan_hi = _get_limit("BASE_PAN", -3.0, 3.0)
+        shoulder_pan = _lerp(pan_lo, pan_hi, _clip(hand_cx, 0.0, 1.0))
+
+        # The calibration's neutral is now the user's chosen pose (claw forward,
+        # arm extended), so "math zero" already coincides with motor zero for
+        # shoulder_lift. No -pi/2 offset is needed. wrist_flex carries the
+        # keep-gripper-horizontal correction theta2-theta1.
         return {
-            "shoulder_pan": 0.0,
-            "shoulder_lift": 0.0,
-            "elbow_flex": 0.0,
-            "wrist_flex": 0.0,
+            "shoulder_pan": float(shoulder_pan),
+            "shoulder_lift": float(-theta1),
+            "elbow_flex": float(theta2),
+            "wrist_flex": float(theta2 - theta1),
             "wrist_yaw": 0.0,
             "wrist_roll": 0.0,
             "wrist_pitch": 0.0,
-            "gripper_open01": gripper_open01,
+            "gripper_open01": float(gripper_open01),
         }

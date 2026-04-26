@@ -72,7 +72,25 @@ class _DirectFeetechBus:
         except Exception:
             pass
         time.sleep(0.05)
+        # Stale Goal_Position registers from a prior session would make every
+        # motor snap to the old target the moment torque enables. On a current-
+        # limited supply this trips the rail. Disable torque, copy each motor's
+        # present position into its goal register, clamp torque to a safe floor,
+        # then re-enable.
+        self.enable_torque(False)
+        self._snapshot_positions_to_goals()
+        safe_pct = float(getattr(val, "REAL_ROBOT_SAFE_INITIAL_TORQUE_PERCENT", 30.0))
+        self.set_torque_limits_percent({name: safe_pct for name in self.motor_names})
         self.enable_torque(True)
+
+    def _snapshot_positions_to_goals(self) -> None:
+        pos_addr = int(getattr(val, "FEETECH_PRESENT_POSITION_ADDR", 56))
+        goal_addr = int(getattr(val, "FEETECH_GOAL_POSITION_ADDR", 42))
+        for sid in self.motor_ids:
+            present = self._read_u16(int(sid), pos_addr)
+            if present is None:
+                continue
+            self._write_u16(int(sid), goal_addr, int(present))
 
     def disconnect(self) -> None:
         try:
@@ -577,6 +595,7 @@ class SOArmHardwareController:
             self._last_limited_action = None
             for k in self._last_velocity:
                 self._last_velocity[k] = 0.0
+            self._apply_torque_limits()
             print("[robot_controller] connected using direct project Feetech controller")
             print("[robot_controller] bypassed LeRobot calibration loader to avoid incompatible project JSON calibration formats")
             return True
@@ -951,28 +970,46 @@ class SOArmHardwareController:
             print(f"[robot_controller] outer PID action = {out}")
         return out
 
+    def _watchdog_offender_info(self, name: str, target_deg: float, present_deg: float, err_deg: float) -> str:
+        motor_names = list(getattr(val, "REAL_ROBOT_MOTOR_NAMES", []))
+        motor_ids = list(getattr(val, "REAL_ROBOT_MOTOR_IDS", []))
+        mid = "?"
+        if name in motor_names:
+            idx = motor_names.index(name)
+            if idx < len(motor_ids):
+                mid = str(int(motor_ids[idx]))
+        return f"{name}/M{mid} cmd={target_deg:+.1f} meas={present_deg:+.1f} err={err_deg:.1f}"
+
     def _tracking_watchdog_allows_action(self, action: Dict[str, float]) -> bool:
         if not bool(getattr(val, "REAL_ROBOT_ENABLE_TRACKING_WATCHDOG", True)):
             return True
         present = self._present_action_degrees()
         if not isinstance(present, dict):
             return True
+        warn_deg = float(getattr(val, "REAL_ROBOT_TRACKING_WARN_DEG", 10.0))
+        abort_deg = float(getattr(val, "REAL_ROBOT_TRACKING_ABORT_DEG", 22.0))
         max_err_deg = 0.0
+        offenders = []
         for key, target in action.items():
             if key == "gripper.pos" or key not in present:
                 continue
             try:
-                err_deg = abs(float(target) - float(present[key]))
+                target_f = float(target)
+                present_f = float(present[key])
+                err_deg = abs(target_f - present_f)
             except Exception:
                 continue
             max_err_deg = max(max_err_deg, err_deg)
-        warn_deg = float(getattr(val, "REAL_ROBOT_TRACKING_WARN_DEG", 10.0))
-        abort_deg = float(getattr(val, "REAL_ROBOT_TRACKING_ABORT_DEG", 22.0))
+            if err_deg >= warn_deg:
+                jname = key[:-4] if key.endswith(".pos") else key
+                offenders.append((jname, target_f, present_f, err_deg))
         if max_err_deg >= abort_deg:
-            print(f"[robot_controller] tracking watchdog: command blocked, max joint error {max_err_deg:.1f} deg")
+            details = "; ".join(self._watchdog_offender_info(n, t, p, e) for n, t, p, e in offenders if e >= abort_deg)
+            print(f"[robot_controller] tracking watchdog ABORT (threshold {abort_deg:.0f} deg): blocked. max_err={max_err_deg:.1f} deg. offenders: {details}")
             return False
         if max_err_deg >= warn_deg:
-            print(f"[robot_controller] tracking watchdog warning: max joint error {max_err_deg:.1f} deg")
+            details = "; ".join(self._watchdog_offender_info(n, t, p, e) for n, t, p, e in offenders)
+            print(f"[robot_controller] tracking watchdog WARN (threshold {warn_deg:.0f} deg): max_err={max_err_deg:.1f} deg. offenders: {details}")
         return True
 
     def _tracking_watchdog_allows(self, cmd: JointCommand) -> bool:
@@ -990,29 +1027,45 @@ class SOArmHardwareController:
             "wrist_roll": cmd.wrist_roll,
             "wrist_pitch": cmd.wrist_pitch,
         }
+        warn_deg = float(getattr(val, "REAL_ROBOT_TRACKING_WARN_DEG", 10.0))
+        abort_deg = float(getattr(val, "REAL_ROBOT_TRACKING_ABORT_DEG", 22.0))
         max_err_deg = 0.0
+        offenders = []
         for name, target in targets.items():
             if name not in present:
                 continue
             try:
-                err_deg = abs(math.degrees(float(target) - float(present[name])))
+                target_deg = math.degrees(float(target))
+                present_deg = math.degrees(float(present[name]))
+                err_deg = abs(target_deg - present_deg)
             except Exception:
                 continue
             max_err_deg = max(max_err_deg, err_deg)
-        warn_deg = float(getattr(val, "REAL_ROBOT_TRACKING_WARN_DEG", 10.0))
-        abort_deg = float(getattr(val, "REAL_ROBOT_TRACKING_ABORT_DEG", 22.0))
+            if err_deg >= warn_deg:
+                offenders.append((name, target_deg, present_deg, err_deg))
         if max_err_deg >= abort_deg:
-            print(f"[robot_controller] tracking watchdog: command blocked, max joint error {max_err_deg:.1f} deg")
+            details = "; ".join(self._watchdog_offender_info(n, t, p, e) for n, t, p, e in offenders if e >= abort_deg)
+            print(f"[robot_controller] tracking watchdog ABORT (threshold {abort_deg:.0f} deg): blocked. max_err={max_err_deg:.1f} deg. offenders: {details}")
             return False
         if max_err_deg >= warn_deg:
-            print(f"[robot_controller] tracking watchdog warning: max joint error {max_err_deg:.1f} deg")
+            details = "; ".join(self._watchdog_offender_info(n, t, p, e) for n, t, p, e in offenders)
+            print(f"[robot_controller] tracking watchdog WARN (threshold {warn_deg:.0f} deg): max_err={max_err_deg:.1f} deg. offenders: {details}")
         return True
 
     def _apply_velocity_and_acceleration_limits(self, action: Dict[str, float]) -> Dict[str, float]:
         if self._last_limited_action is None:
+            # Seed the cursor at the servo's actual present position. Without
+            # this it starts at 0; the watchdog then blocks every command for
+            # ~12 s while the limiter ramps from 0 toward the target, and the
+            # moment it crosses the watchdog threshold all eight motors get
+            # their first non-trivial goal-position write simultaneously,
+            # spiking the supply past its current limit.
+            present = self._present_action_degrees()
             self._last_limited_action = {}
             for key, target in action.items():
-                if key == "gripper.pos":
+                if isinstance(present, dict) and key in present:
+                    self._last_limited_action[key] = float(present[key])
+                elif key == "gripper.pos":
                     self._last_limited_action[key] = 50.0
                 else:
                     self._last_limited_action[key] = 0.0
@@ -1025,12 +1078,18 @@ class SOArmHardwareController:
             self._last_velocity.setdefault(key, 0.0)
 
         dt = 1.0 / max(float(getattr(val, "REAL_ROBOT_HZ", 20.0)), 1e-6)
-        vmax = float(getattr(val, "REAL_ROBOT_MAX_VELOCITY_DEG", 25.0))
-        amax = float(getattr(val, "REAL_ROBOT_MAX_ACCELERATION_DEG", 20.0))
+        arm_vmax = float(getattr(val, "REAL_ROBOT_MAX_VELOCITY_DEG", 25.0))
+        arm_amax = float(getattr(val, "REAL_ROBOT_MAX_ACCELERATION_DEG", 20.0))
+        grip_vmax = float(getattr(val, "REAL_ROBOT_GRIPPER_MAX_VELOCITY_DEG", arm_vmax * 4.0))
+        grip_amax = float(getattr(val, "REAL_ROBOT_GRIPPER_MAX_ACCELERATION_DEG", arm_amax * 4.0))
 
         out = dict(self._last_limited_action)
 
         for key, target in action.items():
+            is_grip = key == "gripper.pos"
+            vmax = grip_vmax if is_grip else arm_vmax
+            amax = grip_amax if is_grip else arm_amax
+
             prev_pos = float(self._last_limited_action[key])
             prev_vel = float(self._last_velocity.get(key, 0.0))
 
