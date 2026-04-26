@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import importlib
 import math
-import time
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 import json
@@ -157,6 +157,26 @@ class _DirectFeetechBus:
         value = int(round(value))
         return self._write_register(servo_id, addr, [value & 0xFF, (value >> 8) & 0xFF])
 
+    def _motor_name_to_id(self, name: str) -> Optional[int]:
+        if name not in self.motor_names:
+            return None
+        return int(self.motor_ids[self.motor_names.index(name)])
+
+    def set_torque_limits_percent(self, limits_by_name: Dict[str, float]) -> bool:
+        """Best-effort runtime torque/current limit write for Feetech/ST servos."""
+        addr = int(getattr(val, "FEETECH_TORQUE_LIMIT_ADDR", 48))
+        raw_max = int(getattr(val, "FEETECH_TORQUE_LIMIT_RAW_MAX", 1000))
+        ok = True
+        for name, pct in limits_by_name.items():
+            sid = self._motor_name_to_id(str(name))
+            if sid is None:
+                continue
+            pct = max(0.0, min(100.0, float(pct)))
+            raw = int(round((pct / 100.0) * raw_max))
+            if not self._write_u16(int(sid), addr, raw):
+                ok = False
+        return ok
+
     def enable_torque(self, enabled: bool) -> None:
         addr = int(getattr(val, "FEETECH_TORQUE_ENABLE_ADDR", 40))
         value = 1 if enabled else 0
@@ -164,7 +184,7 @@ class _DirectFeetechBus:
             self._write_u8(int(sid), addr, value)
 
     def write(self, register: str, values) -> None:
-        reg = str(register).lower().replace("_", "")
+        reg = str(register).lower().replace("_", "").replace("-", "")
         if reg in {"torqueenable", "torque"}:
             if isinstance(values, dict):
                 for name, value in values.items():
@@ -172,8 +192,16 @@ class _DirectFeetechBus:
                         self._write_u8(self.motor_ids[self.motor_names.index(name)], int(getattr(val, "FEETECH_TORQUE_ENABLE_ADDR", 40)), int(value))
             else:
                 self.enable_torque(bool(values))
-        else:
-            raise RuntimeError(f"Unsupported direct bus write register: {register}")
+            return
+        if reg in {"torquelimit", "maxtorque", "currentlimit", "maxcurrent"}:
+            if isinstance(values, dict):
+                limits = {str(name): float(value) for name, value in values.items()}
+            else:
+                limits = {name: float(values) for name in self.motor_names}
+            if not self.set_torque_limits_percent(limits):
+                raise RuntimeError(f"Some direct torque/current limit writes failed for register {register}")
+            return
+        raise RuntimeError(f"Unsupported direct bus write register: {register}")
 
     sync_write = write
 
@@ -210,42 +238,17 @@ class _DirectFeetechBus:
         raw = max(e["range_min"], min(e["range_max"], raw))
         return int(round(raw))
 
-    def _sync_write_u16_many(self, addr: int, id_raw_pairs: list[tuple[int, int]]) -> bool:
-        if not id_raw_pairs:
-            return True
-        self._ensure_open()
-        params = [int(addr) & 0xFF, 2]
-        for sid, raw in id_raw_pairs:
-            raw = int(round(raw))
-            params.extend([int(sid) & 0xFF, raw & 0xFF, (raw >> 8) & 0xFF])
-        try:
-            # Protocol-1 sync write: broadcast ID, instruction 0x83, no status
-            # packets.  This replaces eight blocking per-motor writes and is the
-            # main serial-latency fix for live teleoperation.
-            self._ser.write(self._packet(0xFE, 0x83, params))
-            self._ser.flush()
-            return True
-        except Exception as exc:
-            print(f"[robot_controller] direct sync-write failed: {exc}")
-            return False
-
     def send_action(self, action: Dict[str, float]) -> Dict[str, float]:
         goal_addr = int(getattr(val, "FEETECH_GOAL_POSITION_ADDR", 42))
         sent = {}
-        pairs = []
         for key, target in action.items():
             motor_name = str(key).removesuffix(".pos")
             if motor_name not in self.motor_names:
                 continue
             raw = self._goal_to_raw(motor_name, float(target))
             sid = self.motor_ids[self.motor_names.index(motor_name)]
-            pairs.append((int(sid), int(raw)))
-            sent[key] = float(target)
-        if bool(getattr(val, "DIRECT_FEETECH_USE_SYNC_WRITE", True)):
-            if self._sync_write_u16_many(goal_addr, pairs):
-                return sent
-        for sid, raw in pairs:
             self._write_u16(int(sid), goal_addr, raw)
+            sent[key] = float(target)
         return sent
 
     def get_observation(self) -> Dict[str, float]:
@@ -301,12 +304,16 @@ class SOArmHardwareController:
             "wrist_pitch.pos": 0.0,
             "gripper.pos": 0.0,
         }
-        self._watchdog_present_cache = None
-        self._watchdog_present_cache_time = 0.0
-        self._async_lock = threading.RLock()
+        self._pid_integral: Dict[str, float] = {}
+        self._pid_prev_error: Dict[str, float] = {}
+        self._pid_derivative: Dict[str, float] = {}
+        self._pid_prev_time: Optional[float] = None
+        self._last_present_joints_rad: Optional[Dict[str, float]] = None
+        self._last_present_read_time = 0.0
+        self._async_lock = threading.Lock()
         self._async_stop = threading.Event()
-        self._async_thread = None
-        self._async_latest_cmd = None
+        self._async_thread: Optional[threading.Thread] = None
+        self._pending_cmd: Optional[JointCommand] = None
 
     def _find_candidate_ports(self) -> List[str]:
         ports = list(list_ports.comports())
@@ -641,6 +648,7 @@ class SOArmHardwareController:
         print(f"[robot_controller] connected on {port} with id={robot_id}")
 
     def disconnect(self):
+        self.stop_async_sender()
         if self.robot is not None and self.connected:
             try:
                 self.robot.disconnect()
@@ -649,54 +657,75 @@ class SOArmHardwareController:
         self.connected = False
         self.robot = None
 
+    def _motor_limit_percent_by_name(self) -> Dict[str, float]:
+        default_percent = float(getattr(val, "REAL_ROBOT_TORQUE_LIMIT_PERCENT", 50.0))
+        default_percent = max(0.0, min(100.0, default_percent))
+        motor_names = self._configured_motor_names()
+        motor_ids = self._configured_motor_ids(motor_names)
+
+        groups = getattr(val, "REAL_ROBOT_TORQUE_LIMIT_GROUPS", None)
+        by_id = getattr(val, "REAL_ROBOT_TORQUE_LIMIT_BY_MOTOR_ID", {})
+        if not isinstance(by_id, dict):
+            by_id = {}
+
+        out: Dict[str, float] = {}
+        for name, motor_id in zip(motor_names, motor_ids, strict=True):
+            value = by_id.get(int(motor_id), by_id.get(str(int(motor_id)), None))
+            if value is None and isinstance(groups, dict):
+                for group in groups.values():
+                    if not isinstance(group, dict):
+                        continue
+                    ids = {int(x) for x in group.get("motor_ids", [])}
+                    names = {str(x) for x in group.get("motor_names", [])}
+                    if int(motor_id) in ids or str(name) in names:
+                        value = group.get("percent", default_percent)
+                        break
+            if value is None:
+                if int(motor_id) in {1, 2, 3, 4}:
+                    value = getattr(val, "REAL_ROBOT_TORQUE_LIMIT_HIGH_LOAD_PERCENT", 75.0)
+                elif int(motor_id) in {5, 6, 7, 8}:
+                    value = getattr(val, "REAL_ROBOT_TORQUE_LIMIT_LOW_LOAD_PERCENT", 25.0)
+                else:
+                    value = default_percent
+            try:
+                pct = float(value)
+            except Exception:
+                pct = default_percent
+            out[str(name)] = max(0.0, min(100.0, pct))
+        return out
+
     def _apply_torque_limits(self):
         if not getattr(val, "REAL_ROBOT_ENABLE_TORQUE_LIMIT", True):
             return
         if self.robot is None:
             return
 
-        percent = float(getattr(val, "REAL_ROBOT_TORQUE_LIMIT_PERCENT", 20.0))
-        percent = max(1.0, min(100.0, percent))
-
-        motor_names = self._configured_motor_names()
-
-        register_candidates = [
-            "Torque_Limit",
-            "Max_Torque",
-        ]
-
-        value_candidates = [
-            int(round(percent)),
-            int(round(percent * 10.23)),
-        ]
-
-        applied = False
+        motor_limits = self._motor_limit_percent_by_name()
+        if not motor_limits:
+            return
 
         bus = getattr(self.robot, "bus", None)
         if bus is None:
-            print("[robot_controller] torque limit skipped: no robot.bus")
+            print("[robot_controller] torque/current limit skipped: no robot.bus")
             return
 
-        for register_name in register_candidates:
-            for value in value_candidates:
-                try:
-                    ids_values = {name: value for name in motor_names}
-                    if hasattr(bus, "write"):
-                        bus.write(register_name, ids_values)
-                    elif hasattr(bus, "sync_write"):
-                        bus.sync_write(register_name, ids_values)
-                    else:
-                        continue
-                    print(f"[robot_controller] torque limit applied using {register_name} = {value}")
-                    applied = True
-                    break
-                except Exception:
+        for register_name in ("Torque_Limit", "Max_Torque", "Current_Limit", "Max_Current"):
+            try:
+                if hasattr(bus, "write"):
+                    bus.write(register_name, motor_limits)
+                elif hasattr(bus, "sync_write"):
+                    bus.sync_write(register_name, motor_limits)
+                else:
                     continue
-            if applied:
-                break
+                if bool(getattr(val, "REAL_ROBOT_VERBOSE_ACTION_LOG", False)):
+                    print(f"[robot_controller] torque/current limits applied using {register_name}: {motor_limits}")
+                else:
+                    print("[robot_controller] torque/current limits applied")
+                return
+            except Exception:
+                continue
 
-        if not applied:
-            print("[robot_controller] torque limit register not applied; using motion limits only")
+        print("[robot_controller] torque/current limit register not applied; using motion limits only")
 
     def _supported_action_keys(self) -> set[str] | None:
         if self.robot is None:
@@ -730,35 +759,6 @@ class SOArmHardwareController:
             self._warned_unsupported_action_keys = True
         return out
 
-    def start_async_sender(self) -> None:
-        if self._async_thread is not None and self._async_thread.is_alive():
-            return
-        self._async_stop.clear()
-        self._async_thread = threading.Thread(target=self._async_sender_loop, name="robot-command-sender", daemon=True)
-        self._async_thread.start()
-
-    def stop_async_sender(self) -> None:
-        self._async_stop.set()
-        t = self._async_thread
-        if t is not None and t.is_alive():
-            t.join(timeout=1.0)
-        self._async_thread = None
-
-    def submit_latest_command(self, cmd: JointCommand) -> None:
-        with self._async_lock:
-            self._async_latest_cmd = cmd
-
-    def _async_sender_loop(self) -> None:
-        while not self._async_stop.is_set():
-            with self._async_lock:
-                cmd = self._async_latest_cmd
-            if cmd is not None:
-                try:
-                    self.send_if_due(cmd)
-                except Exception as exc:
-                    print(f"[robot_controller] async send warning: {exc}")
-            self._async_stop.wait(0.002)
-
     def ready_to_send(self) -> bool:
         now = time.time()
         period = 1.0 / max(float(getattr(val, "REAL_ROBOT_HZ", 20.0)), 1e-6)
@@ -777,103 +777,208 @@ class SOArmHardwareController:
             print("[robot_controller] send skipped: no command keys match this LeRobot driver")
             return None
         limited_action = self._apply_velocity_and_acceleration_limits(raw_action)
+        control_action = self._apply_outer_pid(limited_action)
 
-        # The watchdog must validate the velocity/acceleration-limited target,
-        # not the raw hand/IK target.  Otherwise any distant target is blocked
-        # before the limiter can ramp toward it safely.
-        limited_cmd = self._action_to_joint_command(limited_action, fallback=cmd)
-        if not self._tracking_watchdog_allows(limited_cmd):
+        if not self._tracking_watchdog_allows_action(control_action):
             return None
 
         if bool(getattr(val, "REAL_ROBOT_VERBOSE_ACTION_LOG", False)):
             print(f"[robot_controller] raw_action = {raw_action}")
             print(f"[robot_controller] limited_action = {limited_action}")
+            if control_action != limited_action:
+                print(f"[robot_controller] pid_action = {control_action}")
 
         if self._last_action is not None:
             deadband = float(getattr(val, "REAL_ROBOT_ACTION_DEADBAND_DEG", 0.5))
             moved = any(
-                abs(float(limited_action[k]) - float(self._last_action[k])) >= deadband
-                for k in limited_action
+                abs(float(control_action[k]) - float(self._last_action[k])) >= deadband
+                for k in control_action
             )
             if not moved:
                 return None
 
-        sent = self.robot.send_action(limited_action)
+        sent = self.robot.send_action(control_action)
         if bool(getattr(val, "REAL_ROBOT_VERBOSE_ACTION_LOG", False)):
             print(f"[robot_controller] sent = {sent}")
         self._last_action = dict(sent)
         self.last_send_time = time.time()
         return sent
 
-    def _action_to_joint_command(self, action: Dict[str, float], fallback: Optional[JointCommand] = None) -> JointCommand:
+    def start_async_sender(self) -> None:
+        """Start a latest-command sender thread. Safe to call even if disabled."""
+        if not bool(getattr(val, "REAL_ROBOT_ASYNC_COMMAND_SENDER", True)):
+            return
+        if self._async_thread is not None and self._async_thread.is_alive():
+            return
+        self._async_stop.clear()
+        self._async_thread = threading.Thread(target=self._async_sender_loop, name="robot-command-sender", daemon=True)
+        self._async_thread.start()
+        print("[main] Robot command sender running asynchronously")
+
+    def stop_async_sender(self) -> None:
+        self._async_stop.set()
+        th = self._async_thread
+        if th is not None and th.is_alive():
+            th.join(timeout=1.0)
+        self._async_thread = None
+
+    def submit_latest_command(self, cmd: JointCommand):
+        """Submit latest command without blocking the camera loop."""
+        if not bool(getattr(val, "REAL_ROBOT_ASYNC_COMMAND_SENDER", True)):
+            return self.send_if_due(cmd)
+        with self._async_lock:
+            self._pending_cmd = cmd
+        return None
+
+    def _async_sender_loop(self) -> None:
+        while not self._async_stop.is_set():
+            cmd = None
+            with self._async_lock:
+                if self._pending_cmd is not None:
+                    cmd = self._pending_cmd
+                    self._pending_cmd = None
+            if cmd is not None:
+                try:
+                    self.send_if_due(cmd)
+                except Exception as exc:
+                    print(f"[robot_controller] async sender warning: {exc}")
+            period = 1.0 / max(float(getattr(val, "REAL_ROBOT_HZ", 20.0)), 1e-6)
+            time.sleep(min(0.02, max(0.001, 0.5 * period)))
+
+    def _cached_present_joints_rad(self) -> Optional[Dict[str, float]]:
+        max_age = max(0.0, float(getattr(val, "REAL_ROBOT_FEEDBACK_CACHE_S", 0.10)))
+        now = time.time()
+        if isinstance(self._last_present_joints_rad, dict) and (now - self._last_present_read_time) <= max_age:
+            return dict(self._last_present_joints_rad)
+        present = self.read_present_joints_rad()
+        if isinstance(present, dict):
+            self._last_present_joints_rad = dict(present)
+            self._last_present_read_time = now
+            return dict(present)
+        return None
+
+    def _present_action_degrees(self) -> Optional[Dict[str, float]]:
+        present = self._cached_present_joints_rad()
+        if not isinstance(present, dict):
+            return None
         names = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_yaw", "wrist_roll", "wrist_pitch"]
-        vals = []
-        action_mask = []
-        for idx, name in enumerate(names):
-            key = f"{name}.pos"
-            if key in action:
-                vals.append(math.radians(float(action[key])))
-                action_mask.append(True)
-            elif fallback is not None:
-                vals.append(float(getattr(fallback, name)))
-                action_mask.append(False)
-            else:
-                vals.append(0.0)
-                action_mask.append(False)
+        try:
+            measured_adjusted = apply_joint_direction_conventions([present[name] for name in names])
+        except Exception:
+            return None
+        out = {f"{name}.pos": self._rad_to_deg(measured_adjusted[i]) for i, name in enumerate(names)}
+        try:
+            gripper_value = float(present.get("gripper_open01", float("nan")))
+        except Exception:
+            gripper_value = float("nan")
+        if not math.isnan(gripper_value):
+            out["gripper.pos"] = self._gripper_open01_to_percent(gripper_value)
+        return out
 
-        offsets_deg = getattr(val, "REAL_ROBOT_JOINT_OFFSETS_DEG", [0.0] * 7)
-        offsets_rad = [math.radians(float(x)) for x in offsets_deg] if len(offsets_deg) == 7 else [0.0] * 7
-        for i in range(7):
-            if action_mask[i]:
-                vals[i] -= offsets_rad[i]
+    def _pid_gain(self, base_name: str, key: str, default: float) -> float:
+        raw = getattr(val, base_name, default)
+        index_map = {
+            "shoulder_pan.pos": 0, "shoulder_lift.pos": 1, "elbow_flex.pos": 2, "wrist_flex.pos": 3,
+            "wrist_yaw.pos": 4, "wrist_roll.pos": 5, "wrist_pitch.pos": 6, "gripper.pos": 7,
+        }
+        try:
+            if isinstance(raw, dict):
+                joint_name = key.removesuffix(".pos")
+                return float(raw.get(key, raw.get(joint_name, default)))
+            if isinstance(raw, (list, tuple)):
+                idx = index_map.get(key)
+                if idx is not None and idx < len(raw):
+                    return float(raw[idx])
+                return float(default)
+            return float(raw)
+        except Exception:
+            return float(default)
 
-        if action_mask[0] and getattr(val, "INVERT_BASE_PAN", False):
-            vals[0] = -vals[0]
-        if action_mask[1] and getattr(val, "INVERT_SHOULDER_LIFT", False):
-            vals[1] = -vals[1]
-        if action_mask[2] and getattr(val, "INVERT_ELBOW", False):
-            vals[2] = -vals[2]
-        if action_mask[3] and getattr(val, "INVERT_WRIST_FLEX", False):
-            vals[3] = -vals[3]
-        if action_mask[4] and getattr(val, "INVERT_WRIST_YAW", False):
-            vals[4] = -vals[4]
-        if action_mask[5] and getattr(val, "INVERT_WRIST_ROLL", False):
-            vals[5] = -vals[5]
-        if action_mask[6] and getattr(val, "INVERT_WRIST_PITCH", False):
-            vals[6] = -vals[6]
+    def reset_outer_pid(self) -> None:
+        self._pid_integral.clear()
+        self._pid_prev_error.clear()
+        self._pid_derivative.clear()
+        self._pid_prev_time = None
 
-        if "gripper.pos" in action:
-            grip = float(np.clip(float(action["gripper.pos"]) / 100.0, 0.0, 1.0))
-            if getattr(val, "INVERT_GRIPPER", False):
-                grip = 1.0 - grip
-        elif fallback is not None:
-            grip = float(fallback.gripper_open01)
+    def _apply_outer_pid(self, action: Dict[str, float]) -> Dict[str, float]:
+        if not bool(getattr(val, "REAL_ROBOT_ENABLE_OUTER_PID", getattr(val, "REAL_ROBOT_PID_ENABLED", False))):
+            return dict(action)
+        measured = self._present_action_degrees()
+        if not isinstance(measured, dict):
+            return dict(action)
+
+        now = time.time()
+        if self._pid_prev_time is None:
+            dt = 1.0 / max(float(getattr(val, "REAL_ROBOT_HZ", 20.0)), 1e-6)
         else:
-            grip = 1.0
+            dt = max(1e-3, min(0.5, now - float(self._pid_prev_time)))
+        self._pid_prev_time = now
 
-        return JointCommand(
-            shoulder_pan=vals[0],
-            shoulder_lift=vals[1],
-            elbow_flex=vals[2],
-            wrist_flex=vals[3],
-            wrist_yaw=vals[4],
-            wrist_roll=vals[5],
-            wrist_pitch=vals[6],
-            gripper_open01=grip,
-        )
+        out = dict(action)
+        max_correction = abs(float(getattr(val, "REAL_ROBOT_PID_MAX_CORRECTION_DEG", 2.0)))
+        integral_limit = abs(float(getattr(val, "REAL_ROBOT_PID_INTEGRAL_LIMIT_DEG_S", 8.0)))
+        deadband = abs(float(getattr(val, "REAL_ROBOT_PID_DEADBAND_DEG", 0.4)))
+        alpha = max(0.0, min(1.0, float(getattr(val, "REAL_ROBOT_PID_DERIVATIVE_FILTER_ALPHA", 0.25))))
+        include_gripper = bool(getattr(val, "REAL_ROBOT_PID_APPLY_TO_GRIPPER", False))
+
+        for key, target in action.items():
+            if key == "gripper.pos" and not include_gripper:
+                continue
+            if key not in measured:
+                continue
+            target_deg = float(target)
+            measured_deg = float(measured[key])
+            error = target_deg - measured_deg
+            if abs(error) < deadband:
+                error = 0.0
+            kp = self._pid_gain("REAL_ROBOT_PID_KP", key, 0.0)
+            ki = self._pid_gain("REAL_ROBOT_PID_KI", key, 0.0)
+            kd = self._pid_gain("REAL_ROBOT_PID_KD", key, 0.0)
+            integral = float(self._pid_integral.get(key, 0.0)) + error * dt
+            integral = max(-integral_limit, min(integral_limit, integral))
+            self._pid_integral[key] = integral
+            prev_error = float(self._pid_prev_error.get(key, error))
+            raw_derivative = (error - prev_error) / dt
+            prev_derivative = float(self._pid_derivative.get(key, raw_derivative))
+            derivative = (1.0 - alpha) * prev_derivative + alpha * raw_derivative
+            self._pid_derivative[key] = derivative
+            self._pid_prev_error[key] = error
+            correction = kp * error + ki * integral + kd * derivative
+            correction = max(-max_correction, min(max_correction, correction))
+            out[key] = float(target_deg + correction)
+
+        if bool(getattr(val, "REAL_ROBOT_PID_VERBOSE", False)):
+            print(f"[robot_controller] outer PID action = {out}")
+        return out
+
+    def _tracking_watchdog_allows_action(self, action: Dict[str, float]) -> bool:
+        if not bool(getattr(val, "REAL_ROBOT_ENABLE_TRACKING_WATCHDOG", True)):
+            return True
+        present = self._present_action_degrees()
+        if not isinstance(present, dict):
+            return True
+        max_err_deg = 0.0
+        for key, target in action.items():
+            if key == "gripper.pos" or key not in present:
+                continue
+            try:
+                err_deg = abs(float(target) - float(present[key]))
+            except Exception:
+                continue
+            max_err_deg = max(max_err_deg, err_deg)
+        warn_deg = float(getattr(val, "REAL_ROBOT_TRACKING_WARN_DEG", 10.0))
+        abort_deg = float(getattr(val, "REAL_ROBOT_TRACKING_ABORT_DEG", 22.0))
+        if max_err_deg >= abort_deg:
+            print(f"[robot_controller] tracking watchdog: command blocked, max joint error {max_err_deg:.1f} deg")
+            return False
+        if max_err_deg >= warn_deg:
+            print(f"[robot_controller] tracking watchdog warning: max joint error {max_err_deg:.1f} deg")
+        return True
 
     def _tracking_watchdog_allows(self, cmd: JointCommand) -> bool:
         if not bool(getattr(val, "REAL_ROBOT_ENABLE_TRACKING_WATCHDOG", True)):
             return True
-        now = time.time()
-        hz = float(getattr(val, "REAL_ROBOT_WATCHDOG_FEEDBACK_HZ", 5.0))
-        period = 1.0 / max(hz, 1e-3) if hz > 0.0 else 0.0
-        present = self._watchdog_present_cache
-        if present is None or (now - self._watchdog_present_cache_time) >= period:
-            present = self.read_present_joints_rad()
-            if isinstance(present, dict):
-                self._watchdog_present_cache = dict(present)
-                self._watchdog_present_cache_time = now
+        present = self.read_present_joints_rad()
         if not isinstance(present, dict):
             return True
         targets = {
@@ -906,29 +1011,11 @@ class SOArmHardwareController:
     def _apply_velocity_and_acceleration_limits(self, action: Dict[str, float]) -> Dict[str, float]:
         if self._last_limited_action is None:
             self._last_limited_action = {}
-            seed_action = {}
-            try:
-                present = self.read_present_joints_rad()
-                if isinstance(present, dict):
-                    seed_action = self._joint_command_to_action(JointCommand(
-                        shoulder_pan=float(present.get("shoulder_pan", 0.0)),
-                        shoulder_lift=float(present.get("shoulder_lift", 0.0)),
-                        elbow_flex=float(present.get("elbow_flex", 0.0)),
-                        wrist_flex=float(present.get("wrist_flex", 0.0)),
-                        wrist_yaw=float(present.get("wrist_yaw", 0.0)),
-                        wrist_roll=float(present.get("wrist_roll", 0.0)),
-                        wrist_pitch=float(present.get("wrist_pitch", 0.0)),
-                        gripper_open01=float(present.get("gripper_open01", 1.0)),
-                    ))
-            except Exception:
-                seed_action = {}
             for key, target in action.items():
-                if key in seed_action and math.isfinite(float(seed_action[key])):
-                    self._last_limited_action[key] = float(seed_action[key])
-                elif key == "gripper.pos":
+                if key == "gripper.pos":
                     self._last_limited_action[key] = 50.0
                 else:
-                    self._last_limited_action[key] = float(target)
+                    self._last_limited_action[key] = 0.0
                 self._last_velocity.setdefault(key, 0.0)
             return self._apply_velocity_and_acceleration_limits(action)
 

@@ -115,10 +115,10 @@ URDF_PATH = "/Users/ricky/PycharmProjects/ECE3161/SO-ARM100"
 # Real robot control
 REAL_ROBOT_ENABLE_TORQUE_LIMIT = True
 REAL_ROBOT_HZ = 20.0
-REAL_ROBOT_MAX_VELOCITY_DEG = 20.0
-REAL_ROBOT_MAX_ACCELERATION_DEG = 50.0
-REAL_ROBOT_TORQUE_LIMIT_PERCENT = 60.0
-REAL_ROBOT_MAX_RELATIVE_TARGET_DEG = 4.0
+REAL_ROBOT_MAX_VELOCITY_DEG = 5.0
+REAL_ROBOT_MAX_ACCELERATION_DEG = 5.0
+REAL_ROBOT_TORQUE_LIMIT_PERCENT = 5.0
+REAL_ROBOT_MAX_RELATIVE_TARGET_DEG = 3.0
 REAL_ROBOT_ACTION_DEADBAND_DEG = 0.5
 
 ENABLE_REAL_ROBOT = True
@@ -546,3 +546,51 @@ IK_NULLSPACE_ELBOW_GAIN = 0.0
 IK_NULLSPACE_WRIST_GAIN = 0.004
 IK_NULLSPACE_MANIPULABILITY_GAIN = 0.0
 IK_NULLSPACE_FD_EPS_RAD = 1e-4
+
+# ---------------------------------------------------------------------------
+# Real robot torque/current split and optional outer PID correction
+# ---------------------------------------------------------------------------
+
+# Keep torque/current limiting enabled for OCP protection.
+REAL_ROBOT_ENABLE_TORQUE_LIMIT = True
+
+# Default fallback torque/current limit if a motor is not listed in a group.
+REAL_ROBOT_TORQUE_LIMIT_PERCENT = 50.0
+
+# Split available current/torque budget by motor group:
+# Motors 1-4 are shoulder/elbow/high-load joints and receive 75%.
+# Motors 5-8 are wrist/gripper/lower-load joints and receive 25%.
+REAL_ROBOT_TORQUE_LIMIT_GROUPS = {
+    "high_load": {
+        "motor_ids": [1, 2, 3, 4],
+        "percent": 75.0,
+    },
+    "low_load": {
+        "motor_ids": [5, 6, 7, 8],
+        "percent": 25.0,
+    },
+}
+
+# Feetech/ST3215 runtime torque/current-limit register.
+# Common STS/SMS current/torque limit scale is 0..1000.
+FEETECH_TORQUE_LIMIT_ADDR = 48
+FEETECH_TORQUE_LIMIT_RAW_MAX = 1000
+
+# Optional outer joint-position PID.
+# This is disabled by default because the servo already has internal PID.
+# Enable only after confirming feedback reads are stable and not causing lag.
+REAL_ROBOT_PID_ENABLED = False
+
+# PID runs on top of commanded joint targets using measured joint feedback.
+# Gains are per joint in order:
+# shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_yaw, wrist_roll, wrist_pitch, gripper
+REAL_ROBOT_PID_KP = [0.08, 0.08, 0.08, 0.06, 0.04, 0.04, 0.04, 0.00]
+REAL_ROBOT_PID_KI = [0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00]
+REAL_ROBOT_PID_KD = [0.01, 0.01, 0.01, 0.008, 0.004, 0.004, 0.004, 0.00]
+
+# Safety clamps for the outer PID correction.
+REAL_ROBOT_PID_MAX_CORRECTION_DEG = 2.0
+REAL_ROBOT_PID_DEADBAND_DEG = 5
+REAL_ROBOT_PID_INTEGRAL_LIMIT_DEG_S = 8.0
+REAL_ROBOT_PID_RESET_ON_TARGET_JUMP_DEG = 8.0
+REAL_ROBOT_PID_VERBOSE = False
