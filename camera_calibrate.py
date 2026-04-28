@@ -1192,21 +1192,49 @@ def _effective_hand_mirror_metrics(hand_lms, depth_estimator: HandDepthEstimator
     # Use the raw normalized values that handtracking.py passes into RobotMirrorWorkspaceMapper.
     # Pose names define direction, so this paired calibration should not apply HAND_IMAGE_* flips here.
     metrics = _hand_landmark_metrics(hand_lms)
+    raw_depth = depth_estimator.estimate_raw_monocular_depth_norm(hand_lms, frame_w=frame_w, frame_h=frame_h)
     depth = depth_estimator.estimate_depth(hand_lms, frame_w=frame_w, frame_h=frame_h)
+    depth_pairing_source = str(getattr(val, "HAND_MIRROR_DEPTH_PAIRING_SOURCE", "raw")).strip().lower()
+    raw_norm = float(np.clip(float(raw_depth.get("depth_norm_raw", depth.get("depth_norm", 0.5))), 0.0, 1.0))
+    filtered_norm = float(np.clip(float(depth.get("depth_norm", raw_norm)), 0.0, 1.0))
+    if depth_pairing_source == "filtered":
+        primary_depth = filtered_norm
+        primary_source = "depth_norm"
+    elif depth_pairing_source == "hand_size":
+        primary_depth = raw_norm
+        primary_source = "hand_size_norm"
+    else:
+        primary_depth = raw_norm
+        primary_source = "depth_norm_raw"
     return {
         "x_norm": float(np.clip(metrics["x_norm"], 0.0, 1.0)),
         "y_norm": float(np.clip(metrics["y_norm"], 0.0, 1.0)),
-        "depth_norm": float(np.clip(float(depth.get("depth_norm", 0.5)), 0.0, 1.0)),
-        "hand_size_norm": float(depth.get("hand_size_norm", metrics["hand_size_norm"])),
-        "palm_width_norm": float(depth.get("palm_width_norm", metrics["palm_width_norm"])),
-        "wrist_to_middle_mcp_norm": float(depth.get("wrist_to_middle_mcp_norm", metrics["wrist_to_middle_mcp_norm"])),
-        "palm_height_norm": float(depth.get("palm_height_norm", metrics["palm_height_norm"])),
-        "bbox_size_norm": float(depth.get("bbox_size_norm", metrics["bbox_size_norm"])),
+        "depth_norm": float(primary_depth),
+        "depth_norm_raw": raw_norm,
+        "depth_norm_filtered": filtered_norm,
+        "hand_depth_pairing_source": primary_source,
+        "hand_size_norm": float(raw_depth.get("hand_size_norm", metrics["hand_size_norm"])),
+        "palm_width_norm": float(raw_depth.get("palm_width_norm", metrics["palm_width_norm"])),
+        "wrist_to_middle_mcp_norm": float(raw_depth.get("wrist_to_middle_mcp_norm", metrics["wrist_to_middle_mcp_norm"])),
+        "palm_height_norm": float(raw_depth.get("palm_height_norm", metrics["palm_height_norm"])),
+        "bbox_size_norm": float(raw_depth.get("bbox_size_norm", metrics["bbox_size_norm"])),
         "thumb_index_span_norm": float(metrics.get("thumb_index_span_norm", 0.0)),
-        "depth_m": float(depth.get("depth_m", 0.0)),
-        "depth_source": str(depth.get("source", "unknown")),
-        "depth_confidence": float(depth.get("confidence", 0.0)),
+        "depth_m": float(raw_depth.get("depth_m_raw", depth.get("depth_m", 0.0))),
+        "depth_m_filtered": float(depth.get("depth_m", raw_depth.get("depth_m_raw", 0.0))),
+        "depth_source": str(raw_depth.get("depth_source_raw", depth.get("source", "unknown"))),
+        "depth_source_filtered": str(depth.get("source", "unknown")),
+        "depth_confidence": float(raw_depth.get("confidence_raw", depth.get("confidence", 0.0))),
         "wrist_rpy_rad": _estimate_simple_wrist_rpy_from_landmarks(hand_lms),
+    }
+
+
+def _runtime_preprocess_hand_frame(frame):
+    matches_runtime = bool(getattr(val, "HAND_MIRROR_CALIBRATION_USE_RUNTIME_FRAME_PREPROCESSING", True))
+    flipped = bool(getattr(val, "HANDTRACKING_FLIP_CAMERA_FRAME", True)) if matches_runtime else False
+    out = cv2.flip(frame, 1) if flipped else frame.copy()
+    return out, {
+        "flipped_horizontal": bool(flipped),
+        "matches_runtime": bool(matches_runtime),
     }
 
 
@@ -1229,6 +1257,10 @@ def _run_hand_mirror_position_calibration(args) -> int:
     pose_results = {}
     pose_index = 0
     samples: list[dict] = []
+    frame_preprocessing = {
+        "flipped_horizontal": bool(getattr(val, "HANDTRACKING_FLIP_CAMERA_FRAME", True)),
+        "matches_runtime": bool(getattr(val, "HAND_MIRROR_CALIBRATION_USE_RUNTIME_FRAME_PREPROCESSING", True)),
+    }
     print("[hand-mirror] Hand-position mirror calibration.")
     print("[hand-mirror] This records camera/MediaPipe hand positions only; it does not connect to or move the robot.")
     print("[hand-mirror] Run robot_calibrate.py mirror_workspace separately to record matching robot poses.")
@@ -1238,6 +1270,7 @@ def _run_hand_mirror_position_calibration(args) -> int:
             review_summary = None
             pose_name = str(poses[pose_index])
             samples.clear()
+            depth_estimator.reset()
             optional = _mirror_pose_optional(pose_name)
             _print_hand_mirror_pose_instruction(pose_name, pose_index + 1, len(poses), optional)
             try:
@@ -1274,6 +1307,7 @@ def _run_hand_mirror_position_calibration(args) -> int:
                 if not ok or frame is None:
                     print("[hand-mirror] ERROR: Could not open/read webcam.")
                     return 1
+                frame, frame_preprocessing = _runtime_preprocess_hand_frame(frame)
                 frame_h, frame_w = frame.shape[:2]
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 results = hands.process(rgb)
@@ -1302,6 +1336,7 @@ def _run_hand_mirror_position_calibration(args) -> int:
                     f"Hand mirror calibration: {pose_name} ({pose_index + 1}/{len(poses)})",
                     _hand_mirror_pose_instruction(pose_name),
                     "Required: one visible MediaPipe hand, held steady",
+                    f"frame_flipped={frame_preprocessing.get('flipped_horizontal', False)} matches runtime handtracking preprocessing",
                 ]
                 if state == "waiting_for_user_ready":
                     lines += [
@@ -1337,6 +1372,7 @@ def _run_hand_mirror_position_calibration(args) -> int:
                     return 1
                 if key == ord("r"):
                     samples.clear()
+                    depth_estimator.reset()
                     review_summary = None
                     state = "waiting_for_user_ready"
                     continue
@@ -1346,6 +1382,7 @@ def _run_hand_mirror_position_calibration(args) -> int:
                     break
                 if state == "waiting_for_user_ready" and key == ord(" "):
                     samples.clear()
+                    depth_estimator.reset()
                     review_summary = None
                     state = "sampling"
                     continue
@@ -1355,7 +1392,14 @@ def _run_hand_mirror_position_calibration(args) -> int:
                             "x_norm": float(review_summary.get("x_norm", 0.5)),
                             "y_norm": float(review_summary.get("y_norm", 0.5)),
                             "depth_norm": float(review_summary.get("depth_norm", 0.5)),
+                            "depth_norm_raw": float(review_summary.get("depth_norm_raw", review_summary.get("depth_norm", 0.5))),
+                            "depth_norm_filtered": float(review_summary.get("depth_norm_filtered", review_summary.get("depth_norm", 0.5))),
                             "hand_size_norm": float(review_summary.get("hand_size_norm", 0.0)),
+                            "palm_width_norm": float(review_summary.get("palm_width_norm", 0.0)),
+                            "wrist_to_middle_mcp_norm": float(review_summary.get("wrist_to_middle_mcp_norm", 0.0)),
+                            "palm_height_norm": float(review_summary.get("palm_height_norm", 0.0)),
+                            "bbox_size_norm": float(review_summary.get("bbox_size_norm", 0.0)),
+                            "hand_depth_pairing_source": str(getattr(val, "HAND_MIRROR_DEPTH_PAIRING_SOURCE", "raw")),
                             "wrist_rpy_rad": list(review_summary.get("wrist_rpy_rad", [0.0, 0.0, 0.0])),
                         },
                         "std": {
@@ -1384,6 +1428,7 @@ def _run_hand_mirror_position_calibration(args) -> int:
                 "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0) if cap is not None else 0,
                 "index": int(camera.index) if camera is not None else int(getattr(val, "HANDTRACKING_CAMERA_INDEX", 0)),
             },
+            "frame_preprocessing": dict(frame_preprocessing),
             "required_poses": _mirror_required_poses(),
             "optional_poses": _mirror_optional_poses(),
             "poses": pose_results,

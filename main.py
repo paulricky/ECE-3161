@@ -404,7 +404,8 @@ def main() -> int:
             perf.camera_frames += 1
             last_frame_sequence = frame_sequence
 
-            frame = cv2.flip(frame, 1)
+            if bool(getattr(val, "HANDTRACKING_FLIP_CAMERA_FRAME", True)):
+                frame = cv2.flip(frame, 1)
             last_display_frame = frame
             now = time.time()
             should_process = (

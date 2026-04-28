@@ -336,6 +336,30 @@ class HandDepthEstimator:
     def depth_norm_to_workspace(self, depth_norm: float, near_target_m: float, far_target_m: float) -> float:
         return float(far_target_m) + (float(near_target_m) - float(far_target_m)) * _sat01(depth_norm)
 
+    def estimate_raw_monocular_depth_norm(self, hand_lms, frame_w: int = 1, frame_h: int = 1) -> dict:
+        """Return an unsmoothed hand-size depth coordinate for calibration capture.
+
+        This intentionally avoids EMA, outlier history, and MediaPipe relative-z
+        trend correction so each calibration pose is recorded from the current
+        apparent hand size only.
+        """
+        size_est = self.estimate_from_monocular_size(hand_lms, frame_w, frame_h)
+        depth_m = _finite_float(size_est.get("depth_m"), self._safe_depth())
+        depth_norm = self.depth_m_to_norm(depth_m)
+        return {
+            "depth_m_raw": float(depth_m),
+            "depth_norm_raw": float(depth_norm),
+            "depth_source_raw": str(size_est.get("source", "monocular_size")),
+            "confidence_raw": float(_clamp(float(size_est.get("confidence", 0.0)), 0.0, 1.0)),
+            "raw_candidates": dict(size_est.get("raw_candidates", {})) if isinstance(size_est.get("raw_candidates", {}), dict) else {},
+            "hand_size_norm": float(size_est.get("hand_size_norm", 0.0)),
+            "palm_width_norm": float(size_est.get("palm_width_norm", 0.0)),
+            "wrist_to_middle_mcp_norm": float(size_est.get("wrist_to_middle_mcp_norm", 0.0)),
+            "palm_height_norm": float(size_est.get("palm_height_norm", 0.0)),
+            "bbox_size_norm": float(size_est.get("bbox_size_norm", 0.0)),
+            "thumb_index_span_norm": float(size_est.get("thumb_index_span_norm", 0.0)),
+        }
+
     def _filter_depth(self, depth_m: float, confidence: float) -> tuple[float, bool]:
         near, far = self._near_far_m()
         depth_m = _clamp(depth_m, near, far)

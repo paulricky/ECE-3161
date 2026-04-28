@@ -819,6 +819,21 @@ class HandTracker:
         except Exception as exc:
             self.robot_mirror_mapper = None
             log_event(f"robot mirror workspace mapper disabled: {exc}")
+        self._robot_mirror_anchor_warning = ""
+        try:
+            if self.robot_mirror_mapper is not None and bool(getattr(self.robot_mirror_mapper, "loaded", False)):
+                warn_err = float(getattr(val, "ROBOT_MIRROR_ANCHOR_WARN_ERR_M", 0.015))
+                anchor_errors = self.robot_mirror_mapper.evaluate_anchor_errors()
+                bad = [
+                    f"{name}:{float(item.get('final_error_m', 0.0)):.3f}m"
+                    for name, item in anchor_errors.items()
+                    if float(item.get("final_error_m", 0.0)) > warn_err
+                ]
+                if bad:
+                    self._robot_mirror_anchor_warning = "anchor_warning " + ", ".join(bad)
+                    log_event("robot mirror calibration anchor warning: " + ", ".join(bad))
+        except Exception as exc:
+            self._robot_mirror_anchor_warning = f"anchor_check_failed:{exc}"
         self.lerobot_calibration = self._load_lerobot_calibration()
         self._last_ik_solution = None
         self._filtered_target_xyz = None
@@ -1295,6 +1310,13 @@ class HandTracker:
                     f"speed={float(getattr(val, 'REAL_ROBOT_ARM_SPEED_PERCENT', 100.0)):.0f}% "
                     "grip=100%"
                 )
+                if "mirror_mapping_source" in diag:
+                    line0 = (
+                        f"mirror={diag.get('mirror_method', '?')} paired={bool(diag.get('paired_hand_calibration_loaded', False))} "
+                        f"depthPair={diag.get('hand_depth_pairing_source', '?')} clamp={bool(diag.get('mirror_target_clamped', False))} "
+                        f"near={diag.get('mirror_nearest_pose', '?')}"
+                    )
+                    cv2.putText(frame, line0, (10, h_img - 114), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 255), 2, cv2.LINE_AA)
                 cv2.putText(frame, line1, (10, h_img - 90), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 255), 2, cv2.LINE_AA)
                 cv2.putText(frame, line2, (10, h_img - 66), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 255), 2, cv2.LINE_AA)
             except Exception:
@@ -1586,6 +1608,7 @@ class HandTracker:
         mapping_source = "mediapipe_monocular_depth"
         mapper_debug = {}
         q_seed = None
+        mirror_mapper_used = False
         if aruco_pose is not None and bool(getattr(val, "HAND_DEPTH_ENABLE_ARUCO_GLOVE", False)):
             aruco_xyz = _finite_vec3(aruco_pose.get("workspace_xyz"))
             if aruco_xyz is not None:
@@ -1608,7 +1631,10 @@ class HandTracker:
             )
             if mapped_xyz is not None:
                 xyz_raw = mapped_xyz
+                mirror_mapper_used = True
                 mapping_source = str(mapper_debug.get("mirror_mapping_source", "robot_mirror_workspace_calibration"))
+                if self._robot_mirror_anchor_warning:
+                    mapper_debug["mirror_anchor_warning"] = self._robot_mirror_anchor_warning
                 q_seed, seed_debug = self.robot_mirror_mapper.choose_ik_seed(
                     x_norm_raw,
                     y_norm_raw,
@@ -1647,7 +1673,11 @@ class HandTracker:
             )
             mapper_debug.update(seed_debug)
 
-        xyz_final, clamped = self._clamp_target_xyz(xyz_raw)
+        if mirror_mapper_used:
+            xyz_final = np.asarray(xyz_raw, dtype=np.float64).reshape(3)
+            clamped = bool(mapper_debug.get("mirror_target_clamped", False))
+        else:
+            xyz_final, clamped = self._clamp_target_xyz(xyz_raw)
         rpy, rpy_source = self._estimate_target_rpy_from_hand(hand_lms, aruco_pose)
         if rpy is None:
             rpy = np.array([0.0, float(getattr(val, "HAND_TARGET_PITCH_BIAS_RAD", -0.15)), 0.0], dtype=np.float64)

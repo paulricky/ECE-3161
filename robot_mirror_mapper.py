@@ -121,6 +121,7 @@ class RobotMirrorWorkspaceMapper:
         self.rbf_ready = False
         self.xyz_min = np.array([-np.inf, -np.inf, -np.inf], dtype=np.float64)
         self.xyz_max = np.array([np.inf, np.inf, np.inf], dtype=np.float64)
+        self.hand_depth_pairing_source = "ideal"
         self.load(self.path, self.hand_path)
 
     def reset(self) -> None:
@@ -150,6 +151,9 @@ class RobotMirrorWorkspaceMapper:
         self.sample_names = []
         self.rbf_weights = None
         self.rbf_ready = False
+        self.xyz_min = np.array([-np.inf, -np.inf, -np.inf], dtype=np.float64)
+        self.xyz_max = np.array([np.inf, np.inf, np.inf], dtype=np.float64)
+        self.hand_depth_pairing_source = "ideal"
 
         if not self.path.exists():
             self.error = "missing"
@@ -185,12 +189,42 @@ class RobotMirrorWorkspaceMapper:
         self._build_sample_residuals()
         self._fit_rbf()
         all_xyz = np.stack(list(self.pose_xyz.values()), axis=0)
-        margin = abs(float(getattr(val, "ROBOT_MIRROR_RESIDUAL_MAX_M", 0.030)))
+        margin = abs(float(getattr(val, "ROBOT_MIRROR_CLAMP_MARGIN_M", 0.020)))
         self.xyz_min = np.min(all_xyz, axis=0) - margin
         self.xyz_max = np.max(all_xyz, axis=0) + margin
         self.data = data
         self.loaded = True
         return True
+
+    def _depth_from_hand_size(self, hand: dict) -> tuple[Optional[float], str]:
+        size = _finite_float(hand.get("hand_size_norm"))
+        if size is None or size <= 0.0:
+            return None, "unavailable"
+        near_size = _finite_float(getattr(val, "HAND_MONOCULAR_NEAR_SIZE_NORM", None), 0.32)
+        far_size = _finite_float(getattr(val, "HAND_MONOCULAR_FAR_SIZE_NORM", None), 0.12)
+        if near_size is None or far_size is None or abs(float(near_size) - float(far_size)) < 1e-6:
+            return None, "unavailable"
+        depth_norm = (float(size) - float(far_size)) / (float(near_size) - float(far_size))
+        return _sat01(depth_norm), "hand_size_norm"
+
+    def _extract_hand_depth(self, hand: dict) -> tuple[Optional[float], str]:
+        preferred = str(getattr(val, "HAND_MIRROR_DEPTH_PAIRING_SOURCE", "raw")).strip().lower()
+        if preferred == "raw":
+            order = [("depth_norm_raw", "depth_norm_raw"), ("depth_norm", "depth_norm"), ("depth_norm_filtered", "depth_norm_filtered")]
+        elif preferred == "filtered":
+            order = [("depth_norm", "depth_norm"), ("depth_norm_filtered", "depth_norm_filtered"), ("depth_norm_raw", "depth_norm_raw")]
+        elif preferred == "hand_size":
+            size_depth, source = self._depth_from_hand_size(hand)
+            if size_depth is not None:
+                return size_depth, source
+            order = [("depth_norm_raw", "depth_norm_raw"), ("depth_norm", "depth_norm"), ("depth_norm_filtered", "depth_norm_filtered")]
+        else:
+            order = [("depth_norm_raw", "depth_norm_raw"), ("depth_norm", "depth_norm"), ("depth_norm_filtered", "depth_norm_filtered")]
+        for key, source in order:
+            d = _finite_float(hand.get(key))
+            if d is not None:
+                return _sat01(d), source
+        return self._depth_from_hand_size(hand)
 
     def _load_hand_calibration(self, hand_path: Path) -> bool:
         if not bool(getattr(val, "ROBOT_MIRROR_PAIRED_CALIBRATION_ENABLED", True)):
@@ -215,6 +249,7 @@ class RobotMirrorWorkspaceMapper:
         if not isinstance(poses, dict):
             self.hand_error = "poses_missing"
             return False
+        depth_sources: list[str] = []
         for name, item in poses.items():
             if not isinstance(item, dict):
                 continue
@@ -223,11 +258,12 @@ class RobotMirrorWorkspaceMapper:
                 continue
             x = _finite_float(hand.get("x_norm"))
             y = _finite_float(hand.get("y_norm"))
-            d = _finite_float(hand.get("depth_norm"))
+            d, depth_source = self._extract_hand_depth(hand)
             if x is None or y is None or d is None:
                 continue
             self.hand_poses[str(name)] = item
             self.hand_pose_input[str(name)] = np.array([_sat01(x), _sat01(y), _sat01(d)], dtype=np.float64)
+            depth_sources.append(depth_source)
         required_hand = [name for name in REQUIRED_POSES if name not in self.hand_pose_input]
         if required_hand:
             self.hand_error = "missing_required:" + ",".join(required_hand)
@@ -235,6 +271,8 @@ class RobotMirrorWorkspaceMapper:
         self.hand_data = hand_data
         self.hand_loaded = True
         self.hand_error = ""
+        unique_sources = sorted(set(depth_sources))
+        self.hand_depth_pairing_source = unique_sources[0] if len(unique_sources) == 1 else "mixed:" + ",".join(unique_sources)
         return True
 
     def _parse_joints(self, raw) -> Optional[dict[str, float]]:
@@ -298,6 +336,12 @@ class RobotMirrorWorkspaceMapper:
 
     def _centered_inputs(self, horizontal_norm, vertical_norm, depth_norm) -> np.ndarray:
         if self.hand_loaded:
+            raw = np.array([_sat01(horizontal_norm), _sat01(vertical_norm), _sat01(depth_norm)], dtype=np.float64)
+            for name in REQUIRED_POSES:
+                recorded = self.hand_pose_input.get(name)
+                coord = POSE_COORDS.get(name)
+                if recorded is not None and coord is not None and float(np.linalg.norm(raw - recorded)) <= 1e-7:
+                    return np.asarray(coord, dtype=np.float64).reshape(3)
             return self._centered_inputs_from_hand_calibration(horizontal_norm, vertical_norm, depth_norm)
         h = 2.0 * (_sat01(horizontal_norm) - float(getattr(val, "HAND_MIRROR_CENTER_X_NORM", 0.5)))
         v = 2.0 * (_sat01(vertical_norm) - float(getattr(val, "HAND_MIRROR_CENTER_Y_NORM", 0.5)))
@@ -321,9 +365,11 @@ class RobotMirrorWorkspaceMapper:
         out += abs(h) * ((self.pose_xyz["mirror_left"] if h < 0.0 else self.pose_xyz["mirror_right"]) - center)
         out += abs(v) * ((self.pose_xyz["mirror_down"] if v < 0.0 else self.pose_xyz["mirror_up"]) - center)
         out += abs(d) * ((self.pose_xyz["mirror_far"] if d < 0.0 else self.pose_xyz["mirror_near"]) - center)
-        return self._clamp_xyz(out)
+        return out
 
     def _pose_centered_coordinate(self, name: str) -> Optional[np.ndarray]:
+        if name in REQUIRED_POSES and name in POSE_COORDS:
+            return np.asarray(POSE_COORDS[name], dtype=np.float64).reshape(3)
         if self.hand_loaded and name in self.hand_pose_input:
             raw = self.hand_pose_input[name]
             return self._centered_inputs_from_hand_calibration(raw[0], raw[1], raw[2])
@@ -421,9 +467,27 @@ class RobotMirrorWorkspaceMapper:
         arr = np.asarray(xyz, dtype=np.float64).reshape(3)
         if not np.all(np.isfinite(arr)):
             return self.pose_xyz.get("center", np.zeros(3, dtype=np.float64)).copy()
-        if np.all(np.isfinite(self.xyz_min)) and np.all(np.isfinite(self.xyz_max)):
+        if (
+            bool(getattr(val, "ROBOT_MIRROR_CLAMP_TO_CALIBRATED_BOUNDS", True))
+            and np.all(np.isfinite(self.xyz_min))
+            and np.all(np.isfinite(self.xyz_max))
+        ):
             arr = np.minimum(np.maximum(arr, self.xyz_min), self.xyz_max)
         return arr
+
+    def _clamp_xyz_debug(self, xyz) -> tuple[np.ndarray, bool, np.ndarray]:
+        before = np.asarray(xyz, dtype=np.float64).reshape(3)
+        after = self._clamp_xyz(before)
+        clamped = bool(np.linalg.norm(after - before) > 1e-12)
+        return after, clamped, before
+
+    def _exact_required_anchor_name(self, x: np.ndarray, tol: float = 1e-7) -> Optional[str]:
+        x = np.asarray(x, dtype=np.float64).reshape(3)
+        for name in REQUIRED_POSES:
+            coord = self._pose_centered_coordinate(name)
+            if coord is not None and float(np.linalg.norm(x - coord)) <= tol:
+                return name
+        return None
 
     def map_hand_to_robot_target(self, horizontal_norm, vertical_norm, depth_norm):
         if not self.loaded:
@@ -438,7 +502,11 @@ class RobotMirrorWorkspaceMapper:
         nearest = self._nearest_pose_name(x)
         residual_source = "none"
         used_method = "paired_axis_blend" if self.hand_loaded else "axis_blend"
-        if method in {"axis_blend_knn_residual", "paired_axis_blend_knn_residual", "knn_residual"}:
+        exact_anchor = self._exact_required_anchor_name(x)
+        if exact_anchor is not None:
+            nearest = exact_anchor
+            residual_source = "required_anchor_zero"
+        elif method in {"axis_blend_knn_residual", "paired_axis_blend_knn_residual", "knn_residual"}:
             residual, nearest = self._knn_residual(x)
             residual_source = "knn_residual" if nearest is not None else "none"
             used_method = ("paired_axis_blend_knn_residual" if self.hand_loaded else "axis_blend_knn_residual") if nearest is not None else used_method
@@ -453,7 +521,8 @@ class RobotMirrorWorkspaceMapper:
                 residual_source = "knn_residual_fallback"
                 used_method = "paired_axis_blend_knn_residual" if self.hand_loaded else "axis_blend_knn_residual"
         residual = self._clamp_residual(residual)
-        final = self._clamp_xyz(base + residual)
+        target_before_clamp = base + residual
+        final, target_clamped, target_before_clamp = self._clamp_xyz_debug(target_before_clamp)
         debug = {
             "mirror_mapping_source": "paired_robot_hand_mirror_calibration" if self.hand_loaded else "robot_mirror_workspace_calibration",
             "mirror_method": used_method,
@@ -467,15 +536,55 @@ class RobotMirrorWorkspaceMapper:
             "mirror_nearest_pose": nearest,
             "target_xyz_base_m": base.tolist(),
             "target_xyz_residual_m": residual.tolist(),
+            "mirror_target_before_clamp_m": target_before_clamp.tolist(),
+            "mirror_target_after_clamp_m": final.tolist(),
+            "mirror_target_clamped": bool(target_clamped),
+            "mirror_calibrated_bounds_min_m": self.xyz_min.tolist(),
+            "mirror_calibrated_bounds_max_m": self.xyz_max.tolist(),
             "target_xyz_final_m": final.tolist(),
             "robot_mirror_calibration_loaded": True,
             "paired_hand_calibration_loaded": bool(self.hand_loaded),
+            "hand_depth_pairing_source": self.hand_depth_pairing_source,
             "hand_mirror_calibration_path": str(self.hand_path),
             "hand_mirror_calibration_error": self.hand_error,
             "robot_mirror_calibration_path": str(self.path),
             "robot_mirror_direct_joint_learning_enabled": bool(getattr(val, "ROBOT_MIRROR_DIRECT_JOINT_LEARNING_ENABLED", False)),
         }
         return final, debug
+
+    def evaluate_anchor_errors(self) -> dict[str, dict]:
+        """Evaluate how well required paired anchors reproduce recorded robot poses."""
+        out: dict[str, dict] = {}
+        if not self.loaded:
+            return out
+        for name in REQUIRED_POSES:
+            recorded = self.pose_xyz.get(name)
+            x = self._pose_centered_coordinate(name)
+            if recorded is None or x is None:
+                continue
+            base = self._axis_blend_from_centered(x)
+            if self.hand_loaded and name in self.hand_pose_input:
+                final, debug = self.map_hand_to_robot_target(
+                    self.hand_pose_input[name][0],
+                    self.hand_pose_input[name][1],
+                    self.hand_pose_input[name][2],
+                )
+                if final is None:
+                    final = base
+                    debug = {}
+            else:
+                final, clamped, _before = self._clamp_xyz_debug(base)
+                debug = {"mirror_target_clamped": clamped}
+            out[name] = {
+                "centered_hvd": np.asarray(x, dtype=np.float64).reshape(3).tolist(),
+                "recorded_xyz_m": recorded.tolist(),
+                "base_xyz_m": base.tolist(),
+                "final_xyz_m": np.asarray(final, dtype=np.float64).reshape(3).tolist(),
+                "base_error_m": float(np.linalg.norm(base - recorded)),
+                "final_error_m": float(np.linalg.norm(np.asarray(final, dtype=np.float64).reshape(3) - recorded)),
+                "target_clamped": bool(debug.get("mirror_target_clamped", False)),
+            }
+        return out
 
     def _nearest_pose_name(self, x: np.ndarray) -> Optional[str]:
         if self.samples_x.size == 0:
