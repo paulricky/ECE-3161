@@ -1,0 +1,85 @@
+{
+  "joint_zero_offsets_rad": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "joint_axis_signs": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
+  "link_lengths_m": {
+    "base_height": 0.06,
+    "upper_arm": 0.115,
+    "forearm": 0.115,
+    "wrist_to_yaw": 0.0,
+    "tool_a": 0.025,
+    "tool_b": 0.025
+  },
+  "tool_xyz_offset_m": [
+    0.05,
+    0.0,
+    0.0
+  ],
+  "collision_capsule_radius_m": 0.018,
+  "source": "robot_learn_results:/tmp/robot_learn_results.json",
+  "active": false,
+  "samples": [],
+  "metadata": {
+    "created_at_unix": 1777334898.413283,
+    "joint_names": [
+      "shoulder_pan",
+      "shoulder_lift",
+      "elbow_flex",
+      "wrist_flex",
+      "wrist_yaw",
+      "wrist_roll",
+      "wrist_pitch"
+    ],
+    "motor_mapping": {
+      "shoulder_pan": 1,
+      "shoulder_lift": 2,
+      "elbow_flex": 3,
+      "wrist_flex": 4,
+      "wrist_yaw": 5,
+      "wrist_roll": 6,
+      "wrist_pitch": 7,
+      "gripper": 8
+    },
+    "learn_results_summary": {
+      "created_at_unix": 0,
+      "motor_names": [
+        "shoulder_pan",
+        "shoulder_lift",
+        "elbow_flex",
+        "wrist_flex",
+        "wrist_yaw",
+        "wrist_roll",
+        "wrist_pitch",
+        "gripper"
+      ],
+      "motor_ids": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "capture_count": 0,
+      "derived_per_motor": {}
+    },
+    "notes": "Candidate generated from robot_learn.py captures. Numeric model corrections are conservative defaults until measured pose samples are added and reviewed."
+  }
+}
