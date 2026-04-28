@@ -964,8 +964,14 @@ HAND_WORKSPACE_CAPTURE_POSES = [
 # readback/FK poses; handtracking.py supplies live RGB/MediaPipe hand inputs.
 ROBOT_MIRROR_WORKSPACE_CALIBRATION_FILE = "calibration_data/robot_mirror_workspace_calibration.json"
 ROBOT_MIRROR_WORKSPACE_ENABLED = True
-ROBOT_MIRROR_MAPPING_METHOD = "axis_blend_rbf_residual"  # axis_blend | axis_blend_rbf_residual | knn_residual
+ROBOT_MIRROR_MAPPING_METHOD = "axis_blend_knn_residual"  # axis_blend | axis_blend_knn_residual | axis_blend_rbf_residual
+ROBOT_MIRROR_FALLBACK_METHOD = "axis_blend"
+ROBOT_MIRROR_DEFAULT_RESIDUAL_METHOD = "knn"
+ROBOT_MIRROR_KNN_ENABLED = True
+ROBOT_MIRROR_KNN_K = 4
+ROBOT_MIRROR_RBF_ENABLED = True
 ROBOT_MIRROR_RBF_MIN_SAMPLES = 8
+ROBOT_MIRROR_RBF_KERNEL = "thin_plate"  # thin_plate | gaussian | multiquadric
 ROBOT_MIRROR_RBF_SMOOTHING = 1e-4
 ROBOT_MIRROR_RESIDUAL_MAX_M = 0.030
 ROBOT_MIRROR_USE_JOINT_SEED_EXAMPLES = True
@@ -978,6 +984,33 @@ HAND_MIRROR_CENTER_X_NORM = 0.5
 HAND_MIRROR_CENTER_Y_NORM = 0.5
 HAND_MIRROR_CENTER_DEPTH_NORM = 0.5
 HAND_MIRROR_CLAMP_INPUTS = True
+ROBOT_MIRROR_REQUIRED_POSES = [
+    "center",
+    "mirror_left",
+    "mirror_right",
+    "mirror_up",
+    "mirror_down",
+    "mirror_near",
+    "mirror_far",
+]
+ROBOT_MIRROR_OPTIONAL_POSES = [
+    "mirror_up_left",
+    "mirror_up_right",
+    "mirror_down_left",
+    "mirror_down_right",
+    "mirror_near_left",
+    "mirror_near_right",
+    "mirror_far_left",
+    "mirror_far_right",
+    "mirror_near_up",
+    "mirror_near_down",
+    "mirror_far_up",
+    "mirror_far_down",
+    "mirror_near_up_left",
+    "mirror_near_up_right",
+    "mirror_far_down_left",
+    "mirror_far_down_right",
+]
 
 # Global arm-only speed scale. The gripper is intentionally excluded and stays
 # on its configured gripper velocity/acceleration/torque limits.
@@ -1003,7 +1036,7 @@ HAND_VIRTUAL_WRIST_MAX_YAW_RAD = WRIST_YAW_MAX
 # Final speed-percent defaults must remain after all max-responsiveness
 # overrides. Set REAL_ROBOT_ARM_SPEED_PERCENT below 100 only when you
 # intentionally want motors 1-7 slowed; motor 8 gripper is never scaled.
-REAL_ROBOT_ARM_SPEED_PERCENT = 100.0
+REAL_ROBOT_ARM_SPEED_PERCENT = 75.0
 REAL_ROBOT_MIN_ARM_SPEED_PERCENT = 1.0
 REAL_ROBOT_APPLY_SPEED_PERCENT_TO_TORQUE = True
 REAL_ROBOT_APPLY_SPEED_PERCENT_TO_RATES = False

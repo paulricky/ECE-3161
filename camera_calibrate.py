@@ -870,6 +870,8 @@ def _run_hand_workspace_calibration(args) -> int:
     pose_results = {}
     pose_index = 0
     samples: list[dict] = []
+    print("[hand-workspace] Legacy camera-based hand workspace calibration.")
+    print("[hand-workspace] Robot mirror workspace extrema are recorded separately by robot_calibrate.py mirror_workspace.")
     print("[hand-workspace] Captures RGB MediaPipe hand positions for nonlinear workspace correction.")
     print("[hand-workspace] This does not learn direct motor commands; joint samples are IK seeds only.")
     print("[hand-workspace] SPACE=accept, R=reset current pose, Q/ESC=quit")

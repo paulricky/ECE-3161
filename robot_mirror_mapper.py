@@ -50,6 +50,10 @@ POSE_COORDS = {
     "mirror_near_down": (0.0, -1.0, 1.0),
     "mirror_far_up": (0.0, 1.0, -1.0),
     "mirror_far_down": (0.0, -1.0, -1.0),
+    "mirror_near_up_left": (-1.0, 1.0, 1.0),
+    "mirror_near_up_right": (1.0, 1.0, 1.0),
+    "mirror_far_down_left": (-1.0, -1.0, -1.0),
+    "mirror_far_down_right": (1.0, -1.0, -1.0),
 }
 
 
@@ -226,12 +230,19 @@ class RobotMirrorWorkspaceMapper:
 
     def _kernel(self, r) -> np.ndarray:
         r = np.asarray(r, dtype=np.float64)
+        kind = str(getattr(val, "ROBOT_MIRROR_RBF_KERNEL", "thin_plate")).strip().lower()
+        if kind in {"gaussian", "gauss"}:
+            return np.exp(-(r ** 2))
+        if kind in {"multiquadric", "mq"}:
+            return np.sqrt(1.0 + r ** 2)
         safe = np.maximum(r, 1e-12)
         out = (safe ** 2) * np.log(safe)
         out[r < 1e-12] = 0.0
         return out
 
     def _fit_rbf(self) -> None:
+        if not bool(getattr(val, "ROBOT_MIRROR_RBF_ENABLED", True)):
+            return
         n = int(self.samples_x.shape[0])
         min_n = int(getattr(val, "ROBOT_MIRROR_RBF_MIN_SAMPLES", 8))
         if n < max(3, min_n):
@@ -248,6 +259,8 @@ class RobotMirrorWorkspaceMapper:
             self.rbf_ready = False
 
     def _rbf_residual(self, x: np.ndarray) -> Optional[np.ndarray]:
+        if not bool(getattr(val, "ROBOT_MIRROR_RBF_ENABLED", True)):
+            return None
         if not self.rbf_ready or self.rbf_weights is None or self.samples_x.size == 0:
             return None
         try:
@@ -258,11 +271,13 @@ class RobotMirrorWorkspaceMapper:
             return None
 
     def _knn_residual(self, x: np.ndarray) -> tuple[np.ndarray, Optional[str]]:
+        if not bool(getattr(val, "ROBOT_MIRROR_KNN_ENABLED", True)):
+            return np.zeros(3, dtype=np.float64), None
         if self.samples_x.size == 0 or self.residual_y.size == 0:
             return np.zeros(3, dtype=np.float64), None
         d = np.linalg.norm(self.samples_x - x.reshape(1, 3), axis=1)
         order = np.argsort(d)
-        k = min(4, len(order))
+        k = max(1, min(int(getattr(val, "ROBOT_MIRROR_KNN_K", 4)), len(order)))
         idx = order[:k]
         weights = 1.0 / np.maximum(d[idx], 1e-6)
         weights /= max(float(np.sum(weights)), 1e-12)
@@ -297,12 +312,16 @@ class RobotMirrorWorkspaceMapper:
             }
         x = self._centered_inputs(horizontal_norm, vertical_norm, depth_norm)
         base = self._axis_blend_from_centered(x)
-        method = str(getattr(val, "ROBOT_MIRROR_MAPPING_METHOD", "axis_blend_rbf_residual")).strip().lower()
+        method = str(getattr(val, "ROBOT_MIRROR_MAPPING_METHOD", "axis_blend_knn_residual")).strip().lower()
         residual = np.zeros(3, dtype=np.float64)
         nearest = self._nearest_pose_name(x)
         residual_source = "none"
         used_method = "axis_blend"
-        if method in {"axis_blend_rbf_residual", "rbf_residual"}:
+        if method in {"axis_blend_knn_residual", "knn_residual"}:
+            residual, nearest = self._knn_residual(x)
+            residual_source = "knn_residual" if nearest is not None else "none"
+            used_method = "axis_blend_knn_residual" if nearest is not None else "axis_blend"
+        elif method in {"axis_blend_rbf_residual", "rbf_residual"}:
             rbf = self._rbf_residual(x)
             if rbf is not None:
                 residual = rbf
@@ -312,10 +331,6 @@ class RobotMirrorWorkspaceMapper:
                 residual, nearest = self._knn_residual(x)
                 residual_source = "knn_residual_fallback"
                 used_method = "axis_blend_knn_residual"
-        elif method == "knn_residual":
-            residual, nearest = self._knn_residual(x)
-            residual_source = "knn_residual"
-            used_method = "axis_blend_knn_residual"
         residual = self._clamp_residual(residual)
         final = self._clamp_xyz(base + residual)
         debug = {

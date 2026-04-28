@@ -1330,7 +1330,7 @@ def run_setup_and_calibration() -> int:
     return run_calibration_only()
 
 
-MIRROR_REQUIRED_POSES = [
+MIRROR_REQUIRED_POSES = [str(x) for x in getattr(val, "ROBOT_MIRROR_REQUIRED_POSES", [
     "center",
     "mirror_left",
     "mirror_right",
@@ -1338,9 +1338,9 @@ MIRROR_REQUIRED_POSES = [
     "mirror_down",
     "mirror_near",
     "mirror_far",
-]
+])]
 
-MIRROR_OPTIONAL_POSES = [
+MIRROR_OPTIONAL_POSES = [str(x) for x in getattr(val, "ROBOT_MIRROR_OPTIONAL_POSES", [
     "mirror_up_left",
     "mirror_up_right",
     "mirror_down_left",
@@ -1353,32 +1353,55 @@ MIRROR_OPTIONAL_POSES = [
     "mirror_near_down",
     "mirror_far_up",
     "mirror_far_down",
-]
+    "mirror_near_up_left",
+    "mirror_near_up_right",
+    "mirror_far_down_left",
+    "mirror_far_down_right",
+])]
 
 
 def _mirror_pose_instruction(name: str) -> str:
     text = {
-        "center": "Place the robot end effector at the comfortable center of the intended mirror workspace.",
-        "mirror_left": "Place the robot end effector at the leftmost position you want hand-left to reach.",
-        "mirror_right": "Place the robot end effector at the rightmost position you want hand-right to reach.",
-        "mirror_up": "Place the robot end effector at the highest position you want hand-up to reach.",
-        "mirror_down": "Place the robot end effector at the lowest position you want hand-down to reach.",
-        "mirror_near": "Place the robot end effector at the nearest/front position you want hand-near to reach.",
-        "mirror_far": "Place the robot end effector at the farthest/back position you want hand-far to reach.",
-        "mirror_up_left": "Optional combined pose: place the end effector up and left.",
-        "mirror_up_right": "Optional combined pose: place the end effector up and right.",
-        "mirror_down_left": "Optional combined pose: place the end effector down and left.",
-        "mirror_down_right": "Optional combined pose: place the end effector down and right.",
-        "mirror_near_left": "Optional combined pose: place the end effector near/front and left.",
-        "mirror_near_right": "Optional combined pose: place the end effector near/front and right.",
-        "mirror_far_left": "Optional combined pose: place the end effector far/back and left.",
-        "mirror_far_right": "Optional combined pose: place the end effector far/back and right.",
-        "mirror_near_up": "Optional combined pose: place the end effector near/front and up.",
-        "mirror_near_down": "Optional combined pose: place the end effector near/front and down.",
-        "mirror_far_up": "Optional combined pose: place the end effector far/back and up.",
-        "mirror_far_down": "Optional combined pose: place the end effector far/back and down.",
+        "center": "Place the end effector at the comfortable middle of the intended hand-control workspace. This should be the neutral pose when your hand is centered in the camera at normal depth. Choose a pose with good elbow clearance and wrist not near a limit.",
+        "mirror_left": "Place the end effector at the farthest LEFT position you want the robot to reach when your hand is at the left edge of the usable camera frame. Keep height and depth as close as possible to center; only change left/right as much as practical.",
+        "mirror_right": "Place the end effector at the farthest RIGHT position you want the robot to reach when your hand is at the right edge of the usable camera frame. Keep height and depth close to center.",
+        "mirror_up": "Place the end effector at the highest UP position you want the robot to reach when your hand is near the top of the usable camera frame. Keep left/right and depth close to center.",
+        "mirror_down": "Place the end effector at the lowest DOWN position you want the robot to reach when your hand is near the bottom of the usable camera frame. Keep left/right and depth close to center. Avoid table collision.",
+        "mirror_near": "Place the end effector at the nearest/front position you want the robot to reach when your hand moves closest to the camera. Keep left/right and height close to center.",
+        "mirror_far": "Place the end effector at the farthest/back position you want the robot to reach when your hand moves away from the camera. Keep left/right and height close to center.",
+        "mirror_up_left": "Optional pose: move to the combined top-left workspace corner, high and left. Keep depth near center.",
+        "mirror_up_right": "Optional pose: move to high and right. Keep depth near center.",
+        "mirror_down_left": "Optional pose: move to low and left. Keep depth near center. Avoid table/base collision.",
+        "mirror_down_right": "Optional pose: move to low and right. Keep depth near center.",
+        "mirror_near_left": "Optional pose: move to near/front and left. Keep height near center.",
+        "mirror_near_right": "Optional pose: move to near/front and right. Keep height near center.",
+        "mirror_far_left": "Optional pose: move to far/back and left. Keep height near center.",
+        "mirror_far_right": "Optional pose: move to far/back and right. Keep height near center.",
+        "mirror_near_up": "Optional pose: move to near/front and high. Keep left/right near center.",
+        "mirror_near_down": "Optional pose: move to near/front and low. Keep left/right near center.",
+        "mirror_far_up": "Optional pose: move to far/back and high. Keep left/right near center.",
+        "mirror_far_down": "Optional pose: move to far/back and low. Keep left/right near center.",
+        "mirror_near_up_left": "Optional pose: move to the combined near/front + high + left corner. This helps correct nonlinear distortion at the extreme of all three mirror axes.",
+        "mirror_near_up_right": "Optional pose: move to near/front + high + right.",
+        "mirror_far_down_left": "Optional pose: move to far/back + low + left.",
+        "mirror_far_down_right": "Optional pose: move to far/back + low + right.",
     }
     return text.get(str(name), f"Place the robot end effector at {name}.")
+
+
+def _print_mirror_pose_instruction(name: str, index: int, total: int, optional: bool) -> None:
+    print("")
+    print(f"[mirror] Pose {index}/{total}: {name}")
+    print("[mirror] General placement rules:")
+    print("  Move the END EFFECTOR / gripper tip, not just one joint.")
+    print("  Keep the pose within safe mechanical limits.")
+    print("  Keep the gripper in a normal forward/usable orientation unless this pose specifically asks otherwise.")
+    print("  Avoid table, base, and self-collisions.")
+    print("  This recorded pose defines what hand motion should mirror during runtime.")
+    print("  Do not worry whether the physical axis is called x/y/z; place the end effector in the intuitive mirror direction.")
+    if optional:
+        print("  Optional poses improve nonlinear accuracy. Skip only if this pose is unsafe or unreachable.")
+    print(f"[mirror] Pose-specific instruction: {_mirror_pose_instruction(name)}")
 
 
 def _load_joint_calibration_payload() -> dict[str, Any] | None:
@@ -1504,15 +1527,14 @@ def run_mirror_workspace_calibration() -> int:
         for i, pose_name in enumerate(poses, start=1):
             optional = pose_name in MIRROR_OPTIONAL_POSES
             while True:
-                print("")
-                print(f"[mirror] Pose {i}/{len(poses)}: {pose_name}")
-                print(f"[mirror] {_mirror_pose_instruction(pose_name)}")
-                print("[mirror] Manually move the robot end effector to this pose.")
-                print("[mirror] Press ENTER or SPACE to record. R=resample after read, S=skip optional, Q=quit without saving.")
+                _print_mirror_pose_instruction(pose_name, i, len(poses), optional)
+                print("[mirror] Press ENTER or SPACE then ENTER to record. R=resample, S=skip optional, Q=quit without saving.")
                 reply = input("[mirror] Ready to record? ").strip().lower()
                 if reply in {"q", "quit", "esc", "exit"}:
                     print("[mirror] Quit without saving.")
                     return 1
+                if reply == "r":
+                    continue
                 if reply == "s":
                     if optional:
                         print(f"[mirror] skipped optional pose {pose_name}")
@@ -1571,7 +1593,7 @@ def run_mirror_workspace_calibration() -> int:
             },
             "mapping": {
                 "base_method": "axis_blend",
-                "nonlinear_method": "bounded_rbf_residual",
+                "nonlinear_method": "knn_or_bounded_rbf_residual",
                 "direct_joint_learning_enabled": False,
                 "joint_poses_used_as_ik_seeds": bool(getattr(val, "ROBOT_MIRROR_USE_JOINT_SEED_EXAMPLES", True)),
             },
