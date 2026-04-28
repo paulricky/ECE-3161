@@ -41,37 +41,37 @@ MOTORS = [
     {
         "id": 3,
         "config_name": "elbow_flex",
-        "human_name": "shoulder bend / M3 (the extra joint between shoulder lift and elbow)",
-        "ext_a": "bend M3 fully in one direction (pick whichever is easier)",
-        "ext_b": "bend M3 fully in the OPPOSITE direction",
+        "human_name": "elbow flex (M3)",
+        "ext_a": "fold the elbow-flex joint fully in one direction",
+        "ext_b": "extend the elbow-flex joint fully in the opposite direction",
     },
     {
         "id": 4,
         "config_name": "wrist_flex",
-        "human_name": "elbow / M4",
-        "ext_a": "FOLD the elbow fully (pull forearm toward upper arm)",
-        "ext_b": "EXTEND the elbow fully (forearm in line with upper arm)",
+        "human_name": "wrist flex (M4)",
+        "ext_a": "bend the wrist fully down",
+        "ext_b": "bend the wrist fully up",
     },
     {
         "id": 5,
         "config_name": "wrist_yaw",
-        "human_name": "forearm twist / M5",
-        "ext_a": "twist the forearm fully one way (around its long axis)",
-        "ext_b": "twist the forearm fully the OPPOSITE way",
+        "human_name": "wrist yaw (M5)",
+        "ext_a": "yaw the wrist fully left",
+        "ext_b": "yaw the wrist fully right",
     },
     {
         "id": 6,
         "config_name": "wrist_roll",
-        "human_name": "wrist bend / M6",
-        "ext_a": "tilt the claw DOWN as far as it goes (gripper aimed at the table)",
-        "ext_b": "tilt the claw UP as far as it goes (gripper aimed at the ceiling)",
+        "human_name": "wrist roll (M6)",
+        "ext_a": "roll the wrist fully one way around the tool axis",
+        "ext_b": "roll the wrist fully the opposite way around the tool axis",
     },
     {
         "id": 7,
         "config_name": "wrist_pitch",
-        "human_name": "claw twist / M7",
-        "ext_a": "rotate the claw fully one way (around its own long axis)",
-        "ext_b": "rotate the claw fully the OPPOSITE way",
+        "human_name": "wrist pitch (M7)",
+        "ext_a": "pitch the claw fully down",
+        "ext_b": "pitch the claw fully up",
     },
 ]
 
@@ -129,11 +129,11 @@ def _build_pose_sequence() -> list[tuple[str, str, str]]:
             "Hold the arm by hand in this neutral pose:\n"
             "  - Shoulder pan (M1): facing straight forward (away from the base mount).\n"
             "  - Shoulder lift (M2): upper arm horizontal.\n"
-            "  - Shoulder bend (M3): zero bend - upper arm continues straight.\n"
-            "  - Elbow (M4): forearm horizontal, in line with upper arm.\n"
-            "  - Forearm twist (M5): no rotation.\n"
-            "  - Wrist bend (M6): wrist straight, claw level.\n"
-            "  - Claw twist (M7): no rotation.\n"
+            "  - Elbow flex (M3): forearm horizontal, in line with upper arm.\n"
+            "  - Wrist flex (M4): wrist straight.\n"
+            "  - Wrist yaw (M5): no left/right yaw.\n"
+            "  - Wrist roll (M6): no tool-axis roll.\n"
+            "  - Wrist pitch (M7): claw level.\n"
             "  - Gripper: half open.\n"
             "Hold steady. This pose is the reference 'zero' for every joint."
         ),
@@ -192,9 +192,8 @@ def _build_pose_sequence() -> list[tuple[str, str, str]]:
         (
             "Set the arm so the entire chain is horizontal, pointing forward:\n"
             "  - Shoulder pan: forward (zero rotation from neutral).\n"
-            "  - Shoulder lift, shoulder bend, elbow, wrist all aligned in a straight line.\n"
-            "  - Wrist bend (M6): claw level (parallel to the table).\n"
-            "  - Forearm/claw twists: any (we're checking position, not orientation).\n"
+            "  - Shoulder lift, elbow flex, wrist flex, and wrist pitch all aligned in a straight line.\n"
+            "  - Wrist roll/yaw: any (we're checking position, not orientation).\n"
             "Imagine the arm sticking straight out forward like a pointer. Hold steady."
         ),
     ))
@@ -217,7 +216,7 @@ def _build_pose_sequence() -> list[tuple[str, str, str]]:
             "direction as shoulder pan):\n"
             "  - Whole arm horizontal at shoulder height.\n"
             "  - Claw pointing forward (NOT up, NOT down, NOT left, NOT right).\n"
-            "  - Forearm twist + claw twist set so the gripper jaws would close on an\n"
+            "  - Wrist yaw/roll/pitch set so the gripper jaws would close on an\n"
             "    object approaching from above (vertical pinch).\n"
             "This locks the wrist sub-chain offsets."
         ),

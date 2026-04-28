@@ -42,7 +42,11 @@ def load_topdown_calibration() -> Optional[Tuple[dict, dict]]:
         print("  Then: python3 topdown_calibrate.py --phase extrinsics")
         return None
 
-    intr_data = np.load(intr_path, allow_pickle=True)
+    try:
+        intr_data = np.load(intr_path, allow_pickle=True)
+    except Exception as exc:
+        print(f"[pick_place] could not load intrinsics file: {exc}")
+        return None
     K = None
     for key in ("camera_matrix", "mtx", "K"):
         if key in intr_data:
@@ -61,7 +65,11 @@ def load_topdown_calibration() -> Optional[Tuple[dict, dict]]:
     if "image_size" in intr_data:
         image_size = tuple(int(x) for x in np.asarray(intr_data["image_size"]).reshape(-1)[:2])
 
-    ext_data = np.load(ext_path, allow_pickle=True)
+    try:
+        ext_data = np.load(ext_path, allow_pickle=True)
+    except Exception as exc:
+        print(f"[pick_place] could not load extrinsics file: {exc}")
+        return None
     try:
         R = np.asarray(ext_data["R"], dtype=np.float64).reshape(3, 3)
         t = np.asarray(ext_data["t"], dtype=np.float64).reshape(3)

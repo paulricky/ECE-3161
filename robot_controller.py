@@ -328,6 +328,7 @@ class SOArmHardwareController:
         self._pid_prev_time: Optional[float] = None
         self._last_present_joints_rad: Optional[Dict[str, float]] = None
         self._last_present_read_time = 0.0
+        self.last_command_diagnostics: Dict[str, Any] = {}
         self._async_lock = threading.Lock()
         self._async_stop = threading.Event()
         self._async_thread: Optional[threading.Thread] = None
@@ -1116,7 +1117,7 @@ class SOArmHardwareController:
         return out
 
     def _joint_command_to_action(self, cmd: JointCommand) -> Dict[str, float]:
-        adjusted = apply_joint_direction_conventions([
+        raw_joints = [
             cmd.shoulder_pan,
             cmd.shoulder_lift,
             cmd.elbow_flex,
@@ -1124,7 +1125,62 @@ class SOArmHardwareController:
             cmd.wrist_yaw,
             cmd.wrist_roll,
             cmd.wrist_pitch,
-        ])
+        ]
+        names = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_yaw", "wrist_roll", "wrist_pitch"]
+        fallback = {
+            "shoulder_pan": 0.0,
+            "shoulder_lift": 0.0,
+            "elbow_flex": 0.0,
+            "wrist_flex": 0.0,
+            "wrist_yaw": 0.0,
+            "wrist_roll": 0.0,
+            "wrist_pitch": 0.0,
+        }
+        if isinstance(self._last_present_joints_rad, dict):
+            fallback.update({k: float(v) for k, v in self._last_present_joints_rad.items() if k in fallback and math.isfinite(float(v))})
+        clean = []
+        clamped = {}
+        omitted = []
+        for name, raw in zip(names, raw_joints, strict=True):
+            try:
+                x = float(raw)
+            except Exception:
+                x = fallback[name]
+                omitted.append(name)
+            if not math.isfinite(x):
+                x = fallback[name]
+                omitted.append(name)
+            lo = float(getattr(val, f"{name.upper()}_MIN", -math.pi))
+            hi = float(getattr(val, f"{name.upper()}_MAX", math.pi))
+            if name == "shoulder_pan":
+                lo, hi = float(getattr(val, "BASE_PAN_MIN", lo)), float(getattr(val, "BASE_PAN_MAX", hi))
+            elif name == "shoulder_lift":
+                lo, hi = float(getattr(val, "SHOULDER_LIFT_MIN", lo)), float(getattr(val, "SHOULDER_LIFT_MAX", hi))
+            elif name == "elbow_flex":
+                lo, hi = float(getattr(val, "ELBOW_MIN", lo)), float(getattr(val, "ELBOW_MAX", hi))
+            if hi < lo:
+                lo, hi = hi, lo
+            x_clamped = max(lo, min(hi, x))
+            clean.append(x_clamped)
+            clamped[name] = {"requested_rad": x, "clamped_rad": x_clamped}
+
+        adjusted = apply_joint_direction_conventions(clean)
+        motor_names = list(getattr(val, "REAL_ROBOT_MOTOR_NAMES", names + ["gripper"]))
+        motor_ids = list(getattr(val, "REAL_ROBOT_MOTOR_IDS", list(range(1, len(motor_names) + 1))))
+        motor_id_map = {name: int(motor_ids[i]) for i, name in enumerate(motor_names) if i < len(motor_ids)}
+        try:
+            gripper_open01 = float(cmd.gripper_open01)
+        except Exception:
+            gripper_open01 = 1.0
+        if not math.isfinite(gripper_open01):
+            gripper_open01 = 1.0
+        gripper_open01 = float(np.clip(gripper_open01, 0.0, 1.0))
+        self.last_command_diagnostics = {
+            "desired_joint_angles_rad": {name: float(v) for name, v in zip(names, raw_joints, strict=True) if isinstance(v, (int, float)) and math.isfinite(float(v))},
+            "clamped_joint_angles_rad": {name: clamped[name]["clamped_rad"] for name in names},
+            "motor_ids_used": motor_id_map,
+            "wrist_omitted_or_held": [name for name in omitted if name in {"wrist_yaw", "wrist_roll", "wrist_pitch"}],
+        }
         return {
             "shoulder_pan.pos": self._rad_to_deg(adjusted[0]),
             "shoulder_lift.pos": self._rad_to_deg(adjusted[1]),
@@ -1133,7 +1189,7 @@ class SOArmHardwareController:
             "wrist_yaw.pos": self._rad_to_deg(adjusted[4]),
             "wrist_roll.pos": self._rad_to_deg(adjusted[5]),
             "wrist_pitch.pos": self._rad_to_deg(adjusted[6]),
-            "gripper.pos": self._gripper_open01_to_percent(cmd.gripper_open01),
+            "gripper.pos": self._gripper_open01_to_percent(gripper_open01),
         }
 
     @staticmethod

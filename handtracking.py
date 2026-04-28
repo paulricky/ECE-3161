@@ -13,6 +13,8 @@ import numpy as np
 
 import mathmodel as mm
 import values as val
+from depthcalibrator import DepthCalibrator
+from residual_learning import BoundedResidualCorrector
 
 
 action_log = deque(maxlen=val.LOG_MAX)
@@ -31,14 +33,29 @@ _clap_cooldown_until = 0.0
 mp_hands = mp.solutions.hands
 mp_draw = mp.solutions.drawing_utils
 mp_styles = mp.solutions.drawing_styles
+hands = None
+_hands_init_failed = False
 
-hands = mp_hands.Hands(
-    static_image_mode=False,
-    max_num_hands=int(getattr(val, "HANDTRACKING_MAX_NUM_HANDS", 2)),
-    model_complexity=int(getattr(val, "HANDTRACKING_MODEL_COMPLEXITY", 0)),
-    min_detection_confidence=float(getattr(val, "HANDTRACKING_MIN_DETECTION_CONFIDENCE", 0.6)),
-    min_tracking_confidence=float(getattr(val, "HANDTRACKING_MIN_TRACKING_CONFIDENCE", 0.6)),
-)
+
+def _get_hands():
+    global hands, _hands_init_failed
+    if hands is not None:
+        return hands
+    if _hands_init_failed:
+        return None
+    try:
+        hands = mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=int(getattr(val, "HANDTRACKING_MAX_NUM_HANDS", 2)),
+            model_complexity=int(getattr(val, "HANDTRACKING_MODEL_COMPLEXITY", 0)),
+            min_detection_confidence=float(getattr(val, "HANDTRACKING_MIN_DETECTION_CONFIDENCE", 0.6)),
+            min_tracking_confidence=float(getattr(val, "HANDTRACKING_MIN_TRACKING_CONFIDENCE", 0.6)),
+        )
+        return hands
+    except Exception as exc:
+        _hands_init_failed = True
+        log_event(f"MediaPipe hands unavailable: {exc}")
+        return None
 
 
 def log_event(text: str):
@@ -113,6 +130,26 @@ def _norm(v):
     if n < 1e-9:
         return v * 0.0
     return v / n
+
+
+def _finite_float(x, default=None):
+    try:
+        f = float(x)
+    except Exception:
+        return default
+    return f if math.isfinite(f) else default
+
+
+def _finite_vec3(x):
+    try:
+        arr = np.asarray(x, dtype=np.float64).reshape(3)
+    except Exception:
+        return None
+    return arr if np.all(np.isfinite(arr)) else None
+
+
+def _wrap_angle(x: float) -> float:
+    return math.atan2(math.sin(float(x)), math.cos(float(x)))
 
 
 def _load_default_lerobot_calibration_path():
@@ -469,7 +506,11 @@ class ArucoGloveTracker:
         path = getattr(val, "CALIB_INTRINSICS_FILE", "")
         if not path or not os.path.exists(path):
             return
-        d = np.load(path, allow_pickle=True)
+        try:
+            d = np.load(path, allow_pickle=True)
+        except Exception as exc:
+            self.last_debug["status"] = f"intrinsics_load_failed:{exc}"
+            return
         K = _safe_npz_value(d, ["camera_matrix", "K", "mtx"])
         dist = _safe_npz_value(d, ["dist_coeffs", "dist", "distortion_coefficients"])
         if K is None or dist is None:
@@ -481,7 +522,11 @@ class ArucoGloveTracker:
         path = getattr(val, "CALIB_EXTRINSICS_FILE", "")
         if not path or not os.path.exists(path):
             return
-        d = np.load(path, allow_pickle=True)
+        try:
+            d = np.load(path, allow_pickle=True)
+        except Exception as exc:
+            self.last_debug["status"] = f"extrinsics_load_failed:{exc}"
+            return
 
         mode = getattr(val, "EXTRINSICS_MODE", "workspace_to_camera")
 
@@ -508,7 +553,11 @@ class ArucoGloveTracker:
         path = getattr(val, "CALIB_WORKSPACE_FILE", "")
         if not path or not os.path.exists(path):
             return
-        d = np.load(path, allow_pickle=True)
+        try:
+            d = np.load(path, allow_pickle=True)
+        except Exception as exc:
+            self.last_debug["status"] = f"workspace_load_failed:{exc}"
+            return
         mn = _safe_npz_value(d, ["workspace_min", "xyz_min", "min_xyz"])
         mx = _safe_npz_value(d, ["workspace_max", "xyz_max", "max_xyz"])
         if mn is not None and mx is not None:
@@ -626,6 +675,8 @@ class ArucoGloveTracker:
             "marker_id": int(chosen_id),
             "workspace_xyz": marker_origin_workspace,
             "workspace_rpy": workspace_rpy,
+            "camera_xyz": marker_origin_camera,
+            "camera_depth_m": float(np.linalg.norm(marker_origin_camera)),
             "image_corners": image_points,
             "all_corners": corners,
             "all_ids": ids_list,
@@ -701,6 +752,14 @@ class HandTracker:
         self._alpha = float(getattr(val, "HAND_CMD_SMOOTHING", 0.25))
         self._open_alpha = float(getattr(val, "HAND_STATE_SMOOTHING", 0.20))
         self.aruco = ArucoGloveTracker()
+        self.residual_corrector = BoundedResidualCorrector()
+        try:
+            self.depth_calibrator = DepthCalibrator(
+                window=int(getattr(val, "HAND_DEPTH_AUTOCALIBRATE_WINDOW", 240)),
+                ema_alpha=float(getattr(val, "HAND_DEPTH_SMOOTHING_ALPHA", getattr(val, "HAND_DEPTH_AUTOCALIBRATE_EMA_ALPHA", 0.15))),
+            )
+        except Exception:
+            self.depth_calibrator = None
         self.lerobot_calibration = self._load_lerobot_calibration()
         self._last_ik_solution = None
         self._filtered_target_xyz = None
@@ -710,6 +769,9 @@ class HandTracker:
         self._last_ik_time = 0.0
         self._last_ik_command = None
         self._last_ik_signature = None
+        self._last_cartesian_target_xyz = None
+        self._last_cartesian_target_rpy = None
+        self._warned_no_hand_calibration = False
         self._ik_async_enabled = bool(getattr(val, "HAND_IK_ASYNC", True))
         self._ik_lock = threading.RLock()
         self._ik_stop = threading.Event()
@@ -755,8 +817,13 @@ class HandTracker:
         path = _load_default_lerobot_calibration_path()
         if not os.path.exists(path):
             return None
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else None
+        except Exception as exc:
+            log_event(f"calibration load skipped: {exc}")
+            return None
 
     def process(self, frame):
         now = time.time()
@@ -766,8 +833,16 @@ class HandTracker:
         self.prev_time = now
 
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = hands.process(rgb)
-        detected_hands = build_detected_hands(results)
+        hands_processor = _get_hands()
+        if hands_processor is None:
+            detected_hands = []
+        else:
+            try:
+                results = hands_processor.process(rgb)
+                detected_hands = build_detected_hands(results)
+            except Exception as exc:
+                log_event(f"MediaPipe process skipped: {exc}")
+                detected_hands = []
 
         clap_event, per_hand = draw_and_update_gestures(frame, detected_hands, now, dt)
         snap_event = any(bool(info.get("snap", False)) for info in per_hand.values())
@@ -776,7 +851,9 @@ class HandTracker:
         aruco_pose = self.aruco.detect(frame)
         self.aruco.draw_debug(frame, aruco_pose)
 
-        if aruco_pose is not None:
+        driver = choose_driver(detected_hands)
+
+        if aruco_pose is not None and driver is None:
             open01 = self._estimate_gripper_open01(detected_hands)
             cmd = self._aruco_pose_to_command(aruco_pose, open01)
             if cmd is not None:
@@ -789,14 +866,14 @@ class HandTracker:
                 self._draw_aruco_overlay(frame, aruco_pose)
                 return out
 
-        driver = choose_driver(detected_hands)
         if driver is None:
             return None
 
         hand_lms, label, _score = driver
-        cmd = self._landmarks_to_command(hand_lms, label)
+        cmd = self._landmarks_to_command(hand_lms, label, frame.shape[1], frame.shape[0], aruco_pose=aruco_pose)
         out = self._smooth_command(cmd)
-        out["mode"] = "mediapipe"
+        diag = out.get("__diagnostics__", {}) if isinstance(out.get("__diagnostics__", {}), dict) else {}
+        out["mode"] = "cartesian" if diag.get("hand_cartesian_ik_active") else "mediapipe"
         out["snap_event"] = snap_event
         out["clap_event"] = bool(clap_event)
         self._draw_command_overlay(frame, out)
@@ -805,7 +882,11 @@ class HandTracker:
     def _smooth_command(self, cmd):
         for k in self._last_cmd:
             self._last_cmd[k] = _lerp(self._last_cmd[k], float(cmd[k]), self._alpha)
-        return dict(self._last_cmd)
+        out = dict(self._last_cmd)
+        for k in ("__diagnostics__", "ee_target_xyz", "ee_target_rpy"):
+            if k in cmd:
+                out[k] = cmd[k]
+        return out
 
     def consume_snap_event(self) -> bool:
         snap = bool(self.last_gesture_events.get("snap", False))
@@ -822,7 +903,8 @@ class HandTracker:
         if worker is not None and worker.is_alive():
             worker.join(timeout=0.5)
         try:
-            hands.close()
+            if hands is not None:
+                hands.close()
         except Exception:
             pass
 
@@ -962,9 +1044,16 @@ class HandTracker:
                 self._ik_busy = False
 
     def _solve_ik_now(self, xyz_f, rpy_f, open01):
+        raw_xyz = np.asarray(xyz_f, dtype=np.float64).reshape(3)
+        raw_rpy = np.asarray(rpy_f, dtype=np.float64).reshape(3)
+        if not np.all(np.isfinite(raw_xyz)) or not np.all(np.isfinite(raw_rpy)):
+            return None
+        corrected_xyz, corrected_rpy, residual = self.residual_corrector.apply(raw_xyz, raw_rpy)
+        if not np.all(np.isfinite(corrected_xyz)) or corrected_rpy is None or not np.all(np.isfinite(corrected_rpy)):
+            return None
         solved = mm.solve_ik_from_target(
-            target_xyz=xyz_f,
-            target_rpy=rpy_f,
+            target_xyz=corrected_xyz,
+            target_rpy=corrected_rpy,
             gripper_open01=float(open01),
             lerobot_calibration=self.lerobot_calibration,
             previous_joints=self._prev_joints_for_ik(),
@@ -973,11 +1062,24 @@ class HandTracker:
         )
         if not isinstance(solved, dict):
             return None
-        diag = solved.get("__diagnostics__", {})
+        diag = dict(solved.get("__diagnostics__", {})) if isinstance(solved.get("__diagnostics__", {}), dict) else {}
+        diag.update({
+            "residual_raw_xyz_m": raw_xyz.tolist(),
+            "residual_raw_rpy_rad": raw_rpy.tolist(),
+            "residual_corrected_xyz_m": corrected_xyz.tolist(),
+            "residual_corrected_rpy_rad": None if corrected_rpy is None else corrected_rpy.tolist(),
+            "residual_delta_xyz_m": residual.delta_xyz.tolist(),
+            "residual_delta_rpy_rad": residual.delta_rpy.tolist(),
+            "residual_enabled": bool(residual.enabled),
+            "residual_source": str(residual.source),
+        })
         max_err = float(getattr(val, "HAND_IK_REJECT_POSITION_ERR_M", 0.06))
         if isinstance(diag, dict) and (not bool(diag.get("reachable", True))) and float(diag.get("position_error_m", 0.0)) > max_err:
+            diag["ik_success"] = False
+            diag["failure_reason"] = "position_error_rejected"
             log_event(f"IK target rejected err={float(diag.get('position_error_m', 0.0)):.3f}m")
             return None
+        diag["ik_success"] = bool(diag.get("reachable", True))
         out = {
             "shoulder_pan": float(solved["shoulder_pan"]),
             "shoulder_lift": float(solved["shoulder_lift"]),
@@ -988,8 +1090,8 @@ class HandTracker:
             "wrist_pitch": float(solved.get("wrist_pitch", 0.0)),
             "gripper_open01": float(solved.get("gripper_open01", open01)),
             "__diagnostics__": diag,
-            "ee_target_xyz": np.asarray(xyz_f, dtype=np.float64).reshape(3).tolist(),
-            "ee_target_rpy": np.asarray(rpy_f, dtype=np.float64).reshape(3).tolist(),
+            "ee_target_xyz": corrected_xyz.tolist(),
+            "ee_target_rpy": corrected_rpy.tolist(),
         }
         with self._ik_lock:
             self._last_ik_solution = {k: float(out[k]) for k in ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_yaw", "wrist_roll", "wrist_pitch")}
@@ -1034,6 +1136,7 @@ class HandTracker:
 
     def _draw_command_overlay(self, frame, out):
         h_img, _ = frame.shape[:2]
+        diag = out.get("__diagnostics__", {}) if isinstance(out.get("__diagnostics__", {}), dict) else {}
         cv2.putText(
             frame,
             f"{out.get('mode', 'unknown')} pan={out['shoulder_pan']:.2f} lift={out['shoulder_lift']:.2f} elbow={out['elbow_flex']:.2f}",
@@ -1054,6 +1157,29 @@ class HandTracker:
             2,
             cv2.LINE_AA,
         )
+        if bool(getattr(val, "HAND_CAMERA_AXIS_DEBUG", True)) and diag:
+            xyz = diag.get("target_xyz_final_m", out.get("ee_target_xyz", [0.0, 0.0, 0.0]))
+            rpy = diag.get("target_rpy_rad", out.get("ee_target_rpy", [0.0, 0.0, 0.0]))
+            try:
+                xyz = np.asarray(xyz, dtype=np.float64).reshape(3)
+                rpy_deg = np.degrees(np.asarray(rpy, dtype=np.float64).reshape(3))
+                line1 = (
+                    f"map={diag.get('mapping_source', '?')} depth={diag.get('depth_source', '?')} "
+                    f"n=({float(diag.get('camera_x_norm', 0.0)):.2f},"
+                    f"{float(diag.get('camera_y_norm', 0.0)):.2f},"
+                    f"{float(diag.get('camera_depth_norm', 0.5)):.2f}) "
+                    f"size={float(diag.get('hand_size_norm', 0.0)):.2f}"
+                )
+                line2 = (
+                    f"xyz=({xyz[0]:+.3f},{xyz[1]:+.3f},{xyz[2]:+.3f}) "
+                    f"rpy=({rpy_deg[0]:+.0f},{rpy_deg[1]:+.0f},{rpy_deg[2]:+.0f}) "
+                    f"IK={'OK' if bool(diag.get('ik_success', False)) else 'pending/fallback'} "
+                    f"aruco={'yes' if bool(diag.get('aruco_detected', False)) else 'no'}"
+                )
+                cv2.putText(frame, line1, (10, h_img - 90), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 255), 2, cv2.LINE_AA)
+                cv2.putText(frame, line2, (10, h_img - 66), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 255), 2, cv2.LINE_AA)
+            except Exception:
+                pass
 
     def _estimate_hand_rpy_from_landmarks(self, hand_lms):
         lm = hand_lms.landmark
@@ -1081,7 +1207,292 @@ class HandTracker:
         R = np.column_stack([x_axis, y_axis, z_axis])
         return _rot_to_rpy(R)
 
-    def _landmarks_to_command(self, hand_lms, label: str):
+    def _hand_size_metrics(self, hand_lms):
+        lm = hand_lms.landmark
+        pts = np.array([[float(p.x), float(p.y)] for p in lm], dtype=np.float64)
+        wrist = (lm[0].x, lm[0].y)
+        index_mcp = (lm[5].x, lm[5].y)
+        middle_mcp = (lm[9].x, lm[9].y)
+        middle_tip = (lm[12].x, lm[12].y)
+        pinky_mcp = (lm[17].x, lm[17].y)
+        palm_width = mm.dist(index_mcp, pinky_mcp)
+        palm_height_mcp = mm.dist(wrist, middle_mcp)
+        palm_height_tip = mm.dist(wrist, middle_tip)
+        palm_height = palm_height_mcp if palm_height_mcp > 1e-5 else palm_height_tip
+        bbox_w = float(np.max(pts[:, 0]) - np.min(pts[:, 0]))
+        bbox_h = float(np.max(pts[:, 1]) - np.min(pts[:, 1]))
+        bbox_size = math.sqrt(max(0.0, bbox_w * bbox_h))
+        candidates = [x for x in (palm_width, palm_height, bbox_size) if math.isfinite(float(x)) and float(x) > 0.0]
+        hand_size = float(np.median(candidates)) if candidates else 0.0
+        center_pts = pts[[0, 5, 9, 17], :]
+        center = np.mean(center_pts, axis=0)
+        return {
+            "camera_x_norm": _clip(float(center[0]), 0.0, 1.0),
+            "camera_y_norm": _clip(float(center[1]), 0.0, 1.0),
+            "palm_width_norm": float(palm_width),
+            "palm_height_norm": float(palm_height),
+            "bbox_size_norm": float(bbox_size),
+            "hand_size_norm": float(hand_size),
+        }
+
+    def _target_bounds(self):
+        return {
+            "robot_x": (
+                float(getattr(val, "HAND_TARGET_X_MIN_M", getattr(val, "WORKSPACE_X_MIN", -0.12))),
+                float(getattr(val, "HAND_TARGET_X_MAX_M", getattr(val, "WORKSPACE_X_MAX", 0.12))),
+            ),
+            "robot_y": (
+                float(getattr(val, "HAND_TARGET_Y_MIN_M", getattr(val, "WORKSPACE_Y_MIN", 0.10))),
+                float(getattr(val, "HAND_TARGET_Y_MAX_M", getattr(val, "WORKSPACE_Y_MAX", 0.22))),
+            ),
+            "robot_z": (
+                float(getattr(val, "HAND_TARGET_Z_MIN_M", getattr(val, "WORKSPACE_Z_MIN", 0.00))),
+                float(getattr(val, "HAND_TARGET_Z_MAX_M", getattr(val, "WORKSPACE_Z_MAX", 0.22))),
+            ),
+        }
+
+    def _axis_value_from_norm(self, axis: str, norm: float) -> float:
+        bounds = self._target_bounds()
+        lo, hi = bounds.get(axis, (0.0, 1.0))
+        if hi < lo:
+            lo, hi = hi, lo
+        return _lerp(lo, hi, _clip(norm, 0.0, 1.0))
+
+    def _axis_midpoint(self, axis: str) -> float:
+        lo, hi = self._target_bounds().get(axis, (0.0, 0.0))
+        return 0.5 * (float(lo) + float(hi))
+
+    def _clamp_target_xyz(self, xyz):
+        arr = np.asarray(xyz, dtype=np.float64).reshape(3)
+        before = arr.copy()
+        bounds = self._target_bounds()
+        for i, axis in enumerate(("robot_x", "robot_y", "robot_z")):
+            lo, hi = bounds[axis]
+            if hi < lo:
+                lo, hi = hi, lo
+            arr[i] = _clip(arr[i], lo, hi)
+        return arr, bool(np.linalg.norm(arr - before) > 1e-12)
+
+    def _depth_targets_for_axis(self, axis: str):
+        near = _finite_float(getattr(val, "HAND_DEPTH_TARGET_NEAR_M", None), None)
+        far = _finite_float(getattr(val, "HAND_DEPTH_TARGET_FAR_M", None), None)
+        lo, hi = self._target_bounds().get(axis, (0.0, 1.0))
+        if near is None:
+            near = float(lo)
+        if far is None:
+            far = float(hi)
+        return float(near), float(far)
+
+    def _depth_coord(self, axis: str, depth_norm: float) -> float:
+        near, far = self._depth_targets_for_axis(axis)
+        return _lerp(far, near, _clip(depth_norm, 0.0, 1.0))
+
+    def _estimate_target_rpy_from_hand(self, hand_lms, aruco_pose=None):
+        if not bool(getattr(val, "HAND_USE_WRIST_ORIENTATION", True)):
+            return np.array([0.0, float(getattr(val, "HAND_TARGET_PITCH_BIAS_RAD", -0.15)), 0.0], dtype=np.float64), "disabled"
+
+        if aruco_pose is not None:
+            rpy = _finite_vec3(aruco_pose.get("workspace_rpy"))
+            if rpy is not None:
+                return self._configured_wrist_rpy(rpy), "aruco"
+
+        try:
+            lm = hand_lms.landmark
+            index = np.array([lm[5].x, lm[5].y], dtype=np.float64)
+            pinky = np.array([lm[17].x, lm[17].y], dtype=np.float64)
+            wrist = np.array([lm[0].x, lm[0].y], dtype=np.float64)
+            middle = np.array([lm[9].x, lm[9].y], dtype=np.float64)
+            lateral = pinky - index
+            forward = middle - wrist
+            if np.linalg.norm(lateral) < 1e-6 or np.linalg.norm(forward) < 1e-6:
+                raise ValueError("hand axes degenerate")
+            roll = math.atan2(float(lateral[1]), float(lateral[0]))
+            yaw = math.atan2(float(forward[0]), max(abs(float(forward[1])), 1e-6))
+            pitch = -math.atan2(float(forward[1]), max(abs(float(forward[0])), 1e-6))
+            rpy3 = self._estimate_hand_rpy_from_landmarks(hand_lms)
+            if np.all(np.isfinite(rpy3)):
+                pitch = 0.5 * pitch + 0.5 * float(rpy3[1])
+                yaw = 0.5 * yaw + 0.5 * float(rpy3[2])
+            rpy = np.array([roll, pitch + float(getattr(val, "HAND_TARGET_PITCH_BIAS_RAD", -0.15)), yaw], dtype=np.float64)
+            return self._configured_wrist_rpy(rpy), "landmarks"
+        except Exception:
+            if bool(getattr(val, "HAND_WRIST_ORIENTATION_FALLBACK_TO_NEUTRAL", True)):
+                return np.array([0.0, float(getattr(val, "HAND_TARGET_PITCH_BIAS_RAD", -0.15)), 0.0], dtype=np.float64), "neutral_fallback"
+            return None, "unavailable"
+
+    def _configured_wrist_rpy(self, rpy):
+        raw = np.asarray(rpy, dtype=np.float64).reshape(3)
+        roll = _wrap_angle(raw[0] * float(getattr(val, "HAND_WRIST_ROLL_SCALE", 1.0)) + float(getattr(val, "HAND_WRIST_ROLL_OFFSET_RAD", 0.0)))
+        pitch = _wrap_angle(raw[1] * float(getattr(val, "HAND_WRIST_PITCH_SCALE", 1.0)) + float(getattr(val, "HAND_WRIST_PITCH_OFFSET_RAD", 0.0)))
+        yaw = _wrap_angle(raw[2] * float(getattr(val, "HAND_WRIST_YAW_SCALE", 1.0)) + float(getattr(val, "HAND_WRIST_YAW_OFFSET_RAD", 0.0)))
+        roll = _clip(roll, -abs(float(getattr(val, "HAND_WRIST_MAX_ROLL_RAD", math.pi))), abs(float(getattr(val, "HAND_WRIST_MAX_ROLL_RAD", math.pi))))
+        pitch = _clip(pitch, -abs(float(getattr(val, "HAND_WRIST_MAX_PITCH_RAD", 2.5))), abs(float(getattr(val, "HAND_WRIST_MAX_PITCH_RAD", 2.5))))
+        yaw = _clip(yaw, -abs(float(getattr(val, "HAND_WRIST_MAX_YAW_RAD", math.pi))), abs(float(getattr(val, "HAND_WRIST_MAX_YAW_RAD", math.pi))))
+        return np.array([roll, pitch, yaw], dtype=np.float64)
+
+    def build_hand_cartesian_target(self, hand_lms, frame_w: int, frame_h: int, aruco_pose=None):
+        del frame_w, frame_h
+        metrics = self._hand_size_metrics(hand_lms)
+        x_norm_raw = metrics["camera_x_norm"]
+        y_norm_raw = metrics["camera_y_norm"]
+        x_norm = 1.0 - x_norm_raw if bool(getattr(val, "HAND_IMAGE_X_FLIP", False)) else x_norm_raw
+        y_norm = 1.0 - y_norm_raw if bool(getattr(val, "HAND_IMAGE_Y_FLIP", True)) else y_norm_raw
+
+        depth_source = "midpoint"
+        depth_raw = 0.5
+        depth_smooth = self.depth_calibrator.get_smoothed_depth_norm() if self.depth_calibrator is not None else 0.5
+        configured_depth_source = str(getattr(val, "HAND_DEPTH_SIZE_SOURCE", "auto")).strip().lower()
+        aruco_depth = None
+        if aruco_pose is not None:
+            aruco_depth = _finite_float(aruco_pose.get("camera_depth_m"), None)
+
+        if (
+            configured_depth_source in {"auto", "aruco_marker", "aruco"}
+            and aruco_depth is not None
+            and bool(getattr(val, "HAND_ARUCO_SIZE_DEPTH_ENABLED", True))
+            and self.depth_calibrator is not None
+        ):
+            depth_raw = self.depth_calibrator.depth_m_to_norm(aruco_depth, smooth=False)
+            depth_smooth = self.depth_calibrator.update_from_aruco_depth(aruco_depth)
+            depth_source = "aruco"
+        elif (
+            configured_depth_source in {"auto", "hand_landmarks", "hand", "mediapipe"}
+            and bool(getattr(val, "HAND_DEPTH_FROM_SIZE_ENABLED", True))
+            and self.depth_calibrator is not None
+        ):
+            depth_raw = self.depth_calibrator.normalize_hand_size(metrics["hand_size_norm"], smooth=False)
+            depth_smooth = self.depth_calibrator.update_from_hand_size(metrics["hand_size_norm"])
+            depth_source = "hand_size"
+        else:
+            depth_raw = depth_smooth
+            depth_source = "old" if self.depth_calibrator is not None else "midpoint"
+
+        if bool(getattr(val, "HAND_DEPTH_FLIP", False)):
+            depth_raw = 1.0 - depth_raw
+            depth_smooth = 1.0 - depth_smooth
+        depth_norm = _clip(depth_smooth, float(getattr(val, "HAND_DEPTH_MIN_NORM", 0.0)), float(getattr(val, "HAND_DEPTH_MAX_NORM", 1.0)))
+
+        axis_map = getattr(val, "HAND_CAMERA_TO_ROBOT_AXIS_MAP", {"image_x": "robot_x", "image_y": "robot_z", "depth": "robot_y"})
+        if not isinstance(axis_map, dict):
+            axis_map = {"image_x": "robot_x", "image_y": "robot_z", "depth": "robot_y"}
+        depth_axis = str(getattr(val, "HAND_DEPTH_AXIS", axis_map.get("depth", "robot_y")))
+        xyz_by_axis = {
+            "robot_x": self._axis_midpoint("robot_x"),
+            "robot_y": self._axis_midpoint("robot_y"),
+            "robot_z": self._axis_midpoint("robot_z"),
+        }
+        target_before_depth = dict(xyz_by_axis)
+        ix_axis = str(axis_map.get("image_x", "robot_x"))
+        iy_axis = str(axis_map.get("image_y", "robot_z"))
+        if ix_axis in xyz_by_axis:
+            xyz_by_axis[ix_axis] = self._axis_value_from_norm(ix_axis, x_norm)
+        if iy_axis in xyz_by_axis:
+            xyz_by_axis[iy_axis] = self._axis_value_from_norm(iy_axis, y_norm)
+        target_before_depth = dict(xyz_by_axis)
+        if depth_axis in xyz_by_axis:
+            xyz_by_axis[depth_axis] = self._depth_coord(depth_axis, depth_norm)
+
+        xyz_raw = np.array([xyz_by_axis["robot_x"], xyz_by_axis["robot_y"], xyz_by_axis["robot_z"]], dtype=np.float64)
+        mapping_source = "mediapipe_size_fallback"
+        if aruco_pose is not None:
+            aruco_xyz = _finite_vec3(aruco_pose.get("workspace_xyz"))
+            if aruco_xyz is not None:
+                xyz_raw = aruco_xyz
+                mapping_source = "aruco_calibrated"
+            elif not self._warned_no_hand_calibration:
+                log_event("Aruco pose unavailable; using normalized hand mapping")
+                self._warned_no_hand_calibration = True
+        elif depth_source == "midpoint":
+            mapping_source = "midpoint"
+
+        xyz_final, clamped = self._clamp_target_xyz(xyz_raw)
+        rpy, rpy_source = self._estimate_target_rpy_from_hand(hand_lms, aruco_pose)
+        if rpy is None:
+            rpy = np.array([0.0, float(getattr(val, "HAND_TARGET_PITCH_BIAS_RAD", -0.15)), 0.0], dtype=np.float64)
+            rpy_source = "neutral_fallback"
+
+        if not np.all(np.isfinite(xyz_final)) or not np.all(np.isfinite(rpy)):
+            raise ValueError("non-finite Cartesian target")
+
+        before_depth_arr = np.array([
+            target_before_depth["robot_x"],
+            target_before_depth["robot_y"],
+            target_before_depth["robot_z"],
+        ], dtype=np.float64)
+        after_depth_arr = np.array([
+            xyz_by_axis["robot_x"],
+            xyz_by_axis["robot_y"],
+            xyz_by_axis["robot_z"],
+        ], dtype=np.float64)
+        debug = {
+            "camera_x_norm": float(x_norm_raw),
+            "camera_y_norm": float(y_norm_raw),
+            "camera_depth_norm": float(depth_norm),
+            "hand_size_norm": float(metrics["hand_size_norm"]),
+            "palm_width_norm": float(metrics["palm_width_norm"]),
+            "palm_height_norm": float(metrics["palm_height_norm"]),
+            "bbox_size_norm": float(metrics["bbox_size_norm"]),
+            "depth_source": depth_source,
+            "depth_norm_raw": float(depth_raw),
+            "depth_norm_smoothed": float(depth_smooth),
+            "mapped_robot_x_m": float(xyz_final[0]),
+            "mapped_robot_y_m": float(xyz_final[1]),
+            "mapped_robot_z_m": float(xyz_final[2]),
+            "target_depth_axis": depth_axis,
+            "target_depth_m": float(xyz_by_axis.get(depth_axis, xyz_final[1])),
+            "target_xyz_before_depth_m": before_depth_arr.tolist(),
+            "target_xyz_after_depth_m": after_depth_arr.tolist(),
+            "target_xyz_raw_m": xyz_raw.tolist(),
+            "target_xyz_final_m": xyz_final.tolist(),
+            "mapping_source": mapping_source,
+            "axis_map_used": dict(axis_map),
+            "axis_flips_used": {
+                "image_x": bool(getattr(val, "HAND_IMAGE_X_FLIP", False)),
+                "image_y": bool(getattr(val, "HAND_IMAGE_Y_FLIP", True)),
+                "depth": bool(getattr(val, "HAND_DEPTH_FLIP", False)),
+            },
+            "target_clamped": bool(clamped),
+            "target_rpy_rad": rpy.tolist(),
+            "target_rpy_source": rpy_source,
+            "aruco_detected": bool(aruco_pose is not None),
+        }
+        return xyz_final, rpy, debug
+
+    def _landmarks_to_command(self, hand_lms, label: str, frame_w: int = 1, frame_h: int = 1, aruco_pose=None):
+        if not (bool(getattr(val, "HAND_USE_CARTESIAN_IK", True)) and bool(getattr(val, "HAND_CARTESIAN_MAPPING_ENABLED", True))):
+            return self._old_landmarks_to_command(hand_lms, label)
+
+        is_closed, open01, _metric, _debug = openness_from_fingertips(hand_lms, label)
+        gripper_open01 = 0.0 if is_closed else float(open01)
+        self._last_open01 = _lerp(self._last_open01, gripper_open01, self._open_alpha)
+        gripper_open01 = self._last_open01
+
+        try:
+            xyz, rpy, target_debug = self.build_hand_cartesian_target(hand_lms, frame_w, frame_h, aruco_pose=aruco_pose)
+            cmd = self._solve_cartesian_command(xyz, rpy, gripper_open01)
+            if cmd is None:
+                raise RuntimeError("IK returned no command")
+            diag = dict(cmd.get("__diagnostics__", {})) if isinstance(cmd.get("__diagnostics__", {}), dict) else {}
+            diag.update(target_debug)
+            diag["hand_cartesian_ik_active"] = True
+            diag["hand_cartesian_fallback_active"] = False
+            diag["ik_success"] = not bool(diag.get("ik_async_pending", False)) and bool(diag.get("reachable", True))
+            cmd["__diagnostics__"] = diag
+            return cmd
+        except Exception as exc:
+            log_event(f"Cartesian hand mapping fallback: {exc}")
+            if bool(getattr(val, "HAND_CARTESIAN_MAPPING_FALLBACK_TO_OLD", True)):
+                out = self._old_landmarks_to_command(hand_lms, label)
+                diag = dict(out.get("__diagnostics__", {})) if isinstance(out.get("__diagnostics__", {}), dict) else {}
+                diag["hand_cartesian_ik_active"] = False
+                diag["hand_cartesian_fallback_active"] = True
+                diag["mapping_source"] = "old_fallback"
+                diag["failure_reason"] = str(exc)
+                out["__diagnostics__"] = diag
+                return out
+            return self._ik_base_command(gripper_open01, pending=False)
+
+    def _old_landmarks_to_command(self, hand_lms, label: str):
         lm = hand_lms.landmark
         wrist = (lm[0].x, lm[0].y)
         index_mcp = (lm[5].x, lm[5].y)
@@ -1106,7 +1517,15 @@ class HandTracker:
         size_far = float(getattr(val, "HAND_SIZE_FAR", 0.08))
         if abs(size_near - size_far) < 1e-6:
             size_near = size_far + 1e-3
-        reach_norm = _clip((size_metric - size_far) / (size_near - size_far), 0.0, 1.0)
+        depth_autocal = bool(getattr(val, "HAND_DEPTH_AUTOCALIBRATE", False))
+        if depth_autocal and self.depth_calibrator is not None:
+            try:
+                reach_norm = float(self.depth_calibrator.normalize01(size_metric))
+            except Exception:
+                reach_norm = _clip((size_metric - size_far) / (size_near - size_far), 0.0, 1.0)
+                depth_autocal = False
+        else:
+            reach_norm = _clip((size_metric - size_far) / (size_near - size_far), 0.0, 1.0)
 
         forward = _lerp(float(getattr(val, "WORKSPACE_Y_MAX", 0.22)),
                         float(getattr(val, "WORKSPACE_Y_MIN", 0.10)),
@@ -1172,4 +1591,9 @@ class HandTracker:
             "wrist_roll": 0.0,
             "wrist_pitch": 0.0,
             "gripper_open01": float(gripper_open01),
+            "__diagnostics__": {
+                "hand_size_metric": float(size_metric),
+                "hand_depth_norm": float(reach_norm),
+                "hand_depth_autocalibrated": bool(depth_autocal),
+            },
         }

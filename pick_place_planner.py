@@ -14,6 +14,7 @@ from robot_controller import JointCommand
 from object_detector import Detection, DetectionFrame
 from aruco_marker import MarkerPose
 from pixel_to_workspace import PixelToWorkspace, in_bounds_xy
+from residual_learning import BoundedResidualCorrector
 
 
 _JOINT_NAMES = (
@@ -173,6 +174,7 @@ class PickPlacePlanner:
         self.cfg = config
         self.drop_marker_id = int(drop_marker_id)
         self.lerobot_calibration = lerobot_calibration
+        self.residual_corrector = BoundedResidualCorrector()
 
         self.state: PickPlaceState = PickPlaceState.IDLE
         self.waypoints: List[Waypoint] = []
@@ -447,11 +449,20 @@ class PickPlacePlanner:
                       f"({wp.xyz_ws[0]:.3f}, {wp.xyz_ws[1]:.3f})")
             return None
 
+        corrected_xyz, corrected_rpy, residual = self.residual_corrector.apply(wp.xyz_ws, wp.rpy_ws)
+
+        if not in_bounds_xy(corrected_xyz[:2],
+                            self.cfg.workspace_x_min, self.cfg.workspace_x_max,
+                            self.cfg.workspace_y_min, self.cfg.workspace_y_max):
+            self._log(f"[planner] '{wp.label}' corrected xy out of bounds: "
+                      f"({corrected_xyz[0]:.3f}, {corrected_xyz[1]:.3f})")
+            return None
+
         try:
             prev = self.last_commanded_joints_rad
             sol = solve_ik_from_target(
-                target_xyz=wp.xyz_ws,
-                target_rpy=wp.rpy_ws,
+                target_xyz=corrected_xyz,
+                target_rpy=corrected_rpy,
                 gripper_open01=float(wp.gripper_open01),
                 lerobot_calibration=self.lerobot_calibration,
                 previous_joints=prev,
@@ -466,15 +477,28 @@ class PickPlacePlanner:
         # targets, so cross-check with an FK reconstruction.
         try:
             achieved = _fk_arm_position(sol, _ee_geom())
-            err = float(np.linalg.norm(achieved - np.asarray(wp.xyz_ws, dtype=np.float64)))
+            err = float(np.linalg.norm(achieved - np.asarray(corrected_xyz, dtype=np.float64)))
         except Exception as exc:
             self._log(f"[planner] FK verify exception at '{wp.label}': {exc}")
             return None
 
         if err > self.cfg.ik_abort_position_err:
             self._log(f"[planner] IK unreachable '{wp.label}': "
-                      f"target={np.asarray(wp.xyz_ws).tolist()} err={err:.4f}m")
+                      f"target={np.asarray(corrected_xyz).tolist()} err={err:.4f}m")
             return None
+
+        diag = sol.get("__diagnostics__")
+        if isinstance(diag, dict):
+            diag.update({
+                "residual_raw_xyz_m": np.asarray(wp.xyz_ws, dtype=np.float64).reshape(3).tolist(),
+                "residual_raw_rpy_rad": np.asarray(wp.rpy_ws, dtype=np.float64).reshape(3).tolist(),
+                "residual_corrected_xyz_m": corrected_xyz.tolist(),
+                "residual_corrected_rpy_rad": None if corrected_rpy is None else corrected_rpy.tolist(),
+                "residual_delta_xyz_m": residual.delta_xyz.tolist(),
+                "residual_delta_rpy_rad": residual.delta_rpy.tolist(),
+                "residual_enabled": bool(residual.enabled),
+                "residual_source": str(residual.source),
+            })
 
         return JointCommand(
             shoulder_pan=float(sol["shoulder_pan"]),

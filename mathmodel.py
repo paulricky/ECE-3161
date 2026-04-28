@@ -790,6 +790,11 @@ def _candidate_diagnostics(joints, target_xyz, target_R, previous_joints, limits
     pos_thresh = _get_value("IK_REACHABLE_POSITION_ERR_M", _get_value("IK_ABORT_POSITION_ERR_M", 0.02))
     orient_thresh = _get_value("IK_REACHABLE_ORIENTATION_ERR_RAD", 0.35)
     return {
+        "success": bool(pos_err <= pos_thresh and orient_err <= orient_thresh),
+        "failure_reason": "" if (pos_err <= pos_thresh and orient_err <= orient_thresh) else "position_or_orientation_error_above_threshold",
+        "q_rad": q.tolist(),
+        "achieved_xyz_m": p.tolist(),
+        "achieved_rpy_rad": _matrix_to_rpy(R).tolist(),
         "position_error_m": pos_err,
         "position_error_xyz_m": pos_vec.tolist(),
         "orientation_error_rad": orient_err,
@@ -1066,12 +1071,15 @@ def solve_ik_from_target(
     lerobot_calibration=None,
     previous_joints=None,
     *,
+    q_seed=None,
     target_R=None,
     return_diagnostics: bool = False,
     model_calibration: Optional[dict] = None,
     ik_mode: Optional[str] = None,
     strict_reachability: Optional[bool] = None,
 ):
+    if previous_joints is None and q_seed is not None:
+        previous_joints = q_seed
     if lerobot_calibration is None:
         lerobot_calibration = _load_lerobot_calibration_file()
     base_limits = _get_joint_limits()

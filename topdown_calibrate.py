@@ -34,6 +34,7 @@ from aruco_marker import (
     build_aruco_detector,
     marker_object_points,
 )
+from workspace_rectangle import detect_largest_rectangle, rect_homography_to_workspace
 
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -57,6 +58,13 @@ def _extrinsics_path() -> str:
     return _resolve_path(
         getattr(val, "PICKPLACE_TOPDOWN_EXTRINSICS_FILE", "calibration_data/topdown_extrinsics.npz"),
         "calibration_data/topdown_extrinsics.npz",
+    )
+
+
+def _rectangle_workspace_path() -> str:
+    return _resolve_path(
+        getattr(val, "PICKPLACE_RECTANGLE_WORKSPACE_FILE", "calibration_data/topdown_rectangle_workspace.npz"),
+        "calibration_data/topdown_rectangle_workspace.npz",
     )
 
 
@@ -454,6 +462,95 @@ def phase2_extrinsics(
 
 
 # ---------------------------------------------------------------------------
+# Optional rectangle workspace calibration
+# ---------------------------------------------------------------------------
+
+
+def phase_rectangle_workspace(camera_index: int, save_path: str) -> int:
+    print("[topdown_calibrate] optional rectangle workspace calibration")
+    print("  ArUco anchor calibration remains the default for pick/place.")
+    print(f"  camera index = {camera_index}")
+    print(f"  save path    = {save_path}")
+    print()
+    print("  SPACE = capture detected rectangle   Q = quit")
+    print("  Saving requires an explicit typed confirmation after capture.")
+
+    cap = _open_camera(camera_index)
+    window = "topdown_calibrate - rectangle workspace"
+    accepted_rect = None
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                print("[topdown_calibrate] camera read failed")
+                return 1
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            rect = detect_largest_rectangle(gray)
+            preview = frame.copy()
+            if rect is not None:
+                cv2.polylines(preview, [rect.astype(np.int32).reshape(-1, 1, 2)], True,
+                              (0, 255, 0), 2, cv2.LINE_AA)
+                labels = ("TL", "TR", "BR", "BL")
+                for label, pt in zip(labels, rect):
+                    cv2.putText(preview, label, (int(pt[0]) + 4, int(pt[1]) - 4),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2, cv2.LINE_AA)
+            _draw_hud(preview, [
+                "OPTIONAL rectangle workspace capture",
+                "default calibration is still ArUco anchors",
+                "SPACE = accept rectangle   Q = quit",
+                "status: FOUND" if rect is not None else "status: searching",
+            ])
+            cv2.imshow(window, preview)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
+                print("[topdown_calibrate] rectangle calibration cancelled")
+                return 1
+            if key == ord(" ") and rect is not None:
+                accepted_rect = rect.copy()
+                break
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+
+    hom = rect_homography_to_workspace(
+        accepted_rect,
+        float(getattr(val, "WORKSPACE_X_MIN", -0.12)),
+        float(getattr(val, "WORKSPACE_X_MAX", 0.12)),
+        float(getattr(val, "WORKSPACE_Y_MIN", 0.10)),
+        float(getattr(val, "WORKSPACE_Y_MAX", 0.22)),
+    )
+    if hom is None:
+        print("[topdown_calibrate] could not compute rectangle homography")
+        return 1
+    H, Hinv = hom
+
+    print()
+    print("[topdown_calibrate] rectangle-derived calibration is optional and not the default.")
+    reply = input(f"Type 'save rectangle' to write {save_path}: ").strip().lower()
+    if reply != "save rectangle":
+        print("[topdown_calibrate] not saved; explicit confirmation was not provided")
+        return 1
+
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    np.savez(
+        save_path,
+        image_corners=accepted_rect.astype(np.float64),
+        H_img_to_workspace=H,
+        H_workspace_to_img=Hinv,
+        workspace_bounds=np.asarray([
+            float(getattr(val, "WORKSPACE_X_MIN", -0.12)),
+            float(getattr(val, "WORKSPACE_X_MAX", 0.12)),
+            float(getattr(val, "WORKSPACE_Y_MIN", 0.10)),
+            float(getattr(val, "WORKSPACE_Y_MAX", 0.22)),
+        ], dtype=np.float64),
+        source=np.asarray(["rectangle_workspace_optional"], dtype=object),
+    )
+    print(f"[topdown_calibrate] saved rectangle workspace -> {save_path}")
+    print("[topdown_calibrate] ArUco anchor extrinsics remain the default pick/place calibration.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -478,6 +575,8 @@ def main() -> int:
     )
     parser.add_argument("--phase", choices=("intrinsics", "extrinsics", "both"),
                         default="both", help="Which calibration phase to run.")
+    parser.add_argument("--rectangle-workspace", action="store_true",
+                        help="Explicitly run optional rectangle workspace calibration instead of ArUco anchors.")
     parser.add_argument("--camera-index", type=int,
                         default=int(getattr(val, "PICKPLACE_CAMERA_INDEX", 1)),
                         help="OpenCV VideoCapture index.")
@@ -511,6 +610,12 @@ def main() -> int:
     pattern_size = (int(args.board_cols), int(args.board_rows))
     intrinsics_path = _intrinsics_path()
     extrinsics_path = _extrinsics_path()
+
+    if args.rectangle_workspace:
+        return phase_rectangle_workspace(
+            camera_index=int(args.camera_index),
+            save_path=_rectangle_workspace_path(),
+        )
 
     rc = 0
     if args.phase in ("intrinsics", "both"):
