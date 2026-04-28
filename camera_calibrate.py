@@ -657,17 +657,17 @@ def _robot_xyz_for_workspace_pose(name: str, bounds: dict) -> dict:
         "y_m": cy,
         "z_m": cz,
     }
-    if name in {"max_left", "top_left", "bottom_left"}:
+    if name in {"max_left", "top_left", "bottom_left", "near_left", "far_left"}:
         xyz["x_m"] = bounds["x_min_m"]
-    if name in {"max_right", "top_right", "bottom_right"}:
+    if name in {"max_right", "top_right", "bottom_right", "near_right", "far_right"}:
         xyz["x_m"] = bounds["x_max_m"]
     if name in {"max_up", "top_left", "top_right"}:
         xyz["z_m"] = bounds["z_max_m"]
     if name in {"max_down", "bottom_left", "bottom_right"}:
         xyz["z_m"] = bounds["z_min_m"]
-    if name == "max_near":
+    if name in {"max_near", "near_left", "near_right"}:
         xyz["y_m"] = float(near_y)
-    if name == "max_far":
+    if name in {"max_far", "far_left", "far_right"}:
         xyz["y_m"] = float(far_y)
     return xyz
 
@@ -745,13 +745,70 @@ def _print_pose_capture_summary(prefix: str, poses: dict) -> None:
 
 
 def _confirm_final_save(prefix: str) -> bool:
-    reply = input(f"[{prefix}] Save calibration? [y/N]: ").strip().lower()
+    prompt = "Save hand workspace calibration?" if prefix == "hand-workspace" else "Save calibration?"
+    reply = input(f"[{prefix}] {prompt} [y/N]: ").strip().lower()
     return reply in ("y", "yes")
 
 
 def _workspace_pose_optional(name: str) -> bool:
     required = {"center", "max_left", "max_right", "max_up", "max_down", "max_near", "max_far"}
     return str(name) not in required
+
+
+def _workspace_required_poses() -> list[str]:
+    return ["center", "max_left", "max_right", "max_up", "max_down", "max_near", "max_far"]
+
+
+def _workspace_optional_poses() -> list[str]:
+    return ["top_left", "top_right", "bottom_left", "bottom_right", "near_left", "near_right", "far_left", "far_right"]
+
+
+def _workspace_capture_pose_order() -> list[str]:
+    configured = [str(x) for x in getattr(val, "HAND_WORKSPACE_CAPTURE_POSES", []) if str(x).strip()]
+    out: list[str] = []
+    for name in _workspace_required_poses():
+        if name not in out:
+            out.append(name)
+    for name in configured:
+        if name not in out:
+            out.append(name)
+    for name in _workspace_optional_poses():
+        if name not in out:
+            out.append(name)
+    return out
+
+
+def _workspace_pose_instruction(name: str) -> str:
+    text = {
+        "center": "Hand centered in the camera frame at comfortable middle depth; robot target is workspace center.",
+        "max_left": "Move your hand to the far LEFT edge of the usable camera frame; maps to the robot horizontal left extreme.",
+        "max_right": "Move your hand to the far RIGHT edge of the usable camera frame; maps to the opposite robot horizontal extreme.",
+        "max_up": "Move your hand to the TOP usable camera position; maps to robot vertical max z.",
+        "max_down": "Move your hand to the BOTTOM usable camera position; maps to robot vertical min z.",
+        "max_near": "Move your hand as close/front as intended for runtime control; maps to near/front robot depth/reach.",
+        "max_far": "Move your hand as far/back as intended for runtime control; maps to far/back robot depth/reach.",
+        "top_left": "Optional corner: hand at top-left usable camera position.",
+        "top_right": "Optional corner: hand at top-right usable camera position.",
+        "bottom_left": "Optional corner: hand at bottom-left usable camera position.",
+        "bottom_right": "Optional corner: hand at bottom-right usable camera position.",
+        "near_left": "Optional depth edge: hand near/front and left.",
+        "near_right": "Optional depth edge: hand near/front and right.",
+        "far_left": "Optional depth edge: hand far/back and left.",
+        "far_right": "Optional depth edge: hand far/back and right.",
+    }
+    return text.get(str(name), f"Place hand at {name} calibration position.")
+
+
+def _print_workspace_pose_instruction(name: str, target: dict, index: int, total: int) -> None:
+    print("\n[hand-workspace] Pose instruction")
+    print(f"[hand-workspace] Pose: {name} ({index}/{total})")
+    print(f"[hand-workspace] {_workspace_pose_instruction(name)}")
+    print(
+        "[hand-workspace] Robot/end-effector target meaning: "
+        f"x={target['x_m']:+.3f} m, y={target['y_m']:+.3f} m, z={target['z_m']:+.3f} m"
+    )
+    print("[hand-workspace] If recording robot joint seeds, move the robot/end-effector to the corresponding workspace target.")
+    print("[hand-workspace] Press ENTER to open camera preview for this pose. Sampling still waits for SPACE.")
 
 
 def _maybe_connect_robot_for_workspace_calibration():
@@ -799,26 +856,12 @@ def _run_hand_workspace_calibration(args) -> int:
         print(f"[hand-workspace] ERROR: MediaPipe is required: {exc}")
         return 1
 
-    hands = mp.solutions.hands.Hands(
-        static_image_mode=False,
-        max_num_hands=1,
-        model_complexity=int(getattr(val, "HANDTRACKING_MODEL_COMPLEXITY", 0)),
-        min_detection_confidence=float(getattr(val, "HANDTRACKING_MIN_DETECTION_CONFIDENCE", 0.55)),
-        min_tracking_confidence=float(getattr(val, "HANDTRACKING_MIN_TRACKING_CONFIDENCE", 0.55)),
-    )
-    camera = _open_hand_depth_camera(args)
-    if camera is None:
-        try:
-            hands.close()
-        except Exception:
-            pass
-        return 1
-    cap = camera.cap
-    pending_first_frame = camera.frame
+    hands = None
+    camera = None
+    cap = None
+    pending_first_frame = None
     depth_estimator = HandDepthEstimator()
-    poses = list(getattr(val, "HAND_WORKSPACE_CAPTURE_POSES", [])) or [
-        "center", "max_left", "max_right", "max_up", "max_down", "max_near", "max_far",
-    ]
+    poses = _workspace_capture_pose_order()
     bounds = _workspace_bounds_for_hand_calibration()
     required = max(3, int(getattr(val, "HAND_DEPTH_CALIBRATION_REQUIRED_STABLE_FRAMES", 20)))
     samples_per_pose = max(required, int(getattr(val, "HAND_DEPTH_CALIBRATION_SAMPLES_PER_POSE", 40)))
@@ -840,8 +883,33 @@ def _run_hand_workspace_calibration(args) -> int:
             target = _robot_xyz_for_workspace_pose(pose_name, bounds)
             samples.clear()
             optional = _workspace_pose_optional(pose_name)
+            _print_workspace_pose_instruction(pose_name, target, pose_index + 1, len(poses))
+            try:
+                reply = input("[hand-workspace] Press ENTER when ready for camera preview, or Q to quit: ").strip().lower()
+            except EOFError:
+                reply = ""
+            if reply in {"q", "quit", "esc", "exit"}:
+                print("[hand-workspace] Quit before sampling; not saved.")
+                return 1
+            if hands is None:
+                hands = mp.solutions.hands.Hands(
+                    static_image_mode=False,
+                    max_num_hands=1,
+                    model_complexity=int(getattr(val, "HANDTRACKING_MODEL_COMPLEXITY", 0)),
+                    min_detection_confidence=float(getattr(val, "HANDTRACKING_MIN_DETECTION_CONFIDENCE", 0.55)),
+                    min_tracking_confidence=float(getattr(val, "HANDTRACKING_MIN_TRACKING_CONFIDENCE", 0.55)),
+                )
+            if camera is None:
+                camera = _open_hand_depth_camera(args)
+                if camera is None:
+                    return 1
+                cap = camera.cap
+                pending_first_frame = camera.frame
 
             while True:
+                if cap is None or hands is None:
+                    print("[hand-workspace] ERROR: Camera/MediaPipe initialization failed.")
+                    return 1
                 if pending_first_frame is not None:
                     ok, frame = True, pending_first_frame
                     pending_first_frame = None
@@ -951,13 +1019,16 @@ def _run_hand_workspace_calibration(args) -> int:
         payload = {
             "calibration_type": "hand_to_robot_workspace",
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "source": str(getattr(args, "source_name", "camera_calibrate.py")),
             "camera": {
-                "width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0),
-                "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0),
-                "index": int(camera.index),
+                "width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0) if cap is not None else 0,
+                "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0) if cap is not None else 0,
+                "index": int(camera.index) if camera is not None else int(getattr(val, "HANDTRACKING_CAMERA_INDEX", 0)),
             },
             "poses": pose_results,
             "workspace_bounds": bounds,
+            "required_poses": _workspace_required_poses(),
+            "optional_poses": _workspace_optional_poses(),
             "mapping": {
                 "method": str(getattr(val, "HAND_WORKSPACE_MAPPING_METHOD", "rbf_residual")),
                 "fallback": str(getattr(val, "HAND_WORKSPACE_FALLBACK_METHOD", "piecewise_affine")),
@@ -979,11 +1050,13 @@ def _run_hand_workspace_calibration(args) -> int:
         return 0
     finally:
         try:
-            hands.close()
+            if hands is not None:
+                hands.close()
         except Exception:
             pass
         try:
-            cap.release()
+            if cap is not None:
+                cap.release()
         except Exception:
             pass
         try:

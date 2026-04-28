@@ -239,7 +239,7 @@ class HandWorkspaceMapper:
             far = hi
         return _lerp(far, near, depth_norm)
 
-    def _piecewise_affine_raw(self, x_norm: float, y_norm: float, depth_norm: float) -> np.ndarray:
+    def _values_piecewise_raw(self, x_norm: float, y_norm: float, depth_norm: float) -> np.ndarray:
         axis_map = _axis_map()
         depth_axis = str(getattr(val, "HAND_DEPTH_AXIS", axis_map.get("depth", "robot_y")))
         xyz_by_axis = {
@@ -256,6 +256,89 @@ class HandWorkspaceMapper:
         if depth_axis in xyz_by_axis:
             xyz_by_axis[depth_axis] = self._depth_value(depth_axis, depth_norm)
         return np.array([xyz_by_axis["robot_x"], xyz_by_axis["robot_y"], xyz_by_axis["robot_z"]], dtype=np.float64)
+
+    def _pose_hand(self, name: str) -> Optional[np.ndarray]:
+        item = self.poses.get(str(name))
+        if not isinstance(item, dict):
+            return None
+        hand = item.get("hand", {})
+        if not isinstance(hand, dict):
+            return None
+        x = _finite_float(hand.get("x_norm"))
+        y = _finite_float(hand.get("y_norm"))
+        d = _finite_float(hand.get("depth_norm"))
+        if None in (x, y, d):
+            return None
+        return np.array([_sat01(x), _sat01(y), _sat01(d)], dtype=np.float64)
+
+    def _pose_robot(self, name: str) -> Optional[np.ndarray]:
+        item = self.poses.get(str(name))
+        if not isinstance(item, dict):
+            return None
+        robot = item.get("robot", {})
+        if not isinstance(robot, dict):
+            return None
+        rx = _finite_float(robot.get("x_m"))
+        ry = _finite_float(robot.get("y_m"))
+        rz = _finite_float(robot.get("z_m"))
+        if None in (rx, ry, rz):
+            return None
+        return self._clamp_xyz(np.array([rx, ry, rz], dtype=np.float64))
+
+    def _has_required_pose_mapping(self) -> bool:
+        required = ("center", "max_left", "max_right", "max_up", "max_down", "max_near", "max_far")
+        return all(self._pose_hand(name) is not None and self._pose_robot(name) is not None for name in required)
+
+    def _interp_pose_axis(
+        self,
+        low_pose: str,
+        high_pose: str,
+        input_idx: int,
+        output_idx: int,
+        value: float,
+        default_value: float,
+    ) -> float:
+        low_hand = self._pose_hand(low_pose)
+        high_hand = self._pose_hand(high_pose)
+        low_robot = self._pose_robot(low_pose)
+        high_robot = self._pose_robot(high_pose)
+        if low_hand is None or high_hand is None or low_robot is None or high_robot is None:
+            return float(default_value)
+        a = float(low_hand[int(input_idx)])
+        b = float(high_hand[int(input_idx)])
+        denom = b - a
+        if abs(denom) < 1e-6:
+            return float(default_value)
+        t = (float(value) - a) / denom
+        return _lerp(float(low_robot[int(output_idx)]), float(high_robot[int(output_idx)]), t)
+
+    def _calibrated_piecewise_raw(self, x_norm: float, y_norm: float, depth_norm: float, *, apply_center_bias: bool = True) -> Optional[np.ndarray]:
+        if not self._has_required_pose_mapping():
+            return None
+        values_base = self._values_piecewise_raw(x_norm, y_norm, depth_norm)
+        x_m = self._interp_pose_axis("max_left", "max_right", 0, 0, x_norm, values_base[0])
+        y_m = self._interp_pose_axis("max_far", "max_near", 2, 1, depth_norm, values_base[1])
+        z_m = self._interp_pose_axis("max_down", "max_up", 1, 2, y_norm, values_base[2])
+        out = np.array([x_m, y_m, z_m], dtype=np.float64)
+        if apply_center_bias:
+            center_hand = self._pose_hand("center")
+            center_robot = self._pose_robot("center")
+            if center_hand is not None and center_robot is not None:
+                center_base = self._calibrated_piecewise_raw(
+                    float(center_hand[0]),
+                    float(center_hand[1]),
+                    float(center_hand[2]),
+                    apply_center_bias=False,
+                )
+                if center_base is not None:
+                    out = out + self._clamp_residual(center_robot - center_base)
+        return self._clamp_xyz(out)
+
+    def _piecewise_affine_raw(self, x_norm: float, y_norm: float, depth_norm: float) -> np.ndarray:
+        calibrated = self._calibrated_piecewise_raw(x_norm, y_norm, depth_norm)
+        if calibrated is not None:
+            return calibrated
+        return self._values_piecewise_raw(x_norm, y_norm, depth_norm)
 
     def _kernel(self, r) -> np.ndarray:
         r = np.asarray(r, dtype=np.float64)
@@ -332,28 +415,29 @@ class HandWorkspaceMapper:
             method = "rbf_residual"
         residual = np.zeros(3, dtype=np.float64)
         nearest = None
-        source = "values_piecewise_affine"
+        calibrated_base = bool(self.loaded and self._has_required_pose_mapping())
+        source = "hand_workspace_calibration" if calibrated_base else "values_piecewise_affine"
+        residual_source = "none"
         used_method = "piecewise_affine"
 
         if self.loaded and self.samples_x.size > 0 and bool(getattr(val, "HAND_WORKSPACE_LEARNING_ENABLED", True)):
             d = np.linalg.norm(self.samples_x - x.reshape(1, 3), axis=1)
             nearest = self.sample_names[int(np.argmin(d))] if d.size else None
             if method == "piecewise_affine":
-                source = "calibrated_piecewise_affine"
                 used_method = "piecewise_affine"
             elif method == "knn_weighted":
                 residual, nearest = self._knn_residual(x)
-                source = "knn_weighted"
+                residual_source = "knn_weighted"
                 used_method = "knn_weighted"
             elif method == "rbf_residual":
                 rbf_res = self._rbf_residual(x)
                 if rbf_res is not None:
                     residual = rbf_res
-                    source = "rbf_residual"
+                    residual_source = "rbf_residual"
                     used_method = "rbf_residual"
                 else:
                     residual, nearest = self._knn_residual(x)
-                    source = "knn_weighted_fallback"
+                    residual_source = "knn_weighted_fallback"
                     used_method = "knn_weighted"
 
         residual = self._clamp_residual(residual)
@@ -361,6 +445,15 @@ class HandWorkspaceMapper:
         debug = {
             "workspace_mapping_source": source if self.loaded else f"fallback_no_calibration:{self.error or 'missing'}",
             "workspace_learning_method": used_method,
+            "workspace_residual_source": residual_source,
+            "mapping_source": source if self.loaded else f"fallback_no_calibration:{self.error or 'missing'}",
+            "pose_mapping_status": "calibrated_max_poses" if calibrated_base else "values_bounds_fallback",
+            "x_pose_min_source": "max_left" if calibrated_base else "values_bounds",
+            "x_pose_max_source": "max_right" if calibrated_base else "values_bounds",
+            "z_pose_min_source": "max_down" if calibrated_base else "values_bounds",
+            "z_pose_max_source": "max_up" if calibrated_base else "values_bounds",
+            "y_pose_near_source": "max_near" if calibrated_base else "values_bounds",
+            "y_pose_far_source": "max_far" if calibrated_base else "values_bounds",
             "nearest_calibration_pose": nearest,
             "target_xyz_base_m": base.tolist(),
             "target_xyz_residual_m": residual.tolist(),

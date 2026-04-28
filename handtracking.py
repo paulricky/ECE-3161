@@ -15,6 +15,7 @@ import mathmodel as mm
 import values as val
 from depthcalibrator import DepthCalibrator, HandDepthEstimator
 from hand_workspace_mapper import HandWorkspaceMapper
+from robot_mirror_mapper import RobotMirrorWorkspaceMapper
 from residual_learning import BoundedResidualCorrector
 
 
@@ -159,6 +160,22 @@ def _finite_vec3(x):
     except Exception:
         return None
     return arr if np.all(np.isfinite(arr)) else None
+
+
+def _effective_rate_hz(base_attr: str, current_attr: str, default: float) -> float:
+    try:
+        base = float(getattr(val, base_attr, getattr(val, current_attr, default)))
+    except Exception:
+        base = float(default)
+    if bool(getattr(val, "REAL_ROBOT_APPLY_SPEED_PERCENT_TO_RATES", False)):
+        try:
+            pct = float(getattr(val, "REAL_ROBOT_ARM_SPEED_PERCENT", 100.0))
+            min_pct = float(getattr(val, "REAL_ROBOT_MIN_ARM_SPEED_PERCENT", 1.0))
+            pct = max(min_pct, min(100.0, pct)) / 100.0
+        except Exception:
+            pct = 1.0
+        base *= pct
+    return max(1e-6, base)
 
 
 def _wrap_angle(x: float) -> float:
@@ -797,6 +814,11 @@ class HandTracker:
         except Exception as exc:
             self.workspace_mapper = None
             log_event(f"hand workspace mapper disabled: {exc}")
+        try:
+            self.robot_mirror_mapper = RobotMirrorWorkspaceMapper()
+        except Exception as exc:
+            self.robot_mirror_mapper = None
+            log_event(f"robot mirror workspace mapper disabled: {exc}")
         self.lerobot_calibration = self._load_lerobot_calibration()
         self._last_ik_solution = None
         self._filtered_target_xyz = None
@@ -811,6 +833,7 @@ class HandTracker:
         self._filtered_virtual_wrist_rpy = None
         self._warned_no_hand_calibration = False
         self._warned_no_workspace_calibration = False
+        self._warned_no_robot_mirror_calibration = False
         self._ik_async_enabled = bool(getattr(val, "HAND_IK_ASYNC", True))
         self._ik_lock = threading.RLock()
         self._ik_stop = threading.Event()
@@ -1038,7 +1061,7 @@ class HandTracker:
     def _cached_ik_command_if_fresh(self, xyz_f, rpy_f, open01):
         if self._last_ik_command is None:
             return None
-        hz = float(getattr(val, "HAND_IK_HZ", 6.0))
+        hz = _effective_rate_hz("HAND_IK_BASE_HZ", "HAND_IK_HZ", 6.0)
         if hz <= 0.0:
             return None
         now = time.time()
@@ -1104,7 +1127,7 @@ class HandTracker:
             self._ik_last_request_time = now
 
     def _ik_worker_loop(self) -> None:
-        hz = float(getattr(val, "IK_MAX_SOLVE_HZ", getattr(val, "HAND_IK_HZ", 4.0)))
+        hz = _effective_rate_hz("IK_MAX_SOLVE_BASE_HZ", "IK_MAX_SOLVE_HZ", getattr(val, "HAND_IK_HZ", 4.0))
         period = 1.0 / max(hz, 1e-3) if hz > 0.0 else 0.25
         last_start = 0.0
         while not self._ik_stop.is_set():
@@ -1533,6 +1556,7 @@ class HandTracker:
                 "valid": True,
             }
 
+        mirror_depth_input = float(depth_smooth)
         if bool(getattr(val, "HAND_DEPTH_FLIP", False)):
             depth_raw = 1.0 - depth_raw
             depth_smooth = 1.0 - depth_smooth
@@ -1572,7 +1596,38 @@ class HandTracker:
                 self._warned_no_hand_calibration = True
         elif depth_source == "midpoint":
             mapping_source = "midpoint"
+        elif (
+            self.robot_mirror_mapper is not None
+            and bool(getattr(val, "ROBOT_MIRROR_WORKSPACE_ENABLED", True))
+            and bool(getattr(self.robot_mirror_mapper, "loaded", False))
+        ):
+            mapped_xyz, mapper_debug = self.robot_mirror_mapper.map_hand_to_robot_target(
+                x_norm_raw,
+                y_norm_raw,
+                mirror_depth_input,
+            )
+            if mapped_xyz is not None:
+                xyz_raw = mapped_xyz
+                mapping_source = str(mapper_debug.get("mirror_mapping_source", "robot_mirror_workspace_calibration"))
+                q_seed, seed_debug = self.robot_mirror_mapper.choose_ik_seed(
+                    x_norm_raw,
+                    y_norm_raw,
+                    mirror_depth_input,
+                    previous_q=None,
+                )
+                mapper_debug.update(seed_debug)
+            elif not self._warned_no_robot_mirror_calibration:
+                log_event("robot mirror workspace mapping unavailable; using legacy hand workspace/values mapping")
+                self._warned_no_robot_mirror_calibration = True
         elif self.workspace_mapper is not None and bool(getattr(val, "HAND_WORKSPACE_LEARNING_ENABLED", True)):
+            if (
+                self.robot_mirror_mapper is not None
+                and bool(getattr(val, "ROBOT_MIRROR_WORKSPACE_ENABLED", True))
+                and not bool(getattr(self.robot_mirror_mapper, "loaded", False))
+                and not self._warned_no_robot_mirror_calibration
+            ):
+                log_event("robot mirror workspace calibration missing; using legacy hand workspace/values mapping")
+                self._warned_no_robot_mirror_calibration = True
             if not bool(getattr(self.workspace_mapper, "loaded", False)) and not self._warned_no_workspace_calibration:
                 log_event("hand workspace calibration missing; using values.py mapping")
                 self._warned_no_workspace_calibration = True

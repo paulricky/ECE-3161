@@ -335,6 +335,7 @@ class SOArmHardwareController:
         self._pending_cmd: Optional[JointCommand] = None
         self._last_serial_write_ms = 0.0
         self._async_dropped_commands = 0
+        self._speed_diag_printed = False
 
     def _find_candidate_ports(self) -> List[str]:
         ports = list(list_ports.comports())
@@ -561,6 +562,26 @@ class SOArmHardwareController:
             return 1.0
         return self.get_effective_arm_speed_percent() / 100.0
 
+    def _rate_scale(self) -> float:
+        if not bool(getattr(val, "REAL_ROBOT_APPLY_SPEED_PERCENT_TO_RATES", False)):
+            return 1.0
+        return self.get_effective_arm_speed_percent() / 100.0
+
+    def get_effective_rate_hz(self, base_value, default: float) -> float:
+        try:
+            base = float(base_value)
+        except Exception:
+            base = float(default)
+        return max(1e-6, base * self._rate_scale())
+
+    def get_effective_robot_hz(self) -> float:
+        base = getattr(val, "REAL_ROBOT_BASE_HZ", getattr(val, "REAL_ROBOT_HZ", 20.0))
+        return self.get_effective_rate_hz(base, 20.0)
+
+    def get_effective_command_max_hz(self) -> float:
+        base = getattr(val, "REAL_ROBOT_BASE_COMMAND_MAX_HZ", getattr(val, "ROBOT_COMMAND_MAX_HZ", getattr(val, "REAL_ROBOT_HZ", 20.0)))
+        return self.get_effective_rate_hz(base, 20.0)
+
     def get_effective_velocity_deg(self, motor_id: int) -> float:
         base = float(getattr(val, "REAL_ROBOT_GRIPPER_MAX_VELOCITY_DEG", getattr(val, "REAL_ROBOT_MAX_VELOCITY_DEG", 25.0))) if self._is_gripper_motor_id(motor_id) else float(getattr(val, "REAL_ROBOT_MAX_VELOCITY_DEG", 25.0))
         return float(base * self._arm_speed_scale_for_motor(motor_id))
@@ -645,6 +666,7 @@ class SOArmHardwareController:
             for k in self._last_velocity:
                 self._last_velocity[k] = 0.0
             self._apply_torque_limits()
+            self._print_speed_percent_diagnostics()
             print("[robot_controller] connected using direct project Feetech controller")
             print("[robot_controller] bypassed LeRobot calibration loader to avoid incompatible project JSON calibration formats")
             return True
@@ -697,6 +719,7 @@ class SOArmHardwareController:
             self._last_velocity[k] = 0.0
 
         self._apply_torque_limits()
+        self._print_speed_percent_diagnostics()
 
         project_cal = self._load_project_calibration_metadata()
         if project_cal is not None:
@@ -790,17 +813,45 @@ class SOArmHardwareController:
                 else:
                     print("[robot_controller] torque/current limits applied")
                 if bool(getattr(val, "REAL_ROBOT_SPEED_PERCENT_VERBOSE", True)):
-                    print(
-                        "[robot_controller] arm speed scale "
-                        f"{self.get_effective_arm_speed_percent():.1f}% "
-                        f"torque_scaled={bool(getattr(val, 'REAL_ROBOT_APPLY_SPEED_PERCENT_TO_TORQUE', True))} "
-                        "gripper_unscaled=True"
-                    )
+                    self._print_speed_percent_diagnostics(motor_limits)
                 return
             except Exception:
                 continue
 
         print("[robot_controller] torque/current limit register not applied; using motion limits only")
+        self._print_speed_percent_diagnostics(motor_limits)
+
+    def _print_speed_percent_diagnostics(self, motor_limits: Optional[Dict[str, float]] = None) -> None:
+        if self._speed_diag_printed or not bool(getattr(val, "REAL_ROBOT_SPEED_PERCENT_VERBOSE", True)):
+            return
+        self._speed_diag_printed = True
+        motor_names = self._configured_motor_names()
+        motor_ids = self._configured_motor_ids(motor_names)
+        if motor_limits is None:
+            motor_limits = self._motor_limit_percent_by_name()
+        print("[robot_controller] speed-percent diagnostics:")
+        print(f"  arm_speed_percent = {self.get_effective_arm_speed_percent():.1f}")
+        print(f"  torque_scaled = {bool(getattr(val, 'REAL_ROBOT_APPLY_SPEED_PERCENT_TO_TORQUE', True))}")
+        print(f"  rate_scaled = {bool(getattr(val, 'REAL_ROBOT_APPLY_SPEED_PERCENT_TO_RATES', False))}")
+        for name, sid in zip(motor_names, motor_ids, strict=True):
+            pct = float(motor_limits.get(name, self.get_effective_torque_percent(int(sid)))) if isinstance(motor_limits, dict) else self.get_effective_torque_percent(int(sid))
+            print(f"  motor {int(sid)} {name}: effective_torque_current_percent={pct:.1f}")
+        print(
+            "  motor 1 effective: "
+            f"velocity={self.get_effective_velocity_deg(1):.1f} deg/s, "
+            f"accel={self.get_effective_acceleration_deg(1):.1f} deg/s^2, "
+            f"relative_step={self.get_effective_relative_target_deg(1):.1f} deg"
+        )
+        print(
+            "  gripper motor 8 effective: "
+            f"velocity={self.get_effective_velocity_deg(8):.1f}, "
+            f"accel={self.get_effective_acceleration_deg(8):.1f}, "
+            "gripper_unscaled=True"
+        )
+        print(
+            "[robot_controller] Hardware servo profile speed/accel registers are not configured by this controller; "
+            "values.py speed limits are software-side command shaping only."
+        )
 
     def _supported_action_keys(self) -> set[str] | None:
         if self.robot is None:
@@ -836,7 +887,7 @@ class SOArmHardwareController:
 
     def ready_to_send(self) -> bool:
         now = time.time()
-        period = 1.0 / max(float(getattr(val, "ROBOT_COMMAND_MAX_HZ", getattr(val, "REAL_ROBOT_HZ", 20.0))), 1e-6)
+        period = 1.0 / self.get_effective_command_max_hz()
         return (now - self.last_send_time) >= period
 
     def send_if_due(self, cmd: JointCommand):
@@ -925,7 +976,7 @@ class SOArmHardwareController:
                     self.send_if_due(cmd)
                 except Exception as exc:
                     print(f"[robot_controller] async sender warning: {exc}")
-            period = 1.0 / max(float(getattr(val, "ROBOT_COMMAND_MAX_HZ", getattr(val, "REAL_ROBOT_HZ", 20.0))), 1e-6)
+            period = 1.0 / self.get_effective_command_max_hz()
             time.sleep(min(0.02, max(0.001, 0.5 * period)))
 
     def _cached_present_joints_rad(self) -> Optional[Dict[str, float]]:
@@ -992,7 +1043,7 @@ class SOArmHardwareController:
 
         now = time.time()
         if self._pid_prev_time is None:
-            dt = 1.0 / max(float(getattr(val, "REAL_ROBOT_HZ", 20.0)), 1e-6)
+            dt = 1.0 / self.get_effective_robot_hz()
         else:
             dt = max(1e-3, min(0.5, now - float(self._pid_prev_time)))
         self._pid_prev_time = now
@@ -1141,7 +1192,7 @@ class SOArmHardwareController:
                 self._last_limited_action[key] = 50.0 if key == "gripper.pos" else float(target)
             self._last_velocity.setdefault(key, 0.0)
 
-        dt = 1.0 / max(float(getattr(val, "REAL_ROBOT_HZ", 20.0)), 1e-6)
+        dt = 1.0 / self.get_effective_robot_hz()
         out = dict(self._last_limited_action)
 
         for key, target in action.items():
@@ -1151,8 +1202,12 @@ class SOArmHardwareController:
 
             prev_pos = float(self._last_limited_action[key])
             prev_vel = float(self._last_velocity.get(key, 0.0))
+            target_f = float(target)
+            max_step = abs(self.get_effective_relative_target_deg(int(motor_id or 0)))
+            if max_step > 0.0:
+                target_f = max(prev_pos - max_step, min(prev_pos + max_step, target_f))
 
-            desired_vel = (float(target) - prev_pos) / dt
+            desired_vel = (target_f - prev_pos) / dt
             desired_vel = max(-vmax, min(vmax, desired_vel))
 
             accel = (desired_vel - prev_vel) / dt
@@ -1163,10 +1218,10 @@ class SOArmHardwareController:
 
             new_pos = prev_pos + new_vel * dt
 
-            if (target - prev_pos) > 0.0:
-                new_pos = min(new_pos, float(target))
+            if (target_f - prev_pos) > 0.0:
+                new_pos = min(new_pos, target_f)
             else:
-                new_pos = max(new_pos, float(target))
+                new_pos = max(new_pos, target_f)
 
             out[key] = float(new_pos)
             self._last_velocity[key] = float(new_vel)
