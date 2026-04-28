@@ -468,7 +468,7 @@ class SOArmHardwareController:
         # API and with older SO101-specific APIs.
         import inspect
 
-        max_relative_target = getattr(val, "REAL_ROBOT_MAX_RELATIVE_TARGET_DEG", 2.0)
+        max_relative_target = self.get_effective_relative_target_deg(1)
         try:
             max_relative_target = float(max_relative_target)
         except Exception:
@@ -532,6 +532,52 @@ class SOArmHardwareController:
         if len(ids) == len(motor_names):
             return [int(x) for x in ids]
         return list(range(1, len(motor_names) + 1))
+
+    def get_effective_arm_speed_percent(self) -> float:
+        try:
+            pct = float(getattr(val, "REAL_ROBOT_ARM_SPEED_PERCENT", 100.0))
+        except Exception:
+            pct = 100.0
+        try:
+            min_pct = float(getattr(val, "REAL_ROBOT_MIN_ARM_SPEED_PERCENT", 1.0))
+        except Exception:
+            min_pct = 1.0
+        return max(min_pct, min(100.0, pct))
+
+    def _motor_id_for_key(self, key: str) -> Optional[int]:
+        name = str(key).removesuffix(".pos")
+        names = self._configured_motor_names()
+        ids = self._configured_motor_ids(names)
+        if name not in names:
+            return None
+        idx = names.index(name)
+        return int(ids[idx]) if idx < len(ids) else None
+
+    def _is_gripper_motor_id(self, motor_id: Optional[int]) -> bool:
+        return int(motor_id or -1) == 8
+
+    def _arm_speed_scale_for_motor(self, motor_id: Optional[int]) -> float:
+        if self._is_gripper_motor_id(motor_id):
+            return 1.0
+        return self.get_effective_arm_speed_percent() / 100.0
+
+    def get_effective_velocity_deg(self, motor_id: int) -> float:
+        base = float(getattr(val, "REAL_ROBOT_GRIPPER_MAX_VELOCITY_DEG", getattr(val, "REAL_ROBOT_MAX_VELOCITY_DEG", 25.0))) if self._is_gripper_motor_id(motor_id) else float(getattr(val, "REAL_ROBOT_MAX_VELOCITY_DEG", 25.0))
+        return float(base * self._arm_speed_scale_for_motor(motor_id))
+
+    def get_effective_acceleration_deg(self, motor_id: int) -> float:
+        base = float(getattr(val, "REAL_ROBOT_GRIPPER_MAX_ACCELERATION_DEG", getattr(val, "REAL_ROBOT_MAX_ACCELERATION_DEG", 20.0))) if self._is_gripper_motor_id(motor_id) else float(getattr(val, "REAL_ROBOT_MAX_ACCELERATION_DEG", 20.0))
+        return float(base * self._arm_speed_scale_for_motor(motor_id))
+
+    def get_effective_relative_target_deg(self, motor_id: int) -> float:
+        base = float(getattr(val, "REAL_ROBOT_MAX_RELATIVE_TARGET_DEG", 360.0))
+        return float(base * self._arm_speed_scale_for_motor(motor_id))
+
+    def get_effective_torque_percent(self, motor_id: int, base_percent: Optional[float] = None) -> float:
+        base = float(getattr(val, "REAL_ROBOT_TORQUE_LIMIT_PERCENT", 100.0) if base_percent is None else base_percent)
+        if self._is_gripper_motor_id(motor_id) or not bool(getattr(val, "REAL_ROBOT_APPLY_SPEED_PERCENT_TO_TORQUE", True)):
+            return max(0.0, min(100.0, base))
+        return max(0.0, min(100.0, base * self._arm_speed_scale_for_motor(motor_id)))
 
     def _configured_motor_models(self, motor_names: list[str]) -> list[str]:
         models = list(getattr(val, "REAL_ROBOT_MOTOR_MODELS", []))
@@ -713,7 +759,7 @@ class SOArmHardwareController:
                 pct = float(value)
             except Exception:
                 pct = default_percent
-            out[str(name)] = max(0.0, min(100.0, pct))
+            out[str(name)] = self.get_effective_torque_percent(int(motor_id), pct)
         return out
 
     def _apply_torque_limits(self):
@@ -743,6 +789,13 @@ class SOArmHardwareController:
                     print(f"[robot_controller] torque/current limits applied using {register_name}: {motor_limits}")
                 else:
                     print("[robot_controller] torque/current limits applied")
+                if bool(getattr(val, "REAL_ROBOT_SPEED_PERCENT_VERBOSE", True)):
+                    print(
+                        "[robot_controller] arm speed scale "
+                        f"{self.get_effective_arm_speed_percent():.1f}% "
+                        f"torque_scaled={bool(getattr(val, 'REAL_ROBOT_APPLY_SPEED_PERCENT_TO_TORQUE', True))} "
+                        "gripper_unscaled=True"
+                    )
                 return
             except Exception:
                 continue
@@ -1089,17 +1142,12 @@ class SOArmHardwareController:
             self._last_velocity.setdefault(key, 0.0)
 
         dt = 1.0 / max(float(getattr(val, "REAL_ROBOT_HZ", 20.0)), 1e-6)
-        arm_vmax = float(getattr(val, "REAL_ROBOT_MAX_VELOCITY_DEG", 25.0))
-        arm_amax = float(getattr(val, "REAL_ROBOT_MAX_ACCELERATION_DEG", 20.0))
-        grip_vmax = float(getattr(val, "REAL_ROBOT_GRIPPER_MAX_VELOCITY_DEG", arm_vmax * 4.0))
-        grip_amax = float(getattr(val, "REAL_ROBOT_GRIPPER_MAX_ACCELERATION_DEG", arm_amax * 4.0))
-
         out = dict(self._last_limited_action)
 
         for key, target in action.items():
-            is_grip = key == "gripper.pos"
-            vmax = grip_vmax if is_grip else arm_vmax
-            amax = grip_amax if is_grip else arm_amax
+            motor_id = self._motor_id_for_key(key)
+            vmax = self.get_effective_velocity_deg(int(motor_id or 0))
+            amax = self.get_effective_acceleration_deg(int(motor_id or 0))
 
             prev_pos = float(self._last_limited_action[key])
             prev_vel = float(self._last_velocity.get(key, 0.0))
@@ -1124,6 +1172,13 @@ class SOArmHardwareController:
             self._last_velocity[key] = float(new_vel)
 
         self._last_limited_action = dict(out)
+        self.last_command_diagnostics.update({
+            "arm_speed_percent": self.get_effective_arm_speed_percent(),
+            "effective_arm_velocity_deg": self.get_effective_velocity_deg(1),
+            "effective_arm_acceleration_deg": self.get_effective_acceleration_deg(1),
+            "effective_arm_relative_target_deg": self.get_effective_relative_target_deg(1),
+            "gripper_unscaled": True,
+        })
         return out
 
     def _joint_command_to_action(self, cmd: JointCommand) -> Dict[str, float]:

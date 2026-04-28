@@ -14,6 +14,7 @@ import numpy as np
 import mathmodel as mm
 import values as val
 from depthcalibrator import DepthCalibrator, HandDepthEstimator
+from hand_workspace_mapper import HandWorkspaceMapper
 from residual_learning import BoundedResidualCorrector
 
 
@@ -791,6 +792,11 @@ class HandTracker:
         except Exception:
             self.depth_estimator = None
             self.depth_calibrator = None
+        try:
+            self.workspace_mapper = HandWorkspaceMapper()
+        except Exception as exc:
+            self.workspace_mapper = None
+            log_event(f"hand workspace mapper disabled: {exc}")
         self.lerobot_calibration = self._load_lerobot_calibration()
         self._last_ik_solution = None
         self._filtered_target_xyz = None
@@ -802,7 +808,9 @@ class HandTracker:
         self._last_ik_signature = None
         self._last_cartesian_target_xyz = None
         self._last_cartesian_target_rpy = None
+        self._filtered_virtual_wrist_rpy = None
         self._warned_no_hand_calibration = False
+        self._warned_no_workspace_calibration = False
         self._ik_async_enabled = bool(getattr(val, "HAND_IK_ASYNC", True))
         self._ik_lock = threading.RLock()
         self._ik_stop = threading.Event()
@@ -1081,7 +1089,7 @@ class HandTracker:
         out["__diagnostics__"] = diag
         return out
 
-    def _queue_async_ik(self, xyz_f, rpy_f, open01) -> None:
+    def _queue_async_ik(self, xyz_f, rpy_f, open01, q_seed=None) -> None:
         now = time.time()
         with self._ik_lock:
             # Keep only the newest target.  Old hand positions are overwritten
@@ -1090,6 +1098,7 @@ class HandTracker:
                 "xyz": np.asarray(xyz_f, dtype=np.float64).reshape(3).copy(),
                 "rpy": np.asarray(rpy_f, dtype=np.float64).reshape(3).copy(),
                 "open01": float(open01),
+                "q_seed": dict(q_seed) if isinstance(q_seed, dict) else None,
                 "time": now,
             }
             self._ik_last_request_time = now
@@ -1118,13 +1127,13 @@ class HandTracker:
             last_start = time.time()
             self._ik_busy = True
             try:
-                self._solve_ik_now(req["xyz"], req["rpy"], req["open01"])
+                self._solve_ik_now(req["xyz"], req["rpy"], req["open01"], q_seed=req.get("q_seed"))
             except Exception as exc:
                 log_event(f"IK worker error: {exc}")
             finally:
                 self._ik_busy = False
 
-    def _solve_ik_now(self, xyz_f, rpy_f, open01):
+    def _solve_ik_now(self, xyz_f, rpy_f, open01, q_seed=None):
         ik_t0 = time.perf_counter()
         raw_xyz = np.asarray(xyz_f, dtype=np.float64).reshape(3)
         raw_rpy = np.asarray(rpy_f, dtype=np.float64).reshape(3)
@@ -1138,7 +1147,7 @@ class HandTracker:
             target_rpy=corrected_rpy,
             gripper_open01=float(open01),
             lerobot_calibration=self.lerobot_calibration,
-            previous_joints=self._prev_joints_for_ik(),
+            previous_joints=q_seed if q_seed is not None else self._prev_joints_for_ik(),
             ik_mode="teleop",
             strict_reachability=False,
         )
@@ -1184,16 +1193,16 @@ class HandTracker:
             self._last_ik_signature = {"xyz": out["ee_target_xyz"], "rpy": out["ee_target_rpy"]}
         return out
 
-    def _solve_cartesian_command(self, xyz, rpy, open01):
+    def _solve_cartesian_command(self, xyz, rpy, open01, q_seed=None):
         xyz_f, rpy_f = self._smooth_target_pose(xyz, rpy)
         if self._ik_async_enabled:
-            self._queue_async_ik(xyz_f, rpy_f, open01)
+            self._queue_async_ik(xyz_f, rpy_f, open01, q_seed=q_seed)
             return self._ik_base_command(open01, xyz_f, rpy_f, pending=True)
 
         cached = self._cached_ik_command_if_fresh(xyz_f, rpy_f, open01)
         if cached is not None:
             return cached
-        solved = self._solve_ik_now(xyz_f, rpy_f, open01)
+        solved = self._solve_ik_now(xyz_f, rpy_f, open01, q_seed=q_seed)
         if solved is not None:
             return solved
         return self._ik_base_command(open01, xyz_f, rpy_f, pending=False)
@@ -1259,12 +1268,71 @@ class HandTracker:
                     f"xyz=({xyz[0]:+.3f},{xyz[1]:+.3f},{xyz[2]:+.3f}) "
                     f"rpy=({rpy_deg[0]:+.0f},{rpy_deg[1]:+.0f},{rpy_deg[2]:+.0f}) "
                     f"IK={'OK' if bool(diag.get('ik_success', False)) else 'pending/fallback'} "
-                    f"aruco={'yes' if bool(diag.get('aruco_detected', False)) else 'no'}"
+                    f"map={diag.get('workspace_learning_method', '?')} "
+                    f"speed={float(getattr(val, 'REAL_ROBOT_ARM_SPEED_PERCENT', 100.0)):.0f}% "
+                    "grip=100%"
                 )
                 cv2.putText(frame, line1, (10, h_img - 90), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 255), 2, cv2.LINE_AA)
                 cv2.putText(frame, line2, (10, h_img - 66), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 255), 2, cv2.LINE_AA)
             except Exception:
                 pass
+
+    def estimate_hand_orientation_rpy(self, hand_lms, world_landmarks=None):
+        """Estimate a virtual spherical wrist orientation from MediaPipe hand geometry."""
+        try:
+            src = world_landmarks.landmark if (
+                world_landmarks is not None
+                and bool(getattr(val, "HAND_VIRTUAL_WRIST_USE_WORLD_LANDMARKS", True))
+            ) else hand_lms.landmark
+            pts = []
+            for idx in (0, 5, 9, 17):
+                p = src[idx]
+                pts.append(np.array([float(p.x), float(p.y), float(p.z)], dtype=np.float64))
+            wrist, index_mcp, middle_mcp, pinky_mcp = pts
+            lateral = index_mcp - pinky_mcp
+            forward = middle_mcp - wrist
+            lateral_n = float(np.linalg.norm(lateral))
+            forward_n = float(np.linalg.norm(forward))
+            if lateral_n < 1e-7 or forward_n < 1e-7:
+                raise ValueError("degenerate hand frame")
+            x_axis = lateral / lateral_n
+            y_axis = forward / forward_n
+            z_axis = np.cross(x_axis, y_axis)
+            z_n = float(np.linalg.norm(z_axis))
+            if z_n < 1e-7:
+                raise ValueError("degenerate palm normal")
+            z_axis /= z_n
+            y_axis = np.cross(z_axis, x_axis)
+            y_axis /= max(float(np.linalg.norm(y_axis)), 1e-9)
+            R = np.column_stack([x_axis, y_axis, z_axis])
+            rpy = self._configured_wrist_rpy(_rot_to_rpy(R))
+            confidence = _clip(min(lateral_n, forward_n) / 0.05, 0.0, 1.0)
+            min_conf = float(getattr(val, "HAND_VIRTUAL_WRIST_CONFIDENCE_MIN", 0.35))
+            neutral = np.array([0.0, float(getattr(val, "HAND_TARGET_PITCH_BIAS_RAD", -0.15)), 0.0], dtype=np.float64)
+            if confidence < min_conf and bool(getattr(val, "HAND_VIRTUAL_WRIST_BLEND_TO_NEUTRAL_ON_LOW_CONF", True)):
+                blend = _clip(confidence / max(min_conf, 1e-6), 0.0, 1.0)
+                rpy = neutral + blend * np.array([_wrap_angle(rpy[i] - neutral[i]) for i in range(3)], dtype=np.float64)
+                source = "virtual_wrist_low_conf_blend"
+            else:
+                source = "virtual_wrist"
+            alpha = _clip(float(getattr(val, "HAND_VIRTUAL_WRIST_ORIENTATION_SMOOTHING", 0.45)), 0.0, 1.0)
+            if bool(getattr(val, "LOW_LATENCY_MODE", False)):
+                alpha = _clip(float(getattr(val, "HAND_WRIST_SMOOTHING_ALPHA_LOW_LATENCY", alpha)), 0.0, 1.0)
+            if self._filtered_virtual_wrist_rpy is None:
+                self._filtered_virtual_wrist_rpy = rpy.copy()
+            else:
+                prev = self._filtered_virtual_wrist_rpy
+                delta = np.array([_wrap_angle(rpy[i] - prev[i]) for i in range(3)], dtype=np.float64)
+                self._filtered_virtual_wrist_rpy = prev + alpha * delta
+                self._filtered_virtual_wrist_rpy = np.array([_wrap_angle(x) for x in self._filtered_virtual_wrist_rpy], dtype=np.float64)
+            return self._filtered_virtual_wrist_rpy.copy(), source, float(confidence)
+        except Exception:
+            neutral = np.array([0.0, float(getattr(val, "HAND_TARGET_PITCH_BIAS_RAD", -0.15)), 0.0], dtype=np.float64)
+            if bool(getattr(val, "HAND_VIRTUAL_WRIST_BLEND_TO_NEUTRAL_ON_LOW_CONF", True)) and self._filtered_virtual_wrist_rpy is not None:
+                alpha = _clip(float(getattr(val, "HAND_VIRTUAL_WRIST_ORIENTATION_SMOOTHING", 0.45)), 0.0, 1.0)
+                self._filtered_virtual_wrist_rpy = (1.0 - alpha) * self._filtered_virtual_wrist_rpy + alpha * neutral
+                return self._filtered_virtual_wrist_rpy.copy(), "virtual_wrist_neutral_blend", 0.0
+            return neutral, "neutral_fallback", 0.0
 
     def _estimate_hand_rpy_from_landmarks(self, hand_lms):
         lm = hand_lms.landmark
@@ -1381,6 +1449,11 @@ class HandTracker:
             if rpy is not None:
                 return self._configured_wrist_rpy(rpy), "aruco"
 
+        if bool(getattr(val, "HAND_VIRTUAL_WRIST_ENABLED", True)):
+            rpy, source, _confidence = self.estimate_hand_orientation_rpy(hand_lms)
+            if rpy is not None and np.all(np.isfinite(rpy)):
+                return rpy, source
+
         try:
             lm = hand_lms.landmark
             index = np.array([lm[5].x, lm[5].y], dtype=np.float64)
@@ -1410,9 +1483,12 @@ class HandTracker:
         roll = _wrap_angle(raw[0] * float(getattr(val, "HAND_WRIST_ROLL_SCALE", 1.0)) + float(getattr(val, "HAND_WRIST_ROLL_OFFSET_RAD", 0.0)))
         pitch = _wrap_angle(raw[1] * float(getattr(val, "HAND_WRIST_PITCH_SCALE", 1.0)) + float(getattr(val, "HAND_WRIST_PITCH_OFFSET_RAD", 0.0)))
         yaw = _wrap_angle(raw[2] * float(getattr(val, "HAND_WRIST_YAW_SCALE", 1.0)) + float(getattr(val, "HAND_WRIST_YAW_OFFSET_RAD", 0.0)))
-        roll = _clip(roll, -abs(float(getattr(val, "HAND_WRIST_MAX_ROLL_RAD", math.pi))), abs(float(getattr(val, "HAND_WRIST_MAX_ROLL_RAD", math.pi))))
-        pitch = _clip(pitch, -abs(float(getattr(val, "HAND_WRIST_MAX_PITCH_RAD", 2.5))), abs(float(getattr(val, "HAND_WRIST_MAX_PITCH_RAD", 2.5))))
-        yaw = _clip(yaw, -abs(float(getattr(val, "HAND_WRIST_MAX_YAW_RAD", math.pi))), abs(float(getattr(val, "HAND_WRIST_MAX_YAW_RAD", math.pi))))
+        roll_max_name = "HAND_VIRTUAL_WRIST_MAX_ROLL_RAD" if bool(getattr(val, "HAND_VIRTUAL_WRIST_ENABLED", True)) else "HAND_WRIST_MAX_ROLL_RAD"
+        pitch_max_name = "HAND_VIRTUAL_WRIST_MAX_PITCH_RAD" if bool(getattr(val, "HAND_VIRTUAL_WRIST_ENABLED", True)) else "HAND_WRIST_MAX_PITCH_RAD"
+        yaw_max_name = "HAND_VIRTUAL_WRIST_MAX_YAW_RAD" if bool(getattr(val, "HAND_VIRTUAL_WRIST_ENABLED", True)) else "HAND_WRIST_MAX_YAW_RAD"
+        roll = _clip(roll, -abs(float(getattr(val, roll_max_name, getattr(val, "HAND_WRIST_MAX_ROLL_RAD", math.pi)))), abs(float(getattr(val, roll_max_name, getattr(val, "HAND_WRIST_MAX_ROLL_RAD", math.pi)))))
+        pitch = _clip(pitch, -abs(float(getattr(val, pitch_max_name, getattr(val, "HAND_WRIST_MAX_PITCH_RAD", 2.5)))), abs(float(getattr(val, pitch_max_name, getattr(val, "HAND_WRIST_MAX_PITCH_RAD", 2.5)))))
+        yaw = _clip(yaw, -abs(float(getattr(val, yaw_max_name, getattr(val, "HAND_WRIST_MAX_YAW_RAD", math.pi)))), abs(float(getattr(val, yaw_max_name, getattr(val, "HAND_WRIST_MAX_YAW_RAD", math.pi)))))
         return np.array([roll, pitch, yaw], dtype=np.float64)
 
     def build_hand_cartesian_target(self, hand_lms, frame_w: int, frame_h: int, aruco_pose=None):
@@ -1484,6 +1560,8 @@ class HandTracker:
 
         xyz_raw = np.array([xyz_by_axis["robot_x"], xyz_by_axis["robot_y"], xyz_by_axis["robot_z"]], dtype=np.float64)
         mapping_source = "mediapipe_monocular_depth"
+        mapper_debug = {}
+        q_seed = None
         if aruco_pose is not None and bool(getattr(val, "HAND_DEPTH_ENABLE_ARUCO_GLOVE", False)):
             aruco_xyz = _finite_vec3(aruco_pose.get("workspace_xyz"))
             if aruco_xyz is not None:
@@ -1494,6 +1572,25 @@ class HandTracker:
                 self._warned_no_hand_calibration = True
         elif depth_source == "midpoint":
             mapping_source = "midpoint"
+        elif self.workspace_mapper is not None and bool(getattr(val, "HAND_WORKSPACE_LEARNING_ENABLED", True)):
+            if not bool(getattr(self.workspace_mapper, "loaded", False)) and not self._warned_no_workspace_calibration:
+                log_event("hand workspace calibration missing; using values.py mapping")
+                self._warned_no_workspace_calibration = True
+            mapped_xyz, mapper_debug = self.workspace_mapper.map_hand_to_workspace(
+                x_norm,
+                y_norm,
+                depth_norm,
+                hand_size_norm=depth_debug.get("hand_size_norm", metrics["hand_size_norm"]),
+            )
+            xyz_raw = mapped_xyz
+            mapping_source = str(mapper_debug.get("workspace_mapping_source", mapping_source))
+            q_seed, seed_debug = self.workspace_mapper.choose_ik_seed(
+                x_norm,
+                y_norm,
+                depth_norm,
+                previous_q=None,
+            )
+            mapper_debug.update(seed_debug)
 
         xyz_final, clamped = self._clamp_target_xyz(xyz_raw)
         rpy, rpy_source = self._estimate_target_rpy_from_hand(hand_lms, aruco_pose)
@@ -1540,6 +1637,9 @@ class HandTracker:
             "target_xyz_raw_m": xyz_raw.tolist(),
             "target_xyz_final_m": xyz_final.tolist(),
             "mapping_source": mapping_source,
+            "hand_x_norm": float(x_norm),
+            "hand_y_norm": float(y_norm),
+            "hand_depth_norm": float(depth_norm),
             "axis_map_used": dict(axis_map),
             "axis_flips_used": {
                 "image_x": bool(getattr(val, "HAND_IMAGE_X_FLIP", False)),
@@ -1557,7 +1657,8 @@ class HandTracker:
             "aruco_glove_disabled": not bool(getattr(val, "HAND_DEPTH_ENABLE_ARUCO_GLOVE", False)),
             "aruco_detected": bool(aruco_pose is not None and bool(getattr(val, "HAND_DEPTH_ENABLE_ARUCO_GLOVE", False))),
         }
-        return xyz_final, rpy, debug
+        debug.update(mapper_debug)
+        return xyz_final, rpy, debug, q_seed
 
     def _landmarks_to_command(self, hand_lms, label: str, frame_w: int = 1, frame_h: int = 1, aruco_pose=None):
         if not (bool(getattr(val, "HAND_USE_CARTESIAN_IK", True)) and bool(getattr(val, "HAND_CARTESIAN_MAPPING_ENABLED", True))):
@@ -1569,8 +1670,8 @@ class HandTracker:
         gripper_open01 = self._last_open01
 
         try:
-            xyz, rpy, target_debug = self.build_hand_cartesian_target(hand_lms, frame_w, frame_h, aruco_pose=aruco_pose)
-            cmd = self._solve_cartesian_command(xyz, rpy, gripper_open01)
+            xyz, rpy, target_debug, q_seed = self.build_hand_cartesian_target(hand_lms, frame_w, frame_h, aruco_pose=aruco_pose)
+            cmd = self._solve_cartesian_command(xyz, rpy, gripper_open01, q_seed=q_seed)
             if cmd is None:
                 raise RuntimeError("IK returned no command")
             diag = dict(cmd.get("__diagnostics__", {})) if isinstance(cmd.get("__diagnostics__", {}), dict) else {}

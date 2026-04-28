@@ -19,6 +19,7 @@ from camera_utils import (
     probe_camera_indices,
     read_latest_from_capture,
 )
+from depthcalibrator import HandDepthEstimator
 
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -68,6 +69,14 @@ def _safe_npz_value(d, keys: Sequence[str], default=None):
         if k in d:
             return d[k]
     return default
+
+
+def _finite_float(x, default=None):
+    try:
+        f = float(x)
+    except Exception:
+        return default
+    return f if np.isfinite(f) else default
 
 
 def load_intrinsics(path: str = INTRINSICS_NPZ):
@@ -420,7 +429,7 @@ def _resolve_output(path: str) -> str:
 def _confirm_overwrite(path: str, overwrite: bool) -> bool:
     if overwrite or not os.path.exists(path):
         return True
-    reply = input(f"[charuco] Output exists: {path}\nOverwrite? [y/N]: ").strip().lower()
+    reply = input(f"[calib] Output exists: {path}\nOverwrite? [y/N]: ").strip().lower()
     return reply in ("y", "yes")
 
 
@@ -491,12 +500,14 @@ def _calibration_status() -> int:
     cam_npz = _resolve_output(getattr(val, "CAMERA_CALIBRATION_FILE", "calibration_data/camera_calibration.npz"))
     cam_json = _resolve_output(getattr(val, "CAMERA_CALIBRATION_JSON", "calibration_data/camera_calibration.json"))
     legacy_intr = _resolve_output(getattr(val, "CALIB_INTRINSICS_FILE", "calibration_data/calibration_intrinsics.npz"))
+    workspace_hand = _hand_workspace_calibration_path()
     print("For this RGB-only robot control setup, hand-depth calibration is required/recommended.")
     print("Camera intrinsics are optional.")
     print(f"hand-depth calibration: {hand_path} exists={os.path.exists(hand_path)}")
     print(f"camera calibration NPZ: {cam_npz} exists={os.path.exists(cam_npz)}")
     print(f"camera calibration JSON: {cam_json} exists={os.path.exists(cam_json)}")
     print(f"legacy intrinsics NPZ: {legacy_intr} exists={os.path.exists(legacy_intr)}")
+    print(f"hand workspace calibration: {workspace_hand} exists={os.path.exists(workspace_hand)}")
     print("Runtime can proceed with RGB webcam + MediaPipe even if camera intrinsics are missing.")
     return 0
 
@@ -516,6 +527,8 @@ def _hand_landmark_metrics(hand_lms) -> dict:
     cues = [palm_width, wrist_to_middle, palm_height, bbox_size]
     hand_size = float(np.median([x for x in cues if np.isfinite(x) and x > 0.0])) if cues else 0.0
     return {
+        "x_norm": float(np.mean(pts[[0, 5, 9, 17], 0])),
+        "y_norm": float(np.mean(pts[[0, 5, 9, 17], 1])),
         "hand_size_norm": hand_size,
         "palm_width_norm": palm_width,
         "wrist_to_middle_mcp_norm": wrist_to_middle,
@@ -551,6 +564,10 @@ def _save_hand_depth_calibration(payload: dict, path: str, overwrite: bool) -> s
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
     return out_path
+
+
+def _hand_workspace_calibration_path() -> str:
+    return _resolve_output(getattr(val, "HAND_WORKSPACE_CALIBRATION_FILE", "calibration_data/hand_workspace_calibration.json"))
 
 
 def _print_hand_depth_camera_config(args, requested_index: int, use_main_defaults: bool) -> None:
@@ -618,6 +635,365 @@ def _list_cameras() -> int:
     return 0
 
 
+def _workspace_bounds_for_hand_calibration() -> dict:
+    return {
+        "x_min_m": float(getattr(val, "HAND_TARGET_X_MIN_M", getattr(val, "WORKSPACE_X_MIN", -0.12))),
+        "x_max_m": float(getattr(val, "HAND_TARGET_X_MAX_M", getattr(val, "WORKSPACE_X_MAX", 0.12))),
+        "y_min_m": float(getattr(val, "HAND_TARGET_Y_MIN_M", getattr(val, "WORKSPACE_Y_MIN", 0.10))),
+        "y_max_m": float(getattr(val, "HAND_TARGET_Y_MAX_M", getattr(val, "WORKSPACE_Y_MAX", 0.22))),
+        "z_min_m": float(getattr(val, "HAND_TARGET_Z_MIN_M", getattr(val, "WORKSPACE_Z_MIN", 0.00))),
+        "z_max_m": float(getattr(val, "HAND_TARGET_Z_MAX_M", getattr(val, "WORKSPACE_Z_MAX", 0.22))),
+    }
+
+
+def _robot_xyz_for_workspace_pose(name: str, bounds: dict) -> dict:
+    cx = 0.5 * (bounds["x_min_m"] + bounds["x_max_m"])
+    cy = 0.5 * (bounds["y_min_m"] + bounds["y_max_m"])
+    cz = 0.5 * (bounds["z_min_m"] + bounds["z_max_m"])
+    near_y = _finite_float(getattr(val, "HAND_DEPTH_TARGET_NEAR_M", None), bounds["y_min_m"])
+    far_y = _finite_float(getattr(val, "HAND_DEPTH_TARGET_FAR_M", None), bounds["y_max_m"])
+    xyz = {
+        "x_m": cx,
+        "y_m": cy,
+        "z_m": cz,
+    }
+    if name in {"max_left", "top_left", "bottom_left"}:
+        xyz["x_m"] = bounds["x_min_m"]
+    if name in {"max_right", "top_right", "bottom_right"}:
+        xyz["x_m"] = bounds["x_max_m"]
+    if name in {"max_up", "top_left", "top_right"}:
+        xyz["z_m"] = bounds["z_max_m"]
+    if name in {"max_down", "bottom_left", "bottom_right"}:
+        xyz["z_m"] = bounds["z_min_m"]
+    if name == "max_near":
+        xyz["y_m"] = float(near_y)
+    if name == "max_far":
+        xyz["y_m"] = float(far_y)
+    return xyz
+
+
+def _effective_hand_capture_metrics(hand_lms, depth_estimator: HandDepthEstimator, frame_w: int, frame_h: int) -> dict:
+    metrics = _hand_landmark_metrics(hand_lms)
+    depth = depth_estimator.estimate_depth(hand_lms, frame_w=frame_w, frame_h=frame_h)
+    x = float(metrics["x_norm"])
+    y = float(metrics["y_norm"])
+    if bool(getattr(val, "HAND_IMAGE_X_FLIP", False)):
+        x = 1.0 - x
+    if bool(getattr(val, "HAND_IMAGE_Y_FLIP", True)):
+        y = 1.0 - y
+    d = float(depth.get("depth_norm", 0.5))
+    if bool(getattr(val, "HAND_DEPTH_FLIP", False)):
+        d = 1.0 - d
+    return {
+        "x_norm": float(np.clip(x, 0.0, 1.0)),
+        "y_norm": float(np.clip(y, 0.0, 1.0)),
+        "depth_norm": float(np.clip(d, 0.0, 1.0)),
+        "hand_size_norm": float(depth.get("hand_size_norm", metrics["hand_size_norm"])),
+        "palm_width_norm": float(depth.get("palm_width_norm", metrics["palm_width_norm"])),
+        "wrist_to_middle_mcp_norm": float(depth.get("wrist_to_middle_mcp_norm", metrics["wrist_to_middle_mcp_norm"])),
+        "palm_height_norm": float(depth.get("palm_height_norm", metrics["palm_height_norm"])),
+        "bbox_size_norm": float(depth.get("bbox_size_norm", metrics["bbox_size_norm"])),
+        "depth_m": float(depth.get("depth_m", 0.0)),
+        "depth_source": str(depth.get("source", "unknown")),
+        "depth_confidence": float(depth.get("confidence", 0.0)),
+    }
+
+
+def _mean_metrics(samples: Sequence[dict]) -> dict:
+    if not samples:
+        return {}
+    keys = sorted({k for s in samples for k in s.keys() if isinstance(s.get(k), (int, float))})
+    out = {}
+    for key in keys:
+        vals = [float(s[key]) for s in samples if key in s and np.isfinite(float(s[key]))]
+        if vals:
+            out[key] = float(np.mean(vals))
+            out[f"{key}_std"] = float(np.std(vals))
+    return out
+
+
+def _hand_depth_pose_summary(depth_m: float, samples: Sequence[dict]) -> dict:
+    summary = _pose_summary(depth_m, samples)
+    for key in ("x_norm", "y_norm"):
+        vals = [float(s[key]) for s in samples if key in s and np.isfinite(float(s[key]))]
+        if vals:
+            summary[f"{key}_mean"] = float(np.mean(vals))
+            summary[f"{key}_std"] = float(np.std(vals))
+    return summary
+
+
+def _print_pose_capture_summary(prefix: str, poses: dict) -> None:
+    print(f"[{prefix}] Captured poses:")
+    for name, item in poses.items():
+        if not isinstance(item, dict):
+            continue
+        if "hand" in item:
+            hand = item.get("hand", {})
+            robot = item.get("robot", {})
+            print(
+                f"[{prefix}] {name}: hand=({float(hand.get('x_norm', 0.0)):.3f},"
+                f"{float(hand.get('y_norm', 0.0)):.3f},{float(hand.get('depth_norm', 0.0)):.3f}) "
+                f"size={float(hand.get('hand_size_norm', 0.0)):.4f} "
+                f"robot=({float(robot.get('x_m', 0.0)):+.3f},{float(robot.get('y_m', 0.0)):+.3f},{float(robot.get('z_m', 0.0)):+.3f})"
+            )
+        else:
+            print(
+                f"[{prefix}] {name}: depth={float(item.get('depth_m', 0.0)):.3f}m "
+                f"size={float(item.get('hand_size_norm_mean', 0.0)):.4f} "
+                f"std={float(item.get('hand_size_norm_std', 0.0)):.4f}"
+            )
+
+
+def _confirm_final_save(prefix: str) -> bool:
+    reply = input(f"[{prefix}] Save calibration? [y/N]: ").strip().lower()
+    return reply in ("y", "yes")
+
+
+def _workspace_pose_optional(name: str) -> bool:
+    required = {"center", "max_left", "max_right", "max_up", "max_down", "max_near", "max_far"}
+    return str(name) not in required
+
+
+def _maybe_connect_robot_for_workspace_calibration():
+    reply = input("[hand-workspace] Optionally connect robot to record current joints as IK seeds? [y/N]: ").strip().lower()
+    if reply not in ("y", "yes"):
+        return None
+    try:
+        from robot_controller import SOArmHardwareController
+
+        robot = SOArmHardwareController()
+        robot.connect()
+        print("[hand-workspace] Robot connected for read-only joint seed capture.")
+        return robot
+    except Exception as exc:
+        print(f"[hand-workspace] Robot seed capture unavailable: {exc}")
+        return None
+
+
+def _read_robot_seed_joints(robot) -> Optional[list[float]]:
+    if robot is None:
+        return None
+    try:
+        present = robot.read_present_joints_rad()
+    except Exception:
+        return None
+    if not isinstance(present, dict):
+        return None
+    names = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_yaw", "wrist_roll", "wrist_pitch"]
+    vals = []
+    for name in names:
+        try:
+            v = float(present[name])
+        except Exception:
+            return None
+        if not np.isfinite(v):
+            return None
+        vals.append(v)
+    return vals
+
+
+def _run_hand_workspace_calibration(args) -> int:
+    try:
+        import mediapipe as mp
+    except Exception as exc:
+        print(f"[hand-workspace] ERROR: MediaPipe is required: {exc}")
+        return 1
+
+    hands = mp.solutions.hands.Hands(
+        static_image_mode=False,
+        max_num_hands=1,
+        model_complexity=int(getattr(val, "HANDTRACKING_MODEL_COMPLEXITY", 0)),
+        min_detection_confidence=float(getattr(val, "HANDTRACKING_MIN_DETECTION_CONFIDENCE", 0.55)),
+        min_tracking_confidence=float(getattr(val, "HANDTRACKING_MIN_TRACKING_CONFIDENCE", 0.55)),
+    )
+    camera = _open_hand_depth_camera(args)
+    if camera is None:
+        try:
+            hands.close()
+        except Exception:
+            pass
+        return 1
+    cap = camera.cap
+    pending_first_frame = camera.frame
+    depth_estimator = HandDepthEstimator()
+    poses = list(getattr(val, "HAND_WORKSPACE_CAPTURE_POSES", [])) or [
+        "center", "max_left", "max_right", "max_up", "max_down", "max_near", "max_far",
+    ]
+    bounds = _workspace_bounds_for_hand_calibration()
+    required = max(3, int(getattr(val, "HAND_DEPTH_CALIBRATION_REQUIRED_STABLE_FRAMES", 20)))
+    samples_per_pose = max(required, int(getattr(val, "HAND_DEPTH_CALIBRATION_SAMPLES_PER_POSE", 40)))
+    stability_max = float(getattr(val, "HAND_DEPTH_CALIBRATION_STABILITY_STD_MAX", 0.015))
+    robot = None
+    pose_results = {}
+    pose_index = 0
+    samples: list[dict] = []
+    print("[hand-workspace] Captures RGB MediaPipe hand positions for nonlinear workspace correction.")
+    print("[hand-workspace] This does not learn direct motor commands; joint samples are IK seeds only.")
+    print("[hand-workspace] SPACE=accept, R=reset current pose, Q/ESC=quit")
+    if bool(getattr(val, "HAND_WORKSPACE_USE_JOINT_SEED_EXAMPLES", True)):
+        robot = _maybe_connect_robot_for_workspace_calibration()
+    try:
+        while pose_index < len(poses):
+            state = "waiting_for_user_ready"
+            review_summary = None
+            pose_name = str(poses[pose_index])
+            target = _robot_xyz_for_workspace_pose(pose_name, bounds)
+            samples.clear()
+            optional = _workspace_pose_optional(pose_name)
+
+            while True:
+                if pending_first_frame is not None:
+                    ok, frame = True, pending_first_frame
+                    pending_first_frame = None
+                else:
+                    ok, frame = read_latest_from_capture(cap)
+                if not ok or frame is None:
+                    print("[hand-workspace] ERROR: Could not open/read webcam.")
+                    return 1
+                frame_h, frame_w = frame.shape[:2]
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                results = hands.process(rgb)
+                metrics = None
+                if results.multi_hand_landmarks:
+                    hand_lms = results.multi_hand_landmarks[0]
+                    metrics = _effective_hand_capture_metrics(hand_lms, depth_estimator, frame_w, frame_h)
+                    mp.solutions.drawing_utils.draw_landmarks(frame, hand_lms, mp.solutions.hands.HAND_CONNECTIONS)
+
+                std = float("nan")
+                stable = False
+                if state == "sampling" and metrics is not None:
+                    samples.append(metrics)
+                    samples = samples[-samples_per_pose:]
+                    recent = samples[-required:]
+                    if len(recent) >= required:
+                        std = float(np.std([s["hand_size_norm"] for s in recent]))
+                        stable = std <= stability_max
+                        if stable:
+                            review_summary = _mean_metrics(recent)
+                            state = "review"
+                elif state == "sampling" and metrics is None:
+                    # Hand disappeared: sampling pauses by not appending.
+                    pass
+
+                lines = [
+                    f"Hand workspace calibration: {pose_name} ({pose_index + 1}/{len(poses)})",
+                    f"Place hand at {pose_name} position",
+                    f"Target robot xyz=({target['x_m']:+.3f},{target['y_m']:+.3f},{target['z_m']:+.3f}) m",
+                    "Required: one visible MediaPipe hand, held steady",
+                ]
+                if state == "waiting_for_user_ready":
+                    lines += [
+                        "Press SPACE when ready to start sampling",
+                        "R = reset current pose",
+                        "S = skip optional pose",
+                        "Q/ESC = quit without saving",
+                    ]
+                elif state == "sampling":
+                    std_text = "n/a" if not np.isfinite(std) else f"{std:.5f}"
+                    lines += [
+                        f"Sampling: {len(samples)}/{required} valid samples",
+                        f"stability std: {std_text} limit={stability_max:.5f}",
+                        "No hand detected: sampling paused" if metrics is None else "Hold steady",
+                        "R = reset current pose, Q/ESC = quit without saving",
+                    ]
+                else:
+                    s = review_summary or {}
+                    lines += [
+                        "Review summary",
+                        f"mean=({float(s.get('x_norm', 0.0)):.3f},{float(s.get('y_norm', 0.0)):.3f},{float(s.get('depth_norm', 0.0)):.3f}) size={float(s.get('hand_size_norm', 0.0)):.4f}",
+                        f"std=({float(s.get('x_norm_std', 0.0)):.4f},{float(s.get('y_norm_std', 0.0)):.4f},{float(s.get('depth_norm_std', 0.0)):.4f}) size_std={float(s.get('hand_size_norm_std', 0.0)):.5f}",
+                        "A = accept pose, R = resample, Q/ESC = quit",
+                    ]
+                if metrics is not None:
+                    lines.append(f"live hand=({metrics['x_norm']:.2f},{metrics['y_norm']:.2f},{metrics['depth_norm']:.2f}) size={metrics['hand_size_norm']:.3f}")
+                else:
+                    lines.append("live hand: not detected")
+                _draw_text_lines(frame, lines)
+                cv2.imshow("Hand workspace calibration", frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key in (27, ord("q")):
+                    return 1
+                if key == ord("r"):
+                    samples.clear()
+                    review_summary = None
+                    state = "waiting_for_user_ready"
+                    continue
+                if state == "waiting_for_user_ready" and key == ord("s") and optional:
+                    print(f"[hand-workspace] skipped optional pose {pose_name}")
+                    pose_index += 1
+                    break
+                if state == "waiting_for_user_ready" and key == ord(" "):
+                    samples.clear()
+                    review_summary = None
+                    state = "sampling"
+                    continue
+                if state == "review" and key == ord("a") and review_summary:
+                    joints_rad = _read_robot_seed_joints(robot)
+                    pose_results[pose_name] = {
+                        "hand": {
+                            "x_norm": float(review_summary.get("x_norm", 0.5)),
+                            "y_norm": float(review_summary.get("y_norm", 0.5)),
+                            "depth_norm": float(review_summary.get("depth_norm", 0.5)),
+                            "hand_size_norm": float(review_summary.get("hand_size_norm", 0.0)),
+                        },
+                        "robot": target,
+                        "joints_rad": joints_rad,
+                        "metrics": review_summary,
+                    }
+                    print(
+                        f"[hand-workspace] accepted {pose_name}: "
+                        f"hand=({review_summary.get('x_norm', 0.5):.3f},{review_summary.get('y_norm', 0.5):.3f},{review_summary.get('depth_norm', 0.5):.3f}) "
+                        f"robot=({target['x_m']:+.3f},{target['y_m']:+.3f},{target['z_m']:+.3f})"
+                    )
+                    pose_index += 1
+                    break
+
+        payload = {
+            "calibration_type": "hand_to_robot_workspace",
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "camera": {
+                "width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0),
+                "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0),
+                "index": int(camera.index),
+            },
+            "poses": pose_results,
+            "workspace_bounds": bounds,
+            "mapping": {
+                "method": str(getattr(val, "HAND_WORKSPACE_MAPPING_METHOD", "rbf_residual")),
+                "fallback": str(getattr(val, "HAND_WORKSPACE_FALLBACK_METHOD", "piecewise_affine")),
+                "axis_map": dict(getattr(val, "HAND_CAMERA_TO_ROBOT_AXIS_MAP", {"image_x": "robot_x", "image_y": "robot_z", "depth": "robot_y"})),
+                "flips": {
+                    "x": bool(getattr(val, "HAND_IMAGE_X_FLIP", False)),
+                    "y": bool(getattr(val, "HAND_IMAGE_Y_FLIP", True)),
+                    "depth": bool(getattr(val, "HAND_DEPTH_FLIP", False)),
+                },
+            },
+            "notes": "Complements robot_joint_calibration.json. Joints are IK seed examples only; runtime still uses IK.",
+        }
+        _print_pose_capture_summary("hand-workspace", pose_results)
+        if not _confirm_final_save("hand-workspace"):
+            print("[hand-workspace] Not saved.")
+            return 0
+        out_path = _save_hand_depth_calibration(payload, _hand_workspace_calibration_path(), bool(args.overwrite))
+        print(f"[hand-workspace] Saved calibration: {out_path}")
+        return 0
+    finally:
+        try:
+            hands.close()
+        except Exception:
+            pass
+        try:
+            cap.release()
+        except Exception:
+            pass
+        try:
+            if robot is not None:
+                robot.disconnect()
+        except Exception:
+            pass
+        cv2.destroyAllWindows()
+
+
 def _run_hand_depth_calibration(args) -> int:
     try:
         import mediapipe as mp
@@ -657,74 +1033,106 @@ def _run_hand_depth_calibration(args) -> int:
     pose_samples: list[dict] = []
     print("For this RGB-only robot control setup, hand-depth calibration is required/recommended.")
     print("[hand-depth] Hold an open hand at each requested measured distance.")
-    print("[hand-depth] SPACE=accept manually, R=reset pose, Q/ESC=quit")
+    print("[hand-depth] Sampling starts only after SPACE. Acceptance requires A.")
     try:
         while pose_index < len(poses_cfg):
-            if pending_first_frame is not None:
-                ok, frame = True, pending_first_frame
-                pending_first_frame = None
-            else:
-                ok, frame = read_latest_from_capture(cap)
-            if not ok or frame is None:
-                print("[hand-depth] ERROR: Could not open/read webcam.")
-                print("[hand-depth] Try changing camera index with --camera-index N.")
-                print("[hand-depth] On macOS, check System Settings > Privacy & Security > Camera for PyCharm/Terminal.")
-                return 1
             pose_name = str(poses_cfg[pose_index])
             target_depth = float(depth_by_pose.get(pose_name, getattr(val, "HAND_DEPTH_DEFAULT_M", 0.45)))
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = hands.process(rgb)
-            metrics = None
-            stable_count = 0
-            stable = False
-            if results.multi_hand_landmarks:
-                hand_lms = results.multi_hand_landmarks[0]
-                metrics = _hand_landmark_metrics(hand_lms)
-                pose_samples.append(metrics)
-                pose_samples = pose_samples[-samples_per_pose:]
-                recent = pose_samples[-required_stable:]
-                if len(recent) >= required_stable:
-                    std = float(np.std([s["hand_size_norm"] for s in recent]))
-                    stable = std <= stability_max
-                    stable_count = len(recent) if stable else max(0, int(required_stable * max(0.0, 1.0 - std / max(stability_max, 1e-6))))
+            state = "waiting_for_user_ready"
+            review_summary = None
+            pose_samples.clear()
+
+            while True:
+                if pending_first_frame is not None:
+                    ok, frame = True, pending_first_frame
+                    pending_first_frame = None
                 else:
-                    stable_count = len(recent)
-                mp.solutions.drawing_utils.draw_landmarks(frame, hand_lms, mp.solutions.hands.HAND_CONNECTIONS)
+                    ok, frame = read_latest_from_capture(cap)
+                if not ok or frame is None:
+                    print("[hand-depth] ERROR: Could not open/read webcam.")
+                    print("[hand-depth] Try changing camera index with --camera-index N.")
+                    print("[hand-depth] On macOS, check System Settings > Privacy & Security > Camera for PyCharm/Terminal.")
+                    return 1
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                results = hands.process(rgb)
+                metrics = None
+                if results.multi_hand_landmarks:
+                    hand_lms = results.multi_hand_landmarks[0]
+                    metrics = _hand_landmark_metrics(hand_lms)
+                    mp.solutions.drawing_utils.draw_landmarks(frame, hand_lms, mp.solutions.hands.HAND_CONNECTIONS)
 
-            lines = [
-                f"Place open hand at {pose_name.upper()} distance: {target_depth:.2f} m",
-                "Hold steady",
-                f"Stable frames: {stable_count}/{required_stable}",
-                f"Samples: {len(pose_samples)}/{samples_per_pose}",
-                "SPACE=accept manually, R=reset pose, Q=quit",
-            ]
-            if metrics:
-                lines.append(f"hand_size_norm: {metrics['hand_size_norm']:.4f}")
-            else:
-                lines.append("No MediaPipe hand detected")
-            _draw_text_lines(frame, lines)
-            cv2.imshow("RGB hand-depth calibration", frame)
+                std = float("nan")
+                stable = False
+                if state == "sampling" and metrics is not None:
+                    pose_samples.append(metrics)
+                    pose_samples = pose_samples[-samples_per_pose:]
+                    recent = pose_samples[-required_stable:]
+                    if len(recent) >= required_stable:
+                        std = float(np.std([s["hand_size_norm"] for s in recent]))
+                        stable = std <= stability_max
+                        if stable:
+                            review_summary = _hand_depth_pose_summary(target_depth, recent)
+                            state = "review"
+                elif state == "sampling" and metrics is None:
+                    # Hand disappeared: sampling pauses by not appending.
+                    pass
 
-            key = cv2.waitKey(1) & 0xFF
-            accept = stable and len(pose_samples) >= required_stable
-            if key in (27, ord("q")):
-                return 1
-            if key == ord("r"):
-                pose_samples.clear()
-                continue
-            if key == ord(" ") and len(pose_samples) >= 3:
-                accept = True
-            if accept:
-                summary = _pose_summary(target_depth, pose_samples[-samples_per_pose:])
-                if summary["hand_size_norm_std"] > stability_max and key != ord(" "):
+                lines = [
+                    f"Hand-depth calibration: {pose_name.upper()} ({pose_index + 1}/{len(poses_cfg)})",
+                    f"Place open hand at {pose_name.upper()} distance: {target_depth:.2f} m",
+                    "Required: one visible open MediaPipe hand, held steady",
+                ]
+                if state == "waiting_for_user_ready":
+                    lines += [
+                        "Press SPACE when ready to start sampling",
+                        "R = reset current pose",
+                        "S = skip optional pose",
+                        "Q/ESC = quit without saving",
+                    ]
+                elif state == "sampling":
+                    std_text = "n/a" if not np.isfinite(std) else f"{std:.5f}"
+                    lines += [
+                        f"Sampling: {len(pose_samples)}/{required_stable} valid samples",
+                        f"stability std: {std_text} limit={stability_max:.5f}",
+                        "No hand detected: sampling paused" if metrics is None else "Hold steady",
+                        "R = reset current pose, Q/ESC = quit without saving",
+                    ]
+                else:
+                    s = review_summary or {}
+                    lines += [
+                        "Review summary",
+                        f"mean size={float(s.get('hand_size_norm_mean', 0.0)):.4f} depth={float(s.get('depth_m', 0.0)):.2f}m",
+                        f"std size={float(s.get('hand_size_norm_std', 0.0)):.5f} x={float(s.get('x_norm_std', 0.0)):.4f} y={float(s.get('y_norm_std', 0.0)):.4f}",
+                        "A = accept pose, R = resample, Q/ESC = quit",
+                    ]
+                if metrics:
+                    lines.append(f"live hand_size_norm: {metrics['hand_size_norm']:.4f}")
+                else:
+                    lines.append("live hand: not detected")
+                _draw_text_lines(frame, lines)
+                cv2.imshow("RGB hand-depth calibration", frame)
+
+                key = cv2.waitKey(1) & 0xFF
+                if key in (27, ord("q")):
+                    return 1
+                if key == ord("r"):
+                    pose_samples.clear()
+                    review_summary = None
+                    state = "waiting_for_user_ready"
                     continue
-                pose_results[pose_name] = summary
-                print(
-                    f"[hand-depth] accepted {pose_name}: depth={target_depth:.2f}m "
-                    f"size={summary['hand_size_norm_mean']:.4f} std={summary['hand_size_norm_std']:.4f}"
-                )
-                pose_index += 1
-                pose_samples.clear()
+                if state == "waiting_for_user_ready" and key == ord(" "):
+                    pose_samples.clear()
+                    review_summary = None
+                    state = "sampling"
+                    continue
+                if state == "review" and key == ord("a") and review_summary:
+                    pose_results[pose_name] = review_summary
+                    print(
+                        f"[hand-depth] accepted {pose_name}: depth={target_depth:.2f}m "
+                        f"size={review_summary['hand_size_norm_mean']:.4f} std={review_summary['hand_size_norm_std']:.4f}"
+                    )
+                    pose_index += 1
+                    break
 
         near = pose_results.get("near", {})
         center = pose_results.get("center", {})
@@ -747,6 +1155,10 @@ def _run_hand_depth_calibration(args) -> int:
             },
             "notes": "Runtime uses RGB MediaPipe hand size only; no markers required.",
         }
+        _print_pose_capture_summary("hand-depth", pose_results)
+        if not _confirm_final_save("hand-depth"):
+            print("[hand-depth] Not saved.")
+            return 0
         out_path = _save_hand_depth_calibration(
             payload,
             getattr(val, "HAND_MONOCULAR_DEPTH_CALIBRATION_FILE", "calibration_data/hand_depth_calibration.json"),
@@ -1259,9 +1671,10 @@ def _no_arg_menu(args) -> int:
     print("3. Optional ChArUco camera intrinsics calibration")
     print("4. Optional chessboard camera intrinsics calibration")
     print("5. Quit")
+    print("6. Hand-to-workspace calibration")
     print("\nTip: In PyCharm, add --hand-depth to Run Configuration > Parameters to launch calibration directly.")
     try:
-        choice = input("\nSelection [1/2/3/4/5]: ").strip()
+        choice = input("\nSelection [1/2/3/4/5/6]: ").strip()
     except EOFError:
         choice = ""
     if choice == "":
@@ -1279,6 +1692,8 @@ def _no_arg_menu(args) -> int:
     if choice == "5":
         print("[calib] Quit.")
         return 0
+    if choice == "6":
+        return _run_hand_workspace_calibration(args)
     print(f"[calib] Unknown selection: {choice}")
     return 1
 
@@ -1294,6 +1709,7 @@ def main() -> int:
     parser.add_argument("--status", action="store_true", help="Print calibration status and runtime readiness.")
     parser.add_argument("--list-cameras", action="store_true", help="Probe camera indices using the same backend/read logic as main.py.")
     parser.add_argument("--hand-depth", action="store_true", help="Run RGB MediaPipe hand-size depth calibration.")
+    parser.add_argument("--hand-workspace", action="store_true", help="Run nonlinear non-neural hand-to-workspace calibration.")
     parser.add_argument(
         "--use-main-camera-defaults",
         action="store_true",
@@ -1336,6 +1752,8 @@ def main() -> int:
         return _calibration_status()
     if args.hand_depth:
         return _run_hand_depth_calibration(args)
+    if args.hand_workspace:
+        return _run_hand_workspace_calibration(args)
     if args.charuco or args.chessboard or args.print_board:
         return _run_charuco_calibration(args)
     if not args.hand_marker:

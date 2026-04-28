@@ -123,16 +123,16 @@ URDF_PATH = "/Users/ricky/PycharmProjects/ECE3161/SO-ARM100"
 # Real robot control
 REAL_ROBOT_ENABLE_TORQUE_LIMIT = True
 REAL_ROBOT_HZ = 20.0
-REAL_ROBOT_MAX_VELOCITY_DEG = 90.0
-REAL_ROBOT_MAX_ACCELERATION_DEG = 250.0
+REAL_ROBOT_MAX_VELOCITY_DEG = 1000000.0
+REAL_ROBOT_MAX_ACCELERATION_DEG = 1000000.0
 # Gripper has its own velocity/accel cap so it can snap open/closed without
 # constraining the arm's motion limits. Units are percent/sec since the
 # gripper command is 0..100.
-REAL_ROBOT_GRIPPER_MAX_VELOCITY_DEG = 400.0
-REAL_ROBOT_GRIPPER_MAX_ACCELERATION_DEG = 1500.0
-REAL_ROBOT_TORQUE_LIMIT_PERCENT = 5.0
-REAL_ROBOT_MAX_RELATIVE_TARGET_DEG = 3.0
-REAL_ROBOT_ACTION_DEADBAND_DEG = 0.5
+REAL_ROBOT_GRIPPER_MAX_VELOCITY_DEG = 1000000.0
+REAL_ROBOT_GRIPPER_MAX_ACCELERATION_DEG = 1000000.0
+REAL_ROBOT_TORQUE_LIMIT_PERCENT = 100.0
+REAL_ROBOT_MAX_RELATIVE_TARGET_DEG = 360.0
+REAL_ROBOT_ACTION_DEADBAND_DEG = 0.0
 
 ENABLE_REAL_ROBOT = True
 REAL_ROBOT_PORT = ""
@@ -713,7 +713,7 @@ IK_NULLSPACE_FD_EPS_RAD = 1e-4
 REAL_ROBOT_ENABLE_TORQUE_LIMIT = True
 
 # Default fallback torque/current limit if a motor is not listed in a group.
-REAL_ROBOT_TORQUE_LIMIT_PERCENT = 70.0
+REAL_ROBOT_TORQUE_LIMIT_PERCENT = 100.0
 
 # Per-motor torque/current limit overrides (percent of full PWM, 0-100). Take
 # precedence over REAL_ROBOT_TORQUE_LIMIT_GROUPS below. Allocated proportional
@@ -725,15 +725,15 @@ REAL_ROBOT_TORQUE_LIMIT_BY_MOTOR_ID = {
     2: 100.0,  # shoulder_lift
     3: 100.0,  # elbow_flex
     4: 100.0,  # wrist_flex
-    5: 75.0,   # wrist_yaw
-    6: 75.0,   # wrist_roll
-    7: 75.0,   # wrist_pitch
-    8: 90.0,   # gripper
+    5: 100.0,   # wrist_yaw
+    6: 100.0,   # wrist_roll
+    7: 100.0,   # wrist_pitch
+    8: 100.0,   # gripper
 }
 
 # Floor applied at bus startup before the per-motor table lands. Even if the
 # per-motor write fails, motors will not come online unrestricted.
-REAL_ROBOT_SAFE_INITIAL_TORQUE_PERCENT = 70.0
+REAL_ROBOT_SAFE_INITIAL_TORQUE_PERCENT = 100.0
 
 # Split available current/torque budget by motor group:
 # Motors 1-4 are shoulder/elbow/high-load joints and receive 75%.
@@ -741,11 +741,11 @@ REAL_ROBOT_SAFE_INITIAL_TORQUE_PERCENT = 70.0
 REAL_ROBOT_TORQUE_LIMIT_GROUPS = {
     "high_load": {
         "motor_ids": [1, 2, 3, 4],
-        "percent": 95.0,
+        "percent": 100.0,
     },
     "low_load": {
         "motor_ids": [5, 6, 7, 8],
-        "percent": 35.0,
+        "percent": 100.0,
     },
 }
 
@@ -772,3 +772,202 @@ REAL_ROBOT_PID_DEADBAND_DEG = 5
 REAL_ROBOT_PID_INTEGRAL_LIMIT_DEG_S = 8.0
 REAL_ROBOT_PID_RESET_ON_TARGET_JUMP_DEG = 8.0
 REAL_ROBOT_PID_VERBOSE = False
+
+# ---------------------------------------------------------------------------
+# Final requested no-software-limit motor overrides
+# ---------------------------------------------------------------------------
+# These final assignments intentionally override earlier duplicates in this
+# file. Torque/current is commanded to the Feetech register maximum, while
+# software velocity/acceleration/rate step caps are set high enough to be
+# effectively inactive. Physical/electrical protections remain external to
+# this config.
+REAL_ROBOT_ENABLE_TORQUE_LIMIT = True
+REAL_ROBOT_MAX_VELOCITY_DEG = 1000000.0
+REAL_ROBOT_MAX_ACCELERATION_DEG = 1000000.0
+REAL_ROBOT_GRIPPER_MAX_VELOCITY_DEG = 1000000.0
+REAL_ROBOT_GRIPPER_MAX_ACCELERATION_DEG = 1000000.0
+REAL_ROBOT_MAX_RELATIVE_TARGET_DEG = 360.0
+REAL_ROBOT_ACTION_DEADBAND_DEG = 0.0
+REAL_ROBOT_TORQUE_LIMIT_PERCENT = 100.0
+REAL_ROBOT_SAFE_INITIAL_TORQUE_PERCENT = 100.0
+REAL_ROBOT_TORQUE_LIMIT_BY_MOTOR_ID = {
+    1: 100.0,  # shoulder_pan
+    2: 100.0,  # shoulder_lift
+    3: 100.0,  # elbow_flex
+    4: 100.0,  # wrist_flex
+    5: 100.0,  # wrist_yaw
+    6: 100.0,  # wrist_roll
+    7: 100.0,  # wrist_pitch
+    8: 100.0,  # gripper
+}
+REAL_ROBOT_TORQUE_LIMIT_GROUPS = {
+    "high_load": {
+        "motor_ids": [1, 2, 3, 4],
+        "percent": 100.0,
+    },
+    "low_load": {
+        "motor_ids": [5, 6, 7, 8],
+        "percent": 100.0,
+    },
+}
+FEETECH_TORQUE_LIMIT_RAW_MAX = 1000
+
+# ---------------------------------------------------------------------------
+# Final max-responsiveness / low-latency command overrides
+# ---------------------------------------------------------------------------
+# These final assignments intentionally override all earlier duplicates in this
+# file. Motor torque/current remains commanded at the Feetech register maximum,
+# while software velocity/acceleration/step limits, smoothing delay, IK rate
+# limits, command-rate limits, and serial write delays are pushed to the most
+# responsive practical settings for live gesture teleoperation.
+
+# Motor-side software limits: effectively inactive.
+REAL_ROBOT_ENABLE_TORQUE_LIMIT = True
+REAL_ROBOT_MAX_VELOCITY_DEG = 1000000.0
+REAL_ROBOT_MAX_ACCELERATION_DEG = 1000000.0
+REAL_ROBOT_GRIPPER_MAX_VELOCITY_DEG = 1000000.0
+REAL_ROBOT_GRIPPER_MAX_ACCELERATION_DEG = 1000000.0
+REAL_ROBOT_MAX_RELATIVE_TARGET_DEG = 360.0
+REAL_ROBOT_ACTION_DEADBAND_DEG = 0.0
+REAL_ROBOT_TORQUE_LIMIT_PERCENT = 100.0
+REAL_ROBOT_SAFE_INITIAL_TORQUE_PERCENT = 100.0
+REAL_ROBOT_TORQUE_LIMIT_BY_MOTOR_ID = {
+    1: 100.0,  # shoulder_pan
+    2: 100.0,  # shoulder_lift
+    3: 100.0,  # elbow_flex
+    4: 100.0,  # wrist_flex
+    5: 100.0,  # wrist_yaw
+    6: 100.0,  # wrist_roll
+    7: 100.0,  # wrist_pitch
+    8: 100.0,  # gripper
+}
+REAL_ROBOT_TORQUE_LIMIT_GROUPS = {
+    "high_load": {"motor_ids": [1, 2, 3, 4], "percent": 100.0},
+    "low_load": {"motor_ids": [5, 6, 7, 8], "percent": 100.0},
+}
+FEETECH_TORQUE_LIMIT_RAW_MAX = 1000
+
+# Runtime command-rate limits: high enough that camera/IK/serial throughput are
+# the limiting factors instead of this config file.
+REAL_ROBOT_HZ = 100.0
+ROBOT_COMMAND_MAX_HZ = 100.0
+MAIN_LOOP_HZ = 60.0
+HANDTRACKING_MAX_PROCESS_HZ = 60.0
+IK_MAX_SOLVE_HZ = 60.0
+HAND_IK_HZ = 60.0
+MAIN_CAMERA_FPS = 60
+CAMERA_CAPTURE_FPS = 60
+
+# Always use the newest available command/frame; never build a backlog.
+LOW_LATENCY_MODE = True
+CAMERA_THREADED_CAPTURE = True
+CAMERA_DROP_OLD_FRAMES = True
+CAMERA_MAX_QUEUE_SIZE = 1
+CAMERA_FLUSH_STALE_FRAMES = True
+CAMERA_FLUSH_COUNT = 3
+HANDTRACKING_PROCESS_EVERY_N_FRAMES = 1
+ROBOT_COMMAND_DROP_OLD = True
+ROBOT_COMMAND_ASYNC_ONLY = True
+REAL_ROBOT_ASYNC_COMMAND_SENDER = True
+DIRECT_FEETECH_USE_SYNC_WRITE = True
+
+# Remove artificial smoothing/lag in live teleop. Alpha=1.0 means the newest
+# target replaces the old target immediately for standard EMA-style filters.
+JOINT_SMOOTH_ALPHA = 1.0
+ANGLE_SMOOTH_ALPHA = 1.0
+HAND_CMD_SMOOTHING = 1.0
+POSE_SMOOTH_ALPHA = 1.0
+HAND_STATE_SMOOTHING = 1.0
+HAND_TARGET_SMOOTHING_ALPHA_LOW_LATENCY = 1.0
+HAND_DEPTH_SMOOTHING_ALPHA_LOW_LATENCY = 1.0
+HAND_WRIST_SMOOTHING_ALPHA_LOW_LATENCY = 1.0
+HAND_DEPTH_SMOOTHING_ALPHA = 1.0
+HAND_DEPTH_AUTOCALIBRATE_EMA_ALPHA = 1.0
+
+# Make gesture transitions immediate rather than cooldown-limited.
+CLAP_COOLDOWN_S = 0.0
+SNAP_COOLDOWN_S = 0.0
+
+# IK responsiveness: solve more often, allow larger steps, and do not reuse old
+# IK solely because of rate limiting. If the implementation supports a timeout,
+# keep it finite so one bad solve cannot freeze the camera loop.
+IK_REUSE_LAST_ON_RATE_LIMIT = False
+IK_TIMEOUT_MS = 100
+IK_MAX_ITERS_LOW_LATENCY = 60
+IK_MAX_ITERS = 100
+IK_DLS_MAX_ITERS = 60
+IK_TELEOP_DLS_MAX_ITERS = 60
+IK_DLS_MAX_STEP_RAD = 3.141592653589793
+IK_TELEOP_DLS_MAX_STEP_RAD = 3.141592653589793
+IK_DLS_STEP_GAIN = 1.0
+IK_TELEOP_DLS_STEP_GAIN = 1.0
+IK_FAST_PREVIOUS_ONLY = False
+IK_FAST_INCLUDE_GEOMETRIC_SEED = True
+HAND_IK_ASYNC = True
+HAND_IK_FORCE_SOLVE_TARGET_DELTA_M = 0.0
+
+# Serial/runtime feedback reads can block command writes on a half-duplex bus.
+# Disable live feedback reads for minimum gesture-to-motion delay; calibration
+# and explicit diagnostics still use their own read settings above.
+MAIN_READ_ROBOT_FEEDBACK = False
+MAIN_ROBOT_FEEDBACK_HZ = 0.2
+REAL_ROBOT_WATCHDOG_FEEDBACK_HZ = 0.2
+REAL_ROBOT_ENABLE_TRACKING_WATCHDOG = False
+DIRECT_FEETECH_INTER_WRITE_DELAY_S = 0.0
+DIRECT_FEETECH_READ_TIMEOUT_S = 0.005
+REAL_ROBOT_VERBOSE_ACTION_LOG = False
+DEBUG_PERF_OVERLAY = False
+DEBUG_DISABLE_EXPENSIVE_OVERLAYS = True
+
+# If the optional outer PID is enabled later, remove its software correction
+# clamps/deadband. It remains disabled here unless robot_controller.py enables it.
+REAL_ROBOT_PID_ENABLED = False
+REAL_ROBOT_PID_MAX_CORRECTION_DEG = 360.0
+REAL_ROBOT_PID_DEADBAND_DEG = 0.0
+REAL_ROBOT_PID_INTEGRAL_LIMIT_DEG_S = 1000000.0
+REAL_ROBOT_PID_RESET_ON_TARGET_JUMP_DEG = 360.0
+
+# ---------------------------------------------------------------------------
+# Hand workspace learning and virtual wrist orientation
+# ---------------------------------------------------------------------------
+# This calibration complements, and never replaces, robot_joint_calibration.json.
+HAND_WORKSPACE_CALIBRATION_FILE = "calibration_data/hand_workspace_calibration.json"
+HAND_WORKSPACE_LEARNING_ENABLED = True
+HAND_WORKSPACE_MAPPING_METHOD = "rbf_residual"  # piecewise_affine | thin_plate_rbf | rbf_residual | knn_weighted
+HAND_WORKSPACE_FALLBACK_METHOD = "piecewise_affine"
+HAND_WORKSPACE_RESIDUAL_MAX_M = 0.030
+HAND_WORKSPACE_MIN_EXAMPLES_FOR_RBF = 8
+HAND_WORKSPACE_RBF_KERNEL = "thin_plate"  # thin_plate | multiquadric | gaussian
+HAND_WORKSPACE_RBF_SMOOTHING = 1e-4
+HAND_WORKSPACE_KNN_K = 4
+HAND_WORKSPACE_USE_JOINT_SEED_EXAMPLES = True
+HAND_WORKSPACE_DIRECT_JOINT_LEARNING_ENABLED = False
+HAND_WORKSPACE_CAPTURE_POSES = [
+    "center",
+    "max_left",
+    "max_right",
+    "max_up",
+    "max_down",
+    "max_near",
+    "max_far",
+    "top_left",
+    "top_right",
+    "bottom_left",
+    "bottom_right",
+]
+
+# Global arm-only speed scale. The gripper is intentionally excluded and stays
+# on its configured gripper velocity/acceleration/torque limits.
+REAL_ROBOT_ARM_SPEED_PERCENT = 90.0
+REAL_ROBOT_MIN_ARM_SPEED_PERCENT = 1.0
+REAL_ROBOT_APPLY_SPEED_PERCENT_TO_TORQUE = True
+REAL_ROBOT_SPEED_PERCENT_VERBOSE = True
+
+HAND_VIRTUAL_WRIST_ENABLED = True
+HAND_VIRTUAL_WRIST_USE_WORLD_LANDMARKS = True
+HAND_VIRTUAL_WRIST_ORIENTATION_SMOOTHING = 0.45
+HAND_VIRTUAL_WRIST_CONFIDENCE_MIN = 0.35
+HAND_VIRTUAL_WRIST_BLEND_TO_NEUTRAL_ON_LOW_CONF = True
+HAND_VIRTUAL_WRIST_MAX_ROLL_RAD = WRIST_ROLL_MAX
+HAND_VIRTUAL_WRIST_MAX_PITCH_RAD = WRIST_PITCH_MAX
+HAND_VIRTUAL_WRIST_MAX_YAW_RAD = WRIST_YAW_MAX
