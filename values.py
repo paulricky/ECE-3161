@@ -901,8 +901,10 @@ HAND_WORKSPACE_CAPTURE_POSES = [
 # Robot-side mirror workspace calibration. robot_calibrate.py records only robot
 # readback/FK poses; handtracking.py supplies live RGB/MediaPipe hand inputs.
 ROBOT_MIRROR_WORKSPACE_CALIBRATION_FILE = "calibration_data/robot_mirror_workspace_calibration.json"
+HAND_MIRROR_POSITION_CALIBRATION_FILE = "calibration_data/hand_mirror_position_calibration.json"
+ROBOT_MIRROR_PAIRED_CALIBRATION_ENABLED = True
 ROBOT_MIRROR_WORKSPACE_ENABLED = True
-ROBOT_MIRROR_MAPPING_METHOD = "axis_blend_knn_residual"  # axis_blend | axis_blend_knn_residual | axis_blend_rbf_residual
+ROBOT_MIRROR_MAPPING_METHOD = "paired_axis_blend_knn_residual"  # axis_blend | paired_axis_blend | paired_axis_blend_knn_residual | paired_axis_blend_rbf_residual
 ROBOT_MIRROR_FALLBACK_METHOD = "axis_blend"
 ROBOT_MIRROR_DEFAULT_RESIDUAL_METHOD = "knn"
 ROBOT_MIRROR_KNN_ENABLED = True
@@ -922,6 +924,8 @@ HAND_MIRROR_CENTER_X_NORM = 0.5
 HAND_MIRROR_CENTER_Y_NORM = 0.5
 HAND_MIRROR_CENTER_DEPTH_NORM = 0.5
 HAND_MIRROR_CLAMP_INPUTS = True
+# Paired hand mirror calibration maps camera hand extrema to matching robot pose names.
+# If the hand calibration file is missing, mapper falls back to ideal normalized extrema.
 ROBOT_MIRROR_REQUIRED_POSES = [
     "center",
     "mirror_left",

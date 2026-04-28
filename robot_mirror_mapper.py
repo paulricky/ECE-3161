@@ -20,7 +20,7 @@ JOINT_NAMES = (
     "wrist_pitch",
 )
 
-REQUIRED_POSES = (
+REQUIRED_POSES = tuple(getattr(val, "ROBOT_MIRROR_REQUIRED_POSES", (
     "center",
     "mirror_left",
     "mirror_right",
@@ -28,7 +28,7 @@ REQUIRED_POSES = (
     "mirror_down",
     "mirror_near",
     "mirror_far",
-)
+)))
 
 POSE_COORDS = {
     "center": (0.0, 0.0, 0.0),
@@ -89,20 +89,31 @@ def _norm3(x) -> Optional[np.ndarray]:
 
 
 class RobotMirrorWorkspaceMapper:
-    """Map normalized hand mirror coordinates to robot FK workspace targets.
+    """Map live hand mirror coordinates to robot FK workspace targets.
 
-    The calibration stores robot extrema only. Saved joint poses are returned
-    only as optional IK seeds; runtime never commands them directly.
+    Two calibration files can be used together:
+    - robot_mirror_workspace_calibration.json: robot FK extrema and joint seeds.
+    - hand_mirror_position_calibration.json: matching hand positions by pose name.
+
+    If the hand calibration is missing, ideal normalized coordinates are used.
+    Saved robot joints are returned only as IK seeds; runtime does not directly
+    command learned/saved joint positions.
     """
 
-    def __init__(self, path: Optional[str] = None):
+    def __init__(self, path: Optional[str] = None, hand_path: Optional[str] = None):
         self.path = _resolve_path(path or getattr(val, "ROBOT_MIRROR_WORKSPACE_CALIBRATION_FILE", "calibration_data/robot_mirror_workspace_calibration.json"))
+        self.hand_path = _resolve_path(hand_path or getattr(val, "HAND_MIRROR_POSITION_CALIBRATION_FILE", "calibration_data/hand_mirror_position_calibration.json"))
         self.loaded = False
+        self.hand_loaded = False
         self.error = ""
+        self.hand_error = ""
         self.data: dict = {}
+        self.hand_data: dict = {}
         self.poses: dict = {}
+        self.hand_poses: dict = {}
         self.pose_xyz: dict[str, np.ndarray] = {}
         self.pose_joints: dict[str, Optional[dict[str, float]]] = {}
+        self.hand_pose_input: dict[str, np.ndarray] = {}
         self.samples_x = np.zeros((0, 3), dtype=np.float64)
         self.residual_y = np.zeros((0, 3), dtype=np.float64)
         self.sample_names: list[str] = []
@@ -110,28 +121,36 @@ class RobotMirrorWorkspaceMapper:
         self.rbf_ready = False
         self.xyz_min = np.array([-np.inf, -np.inf, -np.inf], dtype=np.float64)
         self.xyz_max = np.array([np.inf, np.inf, np.inf], dtype=np.float64)
-        self.load(self.path)
+        self.load(self.path, self.hand_path)
 
     def reset(self) -> None:
-        self.__init__(str(self.path))
+        self.__init__(str(self.path), str(self.hand_path))
 
     def is_loaded(self) -> bool:
         return bool(self.loaded)
 
-    def load(self, path: Optional[str] = None) -> bool:
+    def load(self, path: Optional[str] = None, hand_path: Optional[str] = None) -> bool:
         if path is not None:
             self.path = _resolve_path(str(path))
+        if hand_path is not None:
+            self.hand_path = _resolve_path(str(hand_path))
         self.loaded = False
+        self.hand_loaded = False
         self.error = ""
+        self.hand_error = ""
         self.data = {}
+        self.hand_data = {}
         self.poses = {}
+        self.hand_poses = {}
         self.pose_xyz = {}
         self.pose_joints = {}
+        self.hand_pose_input = {}
         self.samples_x = np.zeros((0, 3), dtype=np.float64)
         self.residual_y = np.zeros((0, 3), dtype=np.float64)
         self.sample_names = []
         self.rbf_weights = None
         self.rbf_ready = False
+
         if not self.path.exists():
             self.error = "missing"
             return False
@@ -161,6 +180,8 @@ class RobotMirrorWorkspaceMapper:
         if missing:
             self.error = "missing_required:" + ",".join(missing)
             return False
+
+        self._load_hand_calibration(self.hand_path)
         self._build_sample_residuals()
         self._fit_rbf()
         all_xyz = np.stack(list(self.pose_xyz.values()), axis=0)
@@ -169,6 +190,51 @@ class RobotMirrorWorkspaceMapper:
         self.xyz_max = np.max(all_xyz, axis=0) + margin
         self.data = data
         self.loaded = True
+        return True
+
+    def _load_hand_calibration(self, hand_path: Path) -> bool:
+        if not bool(getattr(val, "ROBOT_MIRROR_PAIRED_CALIBRATION_ENABLED", True)):
+            self.hand_error = "disabled"
+            return False
+        if not hand_path.exists():
+            self.hand_error = "missing"
+            return False
+        try:
+            with hand_path.open("r", encoding="utf-8") as f:
+                hand_data = json.load(f)
+        except Exception as exc:
+            self.hand_error = f"load_failed:{exc}"
+            return False
+        if not isinstance(hand_data, dict) or hand_data.get("calibration_type") not in {
+            "hand_mirror_position_extrema",
+            "hand_to_robot_workspace",
+        }:
+            self.hand_error = "bad_schema"
+            return False
+        poses = hand_data.get("poses", {})
+        if not isinstance(poses, dict):
+            self.hand_error = "poses_missing"
+            return False
+        for name, item in poses.items():
+            if not isinstance(item, dict):
+                continue
+            hand = item.get("hand", item)
+            if not isinstance(hand, dict):
+                continue
+            x = _finite_float(hand.get("x_norm"))
+            y = _finite_float(hand.get("y_norm"))
+            d = _finite_float(hand.get("depth_norm"))
+            if x is None or y is None or d is None:
+                continue
+            self.hand_poses[str(name)] = item
+            self.hand_pose_input[str(name)] = np.array([_sat01(x), _sat01(y), _sat01(d)], dtype=np.float64)
+        required_hand = [name for name in REQUIRED_POSES if name not in self.hand_pose_input]
+        if required_hand:
+            self.hand_error = "missing_required:" + ",".join(required_hand)
+            return False
+        self.hand_data = hand_data
+        self.hand_loaded = True
+        self.hand_error = ""
         return True
 
     def _parse_joints(self, raw) -> Optional[dict[str, float]]:
@@ -186,7 +252,53 @@ class RobotMirrorWorkspaceMapper:
             out[name] = float(f)
         return out
 
+    def _scale_axis_from_hand(self, value: float, center: float, negative: float, positive: float) -> float:
+        value = _sat01(value)
+        center = _sat01(center)
+        negative = _sat01(negative)
+        positive = _sat01(positive)
+        delta = value - center
+        pos_span = positive - center
+        neg_span = negative - center
+        candidates = []
+        if abs(pos_span) > 1e-6 and delta * pos_span >= -1e-12:
+            candidates.append(delta / pos_span)
+        if abs(neg_span) > 1e-6 and delta * neg_span >= -1e-12:
+            candidates.append(-delta / neg_span)
+        if candidates:
+            # Prefer the candidate with lower magnitude when both axes are noisy.
+            return float(_clip(min(candidates, key=lambda z: abs(z)), -1.0, 1.0))
+        # Outside the calibrated segment: extrapolate toward the closer span.
+        spans = [(abs(pos_span), pos_span, 1.0), (abs(neg_span), neg_span, -1.0)]
+        spans = [s for s in spans if s[0] > 1e-6]
+        if not spans:
+            return 0.0
+        _mag, span, sign = min(spans, key=lambda s: abs(delta - s[1]))
+        if sign > 0:
+            return float(_clip(delta / span, -1.0, 1.0))
+        return float(_clip(-delta / span, -1.0, 1.0))
+
+    def _centered_inputs_from_hand_calibration(self, horizontal_norm, vertical_norm, depth_norm) -> np.ndarray:
+        hp = self.hand_pose_input
+        c = hp["center"]
+        h = self._scale_axis_from_hand(horizontal_norm, c[0], hp["mirror_left"][0], hp["mirror_right"][0])
+        v = self._scale_axis_from_hand(vertical_norm, c[1], hp["mirror_down"][1], hp["mirror_up"][1])
+        d = self._scale_axis_from_hand(depth_norm, c[2], hp["mirror_far"][2], hp["mirror_near"][2])
+        x = np.array([h, v, d], dtype=np.float64)
+        if bool(getattr(val, "HAND_MIRROR_APPLY_FLIPS_TO_PAIRED_INPUTS", False)):
+            if bool(getattr(val, "HAND_MIRROR_HORIZONTAL_FLIP", False)):
+                x[0] = -x[0]
+            if bool(getattr(val, "HAND_MIRROR_VERTICAL_FLIP", False)):
+                x[1] = -x[1]
+            if bool(getattr(val, "HAND_MIRROR_DEPTH_FLIP", False)):
+                x[2] = -x[2]
+        if bool(getattr(val, "HAND_MIRROR_CLAMP_INPUTS", True)):
+            x = np.clip(x, -1.0, 1.0)
+        return x
+
     def _centered_inputs(self, horizontal_norm, vertical_norm, depth_norm) -> np.ndarray:
+        if self.hand_loaded:
+            return self._centered_inputs_from_hand_calibration(horizontal_norm, vertical_norm, depth_norm)
         h = 2.0 * (_sat01(horizontal_norm) - float(getattr(val, "HAND_MIRROR_CENTER_X_NORM", 0.5)))
         v = 2.0 * (_sat01(vertical_norm) - float(getattr(val, "HAND_MIRROR_CENTER_Y_NORM", 0.5)))
         d = 2.0 * (_sat01(depth_norm) - float(getattr(val, "HAND_MIRROR_CENTER_DEPTH_NORM", 0.5)))
@@ -211,14 +323,23 @@ class RobotMirrorWorkspaceMapper:
         out += abs(d) * ((self.pose_xyz["mirror_far"] if d < 0.0 else self.pose_xyz["mirror_near"]) - center)
         return self._clamp_xyz(out)
 
+    def _pose_centered_coordinate(self, name: str) -> Optional[np.ndarray]:
+        if self.hand_loaded and name in self.hand_pose_input:
+            raw = self.hand_pose_input[name]
+            return self._centered_inputs_from_hand_calibration(raw[0], raw[1], raw[2])
+        coord = POSE_COORDS.get(name)
+        if coord is None:
+            return None
+        return np.asarray(coord, dtype=np.float64).reshape(3)
+
     def _build_sample_residuals(self) -> None:
         xs = []
         residuals = []
         names = []
-        for name, coord in POSE_COORDS.items():
-            if name not in self.pose_xyz:
+        for name in self.pose_xyz:
+            x = self._pose_centered_coordinate(name)
+            if x is None:
                 continue
-            x = np.asarray(coord, dtype=np.float64).reshape(3)
             base = self._axis_blend_from_centered(x)
             xs.append(x)
             residuals.append(np.asarray(self.pose_xyz[name], dtype=np.float64).reshape(3) - base)
@@ -312,29 +433,29 @@ class RobotMirrorWorkspaceMapper:
             }
         x = self._centered_inputs(horizontal_norm, vertical_norm, depth_norm)
         base = self._axis_blend_from_centered(x)
-        method = str(getattr(val, "ROBOT_MIRROR_MAPPING_METHOD", "axis_blend_knn_residual")).strip().lower()
+        method = str(getattr(val, "ROBOT_MIRROR_MAPPING_METHOD", "paired_axis_blend_knn_residual")).strip().lower()
         residual = np.zeros(3, dtype=np.float64)
         nearest = self._nearest_pose_name(x)
         residual_source = "none"
-        used_method = "axis_blend"
-        if method in {"axis_blend_knn_residual", "knn_residual"}:
+        used_method = "paired_axis_blend" if self.hand_loaded else "axis_blend"
+        if method in {"axis_blend_knn_residual", "paired_axis_blend_knn_residual", "knn_residual"}:
             residual, nearest = self._knn_residual(x)
             residual_source = "knn_residual" if nearest is not None else "none"
-            used_method = "axis_blend_knn_residual" if nearest is not None else "axis_blend"
-        elif method in {"axis_blend_rbf_residual", "rbf_residual"}:
+            used_method = ("paired_axis_blend_knn_residual" if self.hand_loaded else "axis_blend_knn_residual") if nearest is not None else used_method
+        elif method in {"axis_blend_rbf_residual", "paired_axis_blend_rbf_residual", "rbf_residual"}:
             rbf = self._rbf_residual(x)
             if rbf is not None:
                 residual = rbf
                 residual_source = "bounded_rbf_residual"
-                used_method = "axis_blend_rbf_residual"
+                used_method = "paired_axis_blend_rbf_residual" if self.hand_loaded else "axis_blend_rbf_residual"
             else:
                 residual, nearest = self._knn_residual(x)
                 residual_source = "knn_residual_fallback"
-                used_method = "axis_blend_knn_residual"
+                used_method = "paired_axis_blend_knn_residual" if self.hand_loaded else "axis_blend_knn_residual"
         residual = self._clamp_residual(residual)
         final = self._clamp_xyz(base + residual)
         debug = {
-            "mirror_mapping_source": "robot_mirror_workspace_calibration",
+            "mirror_mapping_source": "paired_robot_hand_mirror_calibration" if self.hand_loaded else "robot_mirror_workspace_calibration",
             "mirror_method": used_method,
             "mirror_residual_source": residual_source,
             "mirror_horizontal_norm": float(_sat01(horizontal_norm)),
@@ -348,6 +469,9 @@ class RobotMirrorWorkspaceMapper:
             "target_xyz_residual_m": residual.tolist(),
             "target_xyz_final_m": final.tolist(),
             "robot_mirror_calibration_loaded": True,
+            "paired_hand_calibration_loaded": bool(self.hand_loaded),
+            "hand_mirror_calibration_path": str(self.hand_path),
+            "hand_mirror_calibration_error": self.hand_error,
             "robot_mirror_calibration_path": str(self.path),
             "robot_mirror_direct_joint_learning_enabled": bool(getattr(val, "ROBOT_MIRROR_DIRECT_JOINT_LEARNING_ENABLED", False)),
         }
@@ -365,8 +489,11 @@ class RobotMirrorWorkspaceMapper:
         if not self.loaded:
             return None, {"ik_seed_source": "none"}
         x = self._centered_inputs(horizontal_norm, vertical_norm, depth_norm)
-        ordered = sorted(POSE_COORDS.items(), key=lambda kv: float(np.linalg.norm(np.asarray(kv[1], dtype=np.float64) - x)))
-        for name, _coord in ordered:
+        if self.samples_x.size == 0:
+            return None, {"ik_seed_source": "none"}
+        order = np.argsort(np.linalg.norm(self.samples_x - x.reshape(1, 3), axis=1))
+        for idx in order:
+            name = self.sample_names[int(idx)]
             seed = self.pose_joints.get(name)
             if isinstance(seed, dict):
                 return dict(seed), {"ik_seed_source": "robot_mirror_nearest_pose", "mirror_nearest_pose": name}

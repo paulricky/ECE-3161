@@ -1,0 +1,1328 @@
+{
+  "calibration_type": "hand_mirror_position_extrema",
+  "created_at": "2026-04-28T17:31:38-0400",
+  "source": "camera_calibrate.py",
+  "camera": {
+    "width": 640,
+    "height": 480,
+    "index": 0
+  },
+  "required_poses": [
+    "center",
+    "mirror_left",
+    "mirror_right",
+    "mirror_up",
+    "mirror_down",
+    "mirror_near",
+    "mirror_far"
+  ],
+  "optional_poses": [
+    "mirror_up_left",
+    "mirror_up_right",
+    "mirror_down_left",
+    "mirror_down_right",
+    "mirror_near_left",
+    "mirror_near_right",
+    "mirror_far_left",
+    "mirror_far_right",
+    "mirror_near_up",
+    "mirror_near_down",
+    "mirror_far_up",
+    "mirror_far_down",
+    "mirror_near_up_left",
+    "mirror_near_up_right",
+    "mirror_far_down_left",
+    "mirror_far_down_right"
+  ],
+  "poses": {
+    "center": {
+      "hand": {
+        "x_norm": 0.3530679173767567,
+        "y_norm": 0.5961180534213781,
+        "depth_norm": 0.687598360845658,
+        "hand_size_norm": 0.3949238539460139,
+        "wrist_rpy_rad": [
+          -3.088486434632694,
+          1.2637389635399052,
+          0.30705736325499117
+        ]
+      },
+      "std": {
+        "bbox_size_norm_std": 0.006121642527488986,
+        "depth_confidence_std": 1.1102230246251565e-16,
+        "depth_m_std": 0.005470414921571239,
+        "depth_norm_std": 0.010940829843142484,
+        "hand_size_norm_std": 0.005085045599297137,
+        "palm_height_norm_std": 0.005085045599297137,
+        "palm_width_norm_std": 0.0010876363677989921,
+        "thumb_index_span_norm_std": 0.00960384778643371,
+        "wrist_to_middle_mcp_norm_std": 0.005085045599297137,
+        "x_norm_std": 0.007142417307057778,
+        "y_norm_std": 0.00921021303390642
+      },
+      "metrics": {
+        "bbox_size_norm": 0.5618110407442672,
+        "bbox_size_norm_std": 0.006121642527488986,
+        "depth_confidence": 0.8000000000000002,
+        "depth_confidence_std": 1.1102230246251565e-16,
+        "depth_m": 0.356200819577171,
+        "depth_m_std": 0.005470414921571239,
+        "depth_norm": 0.687598360845658,
+        "depth_norm_std": 0.010940829843142484,
+        "hand_size_norm": 0.3949238539460139,
+        "hand_size_norm_std": 0.005085045599297137,
+        "palm_height_norm": 0.3949238539460139,
+        "palm_height_norm_std": 0.005085045599297137,
+        "palm_width_norm": 0.19039399087137038,
+        "palm_width_norm_std": 0.0010876363677989921,
+        "thumb_index_span_norm": 0.42134644496455,
+        "thumb_index_span_norm_std": 0.00960384778643371,
+        "wrist_to_middle_mcp_norm": 0.3949238539460139,
+        "wrist_to_middle_mcp_norm_std": 0.005085045599297137,
+        "x_norm": 0.3530679173767567,
+        "x_norm_std": 0.007142417307057778,
+        "y_norm": 0.5961180534213781,
+        "y_norm_std": 0.00921021303390642,
+        "wrist_rpy_rad": [
+          -3.088486434632694,
+          1.2637389635399052,
+          0.30705736325499117
+        ]
+      },
+      "samples": 20
+    },
+    "mirror_left": {
+      "hand": {
+        "x_norm": 0.9154682070016861,
+        "y_norm": 0.576557631790638,
+        "depth_norm": 0.5961842029350798,
+        "hand_size_norm": 0.2651789750516491,
+        "wrist_rpy_rad": [
+          -3.012839315100881,
+          1.3614487473307006,
+          0.20934757946419563
+        ]
+      },
+      "std": {
+        "bbox_size_norm_std": 0.0059190470492940074,
+        "depth_confidence_std": 0.002412476275651156,
+        "depth_m_std": 5.551115123125783e-17,
+        "depth_norm_std": 1.1102230246251565e-16,
+        "hand_size_norm_std": 0.002412476275651155,
+        "palm_height_norm_std": 0.002412476275651155,
+        "palm_width_norm_std": 0.0027222713827228834,
+        "thumb_index_span_norm_std": 0.017388637421989175,
+        "wrist_to_middle_mcp_norm_std": 0.002412476275651155,
+        "x_norm_std": 0.004077190579680444,
+        "y_norm_std": 0.0022203636793241043
+      },
+      "metrics": {
+        "bbox_size_norm": 0.3122582211704637,
+        "bbox_size_norm_std": 0.0059190470492940074,
+        "depth_confidence": 0.7151789750516492,
+        "depth_confidence_std": 0.002412476275651156,
+        "depth_m": 0.4019078985324601,
+        "depth_m_std": 5.551115123125783e-17,
+        "depth_norm": 0.5961842029350798,
+        "depth_norm_std": 1.1102230246251565e-16,
+        "hand_size_norm": 0.2651789750516491,
+        "hand_size_norm_std": 0.002412476275651155,
+        "palm_height_norm": 0.2651789750516491,
+        "palm_height_norm_std": 0.002412476275651155,
+        "palm_width_norm": 0.10664807248297495,
+        "palm_width_norm_std": 0.0027222713827228834,
+        "thumb_index_span_norm": 0.18367750341655992,
+        "thumb_index_span_norm_std": 0.017388637421989175,
+        "wrist_to_middle_mcp_norm": 0.2651789750516491,
+        "wrist_to_middle_mcp_norm_std": 0.002412476275651155,
+        "x_norm": 0.9154682070016861,
+        "x_norm_std": 0.004077190579680444,
+        "y_norm": 0.576557631790638,
+        "y_norm_std": 0.0022203636793241043,
+        "wrist_rpy_rad": [
+          -3.012839315100881,
+          1.3614487473307006,
+          0.20934757946419563
+        ]
+      },
+      "samples": 20
+    },
+    "mirror_right": {
+      "hand": {
+        "x_norm": 0.06272775041870773,
+        "y_norm": 0.5268000453710556,
+        "depth_norm": 0.5961842029350798,
+        "hand_size_norm": 0.1816996478240856,
+        "wrist_rpy_rad": [
+          3.040003410972619,
+          1.274563792626688,
+          0.2962325341682087
+        ]
+      },
+      "std": {
+        "bbox_size_norm_std": 0.009258796664805313,
+        "depth_confidence_std": 0.006823029582477082,
+        "depth_m_std": 5.551115123125783e-17,
+        "depth_norm_std": 1.1102230246251565e-16,
+        "hand_size_norm_std": 0.006823029582477073,
+        "palm_height_norm_std": 0.006823029582477073,
+        "palm_width_norm_std": 0.003923912043714316,
+        "thumb_index_span_norm_std": 0.0045036292961084246,
+        "wrist_to_middle_mcp_norm_std": 0.006823029582477073,
+        "x_norm_std": 0.00921944502332687,
+        "y_norm_std": 0.006765693807858226
+      },
+      "metrics": {
+        "bbox_size_norm": 0.23664736232132838,
+        "bbox_size_norm_std": 0.009258796664805313,
+        "depth_confidence": 0.6316996478240855,
+        "depth_confidence_std": 0.006823029582477082,
+        "depth_m": 0.4019078985324601,
+        "depth_m_std": 5.551115123125783e-17,
+        "depth_norm": 0.5961842029350798,
+        "depth_norm_std": 1.1102230246251565e-16,
+        "hand_size_norm": 0.1816996478240856,
+        "hand_size_norm_std": 0.006823029582477073,
+        "palm_height_norm": 0.1816996478240856,
+        "palm_height_norm_std": 0.006823029582477073,
+        "palm_width_norm": 0.09088061052202345,
+        "palm_width_norm_std": 0.003923912043714316,
+        "thumb_index_span_norm": 0.1596731868061653,
+        "thumb_index_span_norm_std": 0.0045036292961084246,
+        "wrist_to_middle_mcp_norm": 0.1816996478240856,
+        "wrist_to_middle_mcp_norm_std": 0.006823029582477073,
+        "x_norm": 0.06272775041870773,
+        "x_norm_std": 0.00921944502332687,
+        "y_norm": 0.5268000453710556,
+        "y_norm_std": 0.006765693807858226,
+        "wrist_rpy_rad": [
+          3.040003410972619,
+          1.274563792626688,
+          0.2962325341682087
+        ]
+      },
+      "samples": 20
+    },
+    "mirror_up": {
+      "hand": {
+        "x_norm": 0.44012841396033764,
+        "y_norm": 0.21024604197591543,
+        "depth_norm": 0.5961842029350798,
+        "hand_size_norm": 0.2015471798811193,
+        "wrist_rpy_rad": [
+          -2.792070438267978,
+          1.1171946701539996,
+          0.45360165664089724
+        ]
+      },
+      "std": {
+        "bbox_size_norm_std": 0.00585325866918021,
+        "depth_confidence_std": 0.0012176942962298532,
+        "depth_m_std": 5.551115123125783e-17,
+        "depth_norm_std": 1.1102230246251565e-16,
+        "hand_size_norm_std": 0.0012176942962298391,
+        "palm_height_norm_std": 0.0012176942962298391,
+        "palm_width_norm_std": 0.0019792995478162064,
+        "thumb_index_span_norm_std": 0.021471036370509136,
+        "wrist_to_middle_mcp_norm_std": 0.0012176942962298391,
+        "x_norm_std": 0.005709987994233359,
+        "y_norm_std": 0.004130602855798364
+      },
+      "metrics": {
+        "bbox_size_norm": 0.2553934834588819,
+        "bbox_size_norm_std": 0.00585325866918021,
+        "depth_confidence": 0.6515471798811192,
+        "depth_confidence_std": 0.0012176942962298532,
+        "depth_m": 0.4019078985324601,
+        "depth_m_std": 5.551115123125783e-17,
+        "depth_norm": 0.5961842029350798,
+        "depth_norm_std": 1.1102230246251565e-16,
+        "hand_size_norm": 0.2015471798811193,
+        "hand_size_norm_std": 0.0012176942962298391,
+        "palm_height_norm": 0.2015471798811193,
+        "palm_height_norm_std": 0.0012176942962298391,
+        "palm_width_norm": 0.10570846385850263,
+        "palm_width_norm_std": 0.0019792995478162064,
+        "thumb_index_span_norm": 0.2372469221929215,
+        "thumb_index_span_norm_std": 0.021471036370509136,
+        "wrist_to_middle_mcp_norm": 0.2015471798811193,
+        "wrist_to_middle_mcp_norm_std": 0.0012176942962298391,
+        "x_norm": 0.44012841396033764,
+        "x_norm_std": 0.005709987994233359,
+        "y_norm": 0.21024604197591543,
+        "y_norm_std": 0.004130602855798364,
+        "wrist_rpy_rad": [
+          -2.792070438267978,
+          1.1171946701539996,
+          0.45360165664089724
+        ]
+      },
+      "samples": 20
+    },
+    "mirror_down": {
+      "hand": {
+        "x_norm": 0.3877131536602974,
+        "y_norm": 0.8264743573963642,
+        "depth_norm": 0.5961842029350798,
+        "hand_size_norm": 0.21904148543030014,
+        "wrist_rpy_rad": [
+          3.0731398575388944,
+          1.3495301839971305,
+          0.22126614279776596
+        ]
+      },
+      "std": {
+        "bbox_size_norm_std": 0.0009409644225631518,
+        "depth_confidence_std": 0.0005694555213839094,
+        "depth_m_std": 5.551115123125783e-17,
+        "depth_norm_std": 1.1102230246251565e-16,
+        "hand_size_norm_std": 0.000569455521383906,
+        "palm_height_norm_std": 0.000569455521383906,
+        "palm_width_norm_std": 0.0007102571417205037,
+        "thumb_index_span_norm_std": 0.0022432617445801452,
+        "wrist_to_middle_mcp_norm_std": 0.000569455521383906,
+        "x_norm_std": 0.0034900356524591803,
+        "y_norm_std": 0.0026356189804116643
+      },
+      "metrics": {
+        "bbox_size_norm": 0.27853428492123605,
+        "bbox_size_norm_std": 0.0009409644225631518,
+        "depth_confidence": 0.6690414854303002,
+        "depth_confidence_std": 0.0005694555213839094,
+        "depth_m": 0.4019078985324601,
+        "depth_m_std": 5.551115123125783e-17,
+        "depth_norm": 0.5961842029350798,
+        "depth_norm_std": 1.1102230246251565e-16,
+        "hand_size_norm": 0.21904148543030014,
+        "hand_size_norm_std": 0.000569455521383906,
+        "palm_height_norm": 0.21904148543030014,
+        "palm_height_norm_std": 0.000569455521383906,
+        "palm_width_norm": 0.09818863802793427,
+        "palm_width_norm_std": 0.0007102571417205037,
+        "thumb_index_span_norm": 0.180805050888217,
+        "thumb_index_span_norm_std": 0.0022432617445801452,
+        "wrist_to_middle_mcp_norm": 0.21904148543030014,
+        "wrist_to_middle_mcp_norm_std": 0.000569455521383906,
+        "x_norm": 0.3877131536602974,
+        "x_norm_std": 0.0034900356524591803,
+        "y_norm": 0.8264743573963642,
+        "y_norm_std": 0.0026356189804116643,
+        "wrist_rpy_rad": [
+          3.0731398575388944,
+          1.3495301839971305,
+          0.22126614279776596
+        ]
+      },
+      "samples": 20
+    },
+    "mirror_near": {
+      "hand": {
+        "x_norm": 0.3690367456525564,
+        "y_norm": 0.5832112722098828,
+        "depth_norm": 0.9974146913001064,
+        "hand_size_norm": 0.5620800132737459,
+        "wrist_rpy_rad": [
+          3.073407165764997,
+          1.3708070630574232,
+          0.19998926373747325
+        ]
+      },
+      "std": {
+        "bbox_size_norm_std": 0.007186022609904569,
+        "depth_confidence_std": 1.1102230246251565e-16,
+        "depth_m_std": 0.001116318797459676,
+        "depth_norm_std": 0.002232637594919356,
+        "hand_size_norm_std": 0.005456411093860988,
+        "palm_height_norm_std": 0.005456411093860988,
+        "palm_width_norm_std": 0.0025551565236888243,
+        "thumb_index_span_norm_std": 0.010436133199515363,
+        "wrist_to_middle_mcp_norm_std": 0.005456411093860988,
+        "x_norm_std": 0.00473434583992884,
+        "y_norm_std": 0.004236434824293026
+      },
+      "metrics": {
+        "bbox_size_norm": 0.8814497432547868,
+        "bbox_size_norm_std": 0.007186022609904569,
+        "depth_confidence": 0.8000000000000002,
+        "depth_confidence_std": 1.1102230246251565e-16,
+        "depth_m": 0.20129265434994684,
+        "depth_m_std": 0.001116318797459676,
+        "depth_norm": 0.9974146913001064,
+        "depth_norm_std": 0.002232637594919356,
+        "hand_size_norm": 0.5620800132737459,
+        "hand_size_norm_std": 0.005456411093860988,
+        "palm_height_norm": 0.5620800132737459,
+        "palm_height_norm_std": 0.005456411093860988,
+        "palm_width_norm": 0.2775111322781064,
+        "palm_width_norm_std": 0.0025551565236888243,
+        "thumb_index_span_norm": 0.7539406087270416,
+        "thumb_index_span_norm_std": 0.010436133199515363,
+        "wrist_to_middle_mcp_norm": 0.5620800132737459,
+        "wrist_to_middle_mcp_norm_std": 0.005456411093860988,
+        "x_norm": 0.3690367456525564,
+        "x_norm_std": 0.00473434583992884,
+        "y_norm": 0.5832112722098828,
+        "y_norm_std": 0.004236434824293026,
+        "wrist_rpy_rad": [
+          3.073407165764997,
+          1.3708070630574232,
+          0.19998926373747325
+        ]
+      },
+      "samples": 20
+    },
+    "mirror_far": {
+      "hand": {
+        "x_norm": 0.3499563530087471,
+        "y_norm": 0.6667615018785,
+        "depth_norm": 0.92668571094069,
+        "hand_size_norm": 0.15668797427017295,
+        "wrist_rpy_rad": [
+          2.9873590342110825,
+          1.4049834887807537,
+          0.16581283801414265
+        ]
+      },
+      "std": {
+        "bbox_size_norm_std": 0.004444236370826692,
+        "depth_confidence_std": 0.0032367564844856026,
+        "depth_m_std": 0.0,
+        "depth_norm_std": 2.220446049250313e-16,
+        "hand_size_norm_std": 0.003236756484485603,
+        "palm_height_norm_std": 0.003236756484485603,
+        "palm_width_norm_std": 0.0013790357670840684,
+        "thumb_index_span_norm_std": 0.003689078846353126,
+        "wrist_to_middle_mcp_norm_std": 0.003236756484485603,
+        "x_norm_std": 0.0029799792806342053,
+        "y_norm_std": 0.0028549515106718985
+      },
+      "metrics": {
+        "bbox_size_norm": 0.2289300971816572,
+        "bbox_size_norm_std": 0.004444236370826692,
+        "depth_confidence": 0.6066879742701728,
+        "depth_confidence_std": 0.0032367564844856026,
+        "depth_m": 0.2366571445296549,
+        "depth_m_std": 0.0,
+        "depth_norm": 0.92668571094069,
+        "depth_norm_std": 2.220446049250313e-16,
+        "hand_size_norm": 0.15668797427017295,
+        "hand_size_norm_std": 0.003236756484485603,
+        "palm_height_norm": 0.15668797427017295,
+        "palm_height_norm_std": 0.003236756484485603,
+        "palm_width_norm": 0.07877330661166518,
+        "palm_width_norm_std": 0.0013790357670840684,
+        "thumb_index_span_norm": 0.1439644648080331,
+        "thumb_index_span_norm_std": 0.003689078846353126,
+        "wrist_to_middle_mcp_norm": 0.15668797427017295,
+        "wrist_to_middle_mcp_norm_std": 0.003236756484485603,
+        "x_norm": 0.3499563530087471,
+        "x_norm_std": 0.0029799792806342053,
+        "y_norm": 0.6667615018785,
+        "y_norm_std": 0.0028549515106718985,
+        "wrist_rpy_rad": [
+          2.9873590342110825,
+          1.4049834887807537,
+          0.16581283801414265
+        ]
+      },
+      "samples": 20
+    },
+    "mirror_up_left": {
+      "hand": {
+        "x_norm": 0.8726416327059269,
+        "y_norm": 0.17198747247457505,
+        "depth_norm": 0.92668571094069,
+        "hand_size_norm": 0.236889592665615,
+        "wrist_rpy_rad": [
+          -2.9062217319016224,
+          1.2583648047666518,
+          0.3124315220282448
+        ]
+      },
+      "std": {
+        "bbox_size_norm_std": 0.005084419744242286,
+        "depth_confidence_std": 0.0038451820717345184,
+        "depth_m_std": 0.0,
+        "depth_norm_std": 2.220446049250313e-16,
+        "hand_size_norm_std": 0.003845182071734523,
+        "palm_height_norm_std": 0.003845182071734523,
+        "palm_width_norm_std": 0.0020519013690258017,
+        "thumb_index_span_norm_std": 0.006846507093262551,
+        "wrist_to_middle_mcp_norm_std": 0.003845182071734523,
+        "x_norm_std": 0.007134354102407887,
+        "y_norm_std": 0.006148141409437885
+      },
+      "metrics": {
+        "bbox_size_norm": 0.2726461042910668,
+        "bbox_size_norm_std": 0.005084419744242286,
+        "depth_confidence": 0.6868895926656149,
+        "depth_confidence_std": 0.0038451820717345184,
+        "depth_m": 0.2366571445296549,
+        "depth_m_std": 0.0,
+        "depth_norm": 0.92668571094069,
+        "depth_norm_std": 2.220446049250313e-16,
+        "hand_size_norm": 0.236889592665615,
+        "hand_size_norm_std": 0.003845182071734523,
+        "palm_height_norm": 0.236889592665615,
+        "palm_height_norm_std": 0.003845182071734523,
+        "palm_width_norm": 0.11529486059838005,
+        "palm_width_norm_std": 0.0020519013690258017,
+        "thumb_index_span_norm": 0.3100827310594932,
+        "thumb_index_span_norm_std": 0.006846507093262551,
+        "wrist_to_middle_mcp_norm": 0.236889592665615,
+        "wrist_to_middle_mcp_norm_std": 0.003845182071734523,
+        "x_norm": 0.8726416327059269,
+        "x_norm_std": 0.007134354102407887,
+        "y_norm": 0.17198747247457505,
+        "y_norm_std": 0.006148141409437885,
+        "wrist_rpy_rad": [
+          -2.9062217319016224,
+          1.2583648047666518,
+          0.3124315220282448
+        ]
+      },
+      "samples": 20
+    },
+    "mirror_up_right": {
+      "hand": {
+        "x_norm": 0.08569770725443959,
+        "y_norm": 0.24735559690743686,
+        "depth_norm": 0.92668571094069,
+        "hand_size_norm": 0.20830440123535116,
+        "wrist_rpy_rad": [
+          -2.9103742051863044,
+          1.1439342036114255,
+          0.42686212318347144
+        ]
+      },
+      "std": {
+        "bbox_size_norm_std": 0.003999189457329089,
+        "depth_confidence_std": 0.003653454764634848,
+        "depth_m_std": 0.0,
+        "depth_norm_std": 2.220446049250313e-16,
+        "hand_size_norm_std": 0.0036534547646348407,
+        "palm_height_norm_std": 0.0036534547646348407,
+        "palm_width_norm_std": 0.0017190563153967398,
+        "thumb_index_span_norm_std": 0.004487667972223269,
+        "wrist_to_middle_mcp_norm_std": 0.0036534547646348407,
+        "x_norm_std": 0.0034457538906079855,
+        "y_norm_std": 0.005785320878796994
+      },
+      "metrics": {
+        "bbox_size_norm": 0.2993406099096644,
+        "bbox_size_norm_std": 0.003999189457329089,
+        "depth_confidence": 0.6583044012353512,
+        "depth_confidence_std": 0.003653454764634848,
+        "depth_m": 0.2366571445296549,
+        "depth_m_std": 0.0,
+        "depth_norm": 0.92668571094069,
+        "depth_norm_std": 2.220446049250313e-16,
+        "hand_size_norm": 0.20830440123535116,
+        "hand_size_norm_std": 0.0036534547646348407,
+        "palm_height_norm": 0.20830440123535116,
+        "palm_height_norm_std": 0.0036534547646348407,
+        "palm_width_norm": 0.11349784672709703,
+        "palm_width_norm_std": 0.0017190563153967398,
+        "thumb_index_span_norm": 0.24147578512893886,
+        "thumb_index_span_norm_std": 0.004487667972223269,
+        "wrist_to_middle_mcp_norm": 0.20830440123535116,
+        "wrist_to_middle_mcp_norm_std": 0.0036534547646348407,
+        "x_norm": 0.08569770725443959,
+        "x_norm_std": 0.0034457538906079855,
+        "y_norm": 0.24735559690743686,
+        "y_norm_std": 0.005785320878796994,
+        "wrist_rpy_rad": [
+          -2.9103742051863044,
+          1.1439342036114255,
+          0.42686212318347144
+        ]
+      },
+      "samples": 20
+    },
+    "mirror_down_left": {
+      "hand": {
+        "x_norm": 0.874957237392664,
+        "y_norm": 0.8419313460588456,
+        "depth_norm": 0.92668571094069,
+        "hand_size_norm": 0.2233625728294803,
+        "wrist_rpy_rad": [
+          3.009211384919946,
+          1.3926672617832847,
+          0.17812906501161194
+        ]
+      },
+      "std": {
+        "bbox_size_norm_std": 0.0037825939393620438,
+        "depth_confidence_std": 0.000947819060113102,
+        "depth_m_std": 0.0,
+        "depth_norm_std": 2.220446049250313e-16,
+        "hand_size_norm_std": 0.0009478190601130974,
+        "palm_height_norm_std": 0.0009478190601130974,
+        "palm_width_norm_std": 0.001045929646011165,
+        "thumb_index_span_norm_std": 0.004989701642691671,
+        "wrist_to_middle_mcp_norm_std": 0.0009478190601130974,
+        "x_norm_std": 0.0019401643924690903,
+        "y_norm_std": 0.0025068525257191704
+      },
+      "metrics": {
+        "bbox_size_norm": 0.29784324157700437,
+        "bbox_size_norm_std": 0.0037825939393620438,
+        "depth_confidence": 0.6733625728294802,
+        "depth_confidence_std": 0.000947819060113102,
+        "depth_m": 0.2366571445296549,
+        "depth_m_std": 0.0,
+        "depth_norm": 0.92668571094069,
+        "depth_norm_std": 2.220446049250313e-16,
+        "hand_size_norm": 0.2233625728294803,
+        "hand_size_norm_std": 0.0009478190601130974,
+        "palm_height_norm": 0.2233625728294803,
+        "palm_height_norm_std": 0.0009478190601130974,
+        "palm_width_norm": 0.09408359579796566,
+        "palm_width_norm_std": 0.001045929646011165,
+        "thumb_index_span_norm": 0.21100609118428756,
+        "thumb_index_span_norm_std": 0.004989701642691671,
+        "wrist_to_middle_mcp_norm": 0.2233625728294803,
+        "wrist_to_middle_mcp_norm_std": 0.0009478190601130974,
+        "x_norm": 0.874957237392664,
+        "x_norm_std": 0.0019401643924690903,
+        "y_norm": 0.8419313460588456,
+        "y_norm_std": 0.0025068525257191704,
+        "wrist_rpy_rad": [
+          3.009211384919946,
+          1.3926672617832847,
+          0.17812906501161194
+        ]
+      },
+      "samples": 20
+    },
+    "mirror_down_right": {
+      "hand": {
+        "x_norm": 0.09438826702535152,
+        "y_norm": 0.8288980148732662,
+        "depth_norm": 0.92668571094069,
+        "hand_size_norm": 0.21368838729088027,
+        "wrist_rpy_rad": [
+          2.9989415210473895,
+          1.3506469776492618,
+          0.2201493491456347
+        ]
+      },
+      "std": {
+        "bbox_size_norm_std": 0.0036983780131394695,
+        "depth_confidence_std": 0.002550727202661472,
+        "depth_m_std": 0.0,
+        "depth_norm_std": 2.220446049250313e-16,
+        "hand_size_norm_std": 0.0025507272026614692,
+        "palm_height_norm_std": 0.0025507272026614692,
+        "palm_width_norm_std": 0.0018804257722851876,
+        "thumb_index_span_norm_std": 0.007724383984758394,
+        "wrist_to_middle_mcp_norm_std": 0.0025507272026614692,
+        "x_norm_std": 0.0037013041344567906,
+        "y_norm_std": 0.006814814880068559
+      },
+      "metrics": {
+        "bbox_size_norm": 0.2998765450593913,
+        "bbox_size_norm_std": 0.0036983780131394695,
+        "depth_confidence": 0.6636883872908802,
+        "depth_confidence_std": 0.002550727202661472,
+        "depth_m": 0.2366571445296549,
+        "depth_m_std": 0.0,
+        "depth_norm": 0.92668571094069,
+        "depth_norm_std": 2.220446049250313e-16,
+        "hand_size_norm": 0.21368838729088027,
+        "hand_size_norm_std": 0.0025507272026614692,
+        "palm_height_norm": 0.21368838729088027,
+        "palm_height_norm_std": 0.0025507272026614692,
+        "palm_width_norm": 0.11048120749962838,
+        "palm_width_norm_std": 0.0018804257722851876,
+        "thumb_index_span_norm": 0.18526484785929676,
+        "thumb_index_span_norm_std": 0.007724383984758394,
+        "wrist_to_middle_mcp_norm": 0.21368838729088027,
+        "wrist_to_middle_mcp_norm_std": 0.0025507272026614692,
+        "x_norm": 0.09438826702535152,
+        "x_norm_std": 0.0037013041344567906,
+        "y_norm": 0.8288980148732662,
+        "y_norm_std": 0.006814814880068559,
+        "wrist_rpy_rad": [
+          2.9989415210473895,
+          1.3506469776492618,
+          0.2201493491456347
+        ]
+      },
+      "samples": 20
+    },
+    "mirror_near_left": {
+      "hand": {
+        "x_norm": 0.7631385520100593,
+        "y_norm": 0.6369012370705605,
+        "depth_norm": 0.7264967096420021,
+        "hand_size_norm": 0.41299630762051365,
+        "wrist_rpy_rad": [
+          2.7981850393744425,
+          1.3108835451238627,
+          0.2599127816710336
+        ]
+      },
+      "std": {
+        "bbox_size_norm_std": 0.018177852136737623,
+        "depth_confidence_std": 1.1102230246251565e-16,
+        "depth_m_std": 0.003423456643072613,
+        "depth_norm_std": 0.006846913286145224,
+        "hand_size_norm_std": 0.0031742954860981233,
+        "palm_height_norm_std": 0.0031742954860981233,
+        "palm_width_norm_std": 0.0022485712899314937,
+        "thumb_index_span_norm_std": 0.02296954737798125,
+        "wrist_to_middle_mcp_norm_std": 0.0031742954860981233,
+        "x_norm_std": 0.006622760176913409,
+        "y_norm_std": 0.004635644667748483
+      },
+      "metrics": {
+        "bbox_size_norm": 0.5885653926574312,
+        "bbox_size_norm_std": 0.018177852136737623,
+        "depth_confidence": 0.8000000000000002,
+        "depth_confidence_std": 1.1102230246251565e-16,
+        "depth_m": 0.3367516451789989,
+        "depth_m_std": 0.003423456643072613,
+        "depth_norm": 0.7264967096420021,
+        "depth_norm_std": 0.006846913286145224,
+        "hand_size_norm": 0.41299630762051365,
+        "hand_size_norm_std": 0.0031742954860981233,
+        "palm_height_norm": 0.41299630762051365,
+        "palm_height_norm_std": 0.0031742954860981233,
+        "palm_width_norm": 0.20312101106913075,
+        "palm_width_norm_std": 0.0022485712899314937,
+        "thumb_index_span_norm": 0.4471038730273086,
+        "thumb_index_span_norm_std": 0.02296954737798125,
+        "wrist_to_middle_mcp_norm": 0.41299630762051365,
+        "wrist_to_middle_mcp_norm_std": 0.0031742954860981233,
+        "x_norm": 0.7631385520100593,
+        "x_norm_std": 0.006622760176913409,
+        "y_norm": 0.6369012370705605,
+        "y_norm_std": 0.004635644667748483,
+        "wrist_rpy_rad": [
+          2.7981850393744425,
+          1.3108835451238627,
+          0.2599127816710336
+        ]
+      },
+      "samples": 20
+    },
+    "mirror_near_right": {
+      "hand": {
+        "x_norm": 0.1868526192381978,
+        "y_norm": 0.5927218910306692,
+        "depth_norm": 0.9263113452342209,
+        "hand_size_norm": 0.5058339708631073,
+        "wrist_rpy_rad": [
+          2.99027326368686,
+          1.3428236933861852,
+          0.2279726334087116
+        ]
+      },
+      "std": {
+        "bbox_size_norm_std": 0.011881331269271165,
+        "depth_confidence_std": 1.1102230246251565e-16,
+        "depth_m_std": 0.007392906997031392,
+        "depth_norm_std": 0.014785813994062784,
+        "hand_size_norm_std": 0.006886235496120485,
+        "palm_height_norm_std": 0.006886235496120485,
+        "palm_width_norm_std": 0.003180148977937232,
+        "thumb_index_span_norm_std": 0.005225939658088343,
+        "wrist_to_middle_mcp_norm_std": 0.006886235496120485,
+        "x_norm_std": 0.005266010452259786,
+        "y_norm_std": 0.005189702680734023
+      },
+      "metrics": {
+        "bbox_size_norm": 0.713132123209138,
+        "bbox_size_norm_std": 0.011881331269271165,
+        "depth_confidence": 0.8000000000000002,
+        "depth_confidence_std": 1.1102230246251565e-16,
+        "depth_m": 0.23684432738288957,
+        "depth_m_std": 0.007392906997031392,
+        "depth_norm": 0.9263113452342209,
+        "depth_norm_std": 0.014785813994062784,
+        "hand_size_norm": 0.5058339708631073,
+        "hand_size_norm_std": 0.006886235496120485,
+        "palm_height_norm": 0.5058339708631073,
+        "palm_height_norm_std": 0.006886235496120485,
+        "palm_width_norm": 0.24881395320721547,
+        "palm_width_norm_std": 0.003180148977937232,
+        "thumb_index_span_norm": 0.4968353526753809,
+        "thumb_index_span_norm_std": 0.005225939658088343,
+        "wrist_to_middle_mcp_norm": 0.5058339708631073,
+        "wrist_to_middle_mcp_norm_std": 0.006886235496120485,
+        "x_norm": 0.1868526192381978,
+        "x_norm_std": 0.005266010452259786,
+        "y_norm": 0.5927218910306692,
+        "y_norm_std": 0.005189702680734023,
+        "wrist_rpy_rad": [
+          2.99027326368686,
+          1.3428236933861852,
+          0.2279726334087116
+        ]
+      },
+      "samples": 20
+    },
+    "mirror_far_left": {
+      "hand": {
+        "x_norm": 0.875788827240467,
+        "y_norm": 0.8485330030322075,
+        "depth_norm": 0.8995377082025093,
+        "hand_size_norm": 0.17526181670110993,
+        "wrist_rpy_rad": [
+          0.04215806569118001,
+          1.438676481869815,
+          0.13211984492508166
+        ]
+      },
+      "std": {
+        "bbox_size_norm_std": 0.008879004890673834,
+        "depth_confidence_std": 0.0052365160446338375,
+        "depth_m_std": 5.551115123125783e-17,
+        "depth_norm_std": 2.220446049250313e-16,
+        "hand_size_norm_std": 0.00523651604463384,
+        "palm_height_norm_std": 0.00523651604463384,
+        "palm_width_norm_std": 0.0039062208104171684,
+        "thumb_index_span_norm_std": 0.005572744627866315,
+        "wrist_to_middle_mcp_norm_std": 0.00523651604463384,
+        "x_norm_std": 0.0066049011624273206,
+        "y_norm_std": 0.004661787877963769
+      },
+      "metrics": {
+        "bbox_size_norm": 0.19177296637648195,
+        "bbox_size_norm_std": 0.008879004890673834,
+        "depth_confidence": 0.6252618167011099,
+        "depth_confidence_std": 0.0052365160446338375,
+        "depth_m": 0.2502311458987452,
+        "depth_m_std": 5.551115123125783e-17,
+        "depth_norm": 0.8995377082025093,
+        "depth_norm_std": 2.220446049250313e-16,
+        "hand_size_norm": 0.17526181670110993,
+        "hand_size_norm_std": 0.00523651604463384,
+        "palm_height_norm": 0.17526181670110993,
+        "palm_height_norm_std": 0.00523651604463384,
+        "palm_width_norm": 0.04764871851349799,
+        "palm_width_norm_std": 0.0039062208104171684,
+        "thumb_index_span_norm": 0.14524308612970588,
+        "thumb_index_span_norm_std": 0.005572744627866315,
+        "wrist_to_middle_mcp_norm": 0.17526181670110993,
+        "wrist_to_middle_mcp_norm_std": 0.00523651604463384,
+        "x_norm": 0.875788827240467,
+        "x_norm_std": 0.0066049011624273206,
+        "y_norm": 0.8485330030322075,
+        "y_norm_std": 0.004661787877963769,
+        "wrist_rpy_rad": [
+          0.04215806569118001,
+          1.438676481869815,
+          0.13211984492508166
+        ]
+      },
+      "samples": 20
+    },
+    "mirror_far_right": {
+      "hand": {
+        "x_norm": 0.05626863124780357,
+        "y_norm": 0.8448145151138305,
+        "depth_norm": 0.8995377082025093,
+        "hand_size_norm": 0.15514720584959343,
+        "wrist_rpy_rad": [
+          2.92915585733229,
+          1.3781354677097981,
+          0.19266085908509845
+        ]
+      },
+      "std": {
+        "bbox_size_norm_std": 0.0019476161333627166,
+        "depth_confidence_std": 0.0011533224470668048,
+        "depth_m_std": 5.551115123125783e-17,
+        "depth_norm_std": 2.220446049250313e-16,
+        "hand_size_norm_std": 0.0011533224470668124,
+        "palm_height_norm_std": 0.0011533224470668124,
+        "palm_width_norm_std": 0.000948104585385057,
+        "thumb_index_span_norm_std": 0.0014019907865411084,
+        "wrist_to_middle_mcp_norm_std": 0.0011533224470668124,
+        "x_norm_std": 0.0017422312749022027,
+        "y_norm_std": 0.0022896809393890463
+      },
+      "metrics": {
+        "bbox_size_norm": 0.19258532540435574,
+        "bbox_size_norm_std": 0.0019476161333627166,
+        "depth_confidence": 0.6051472058495934,
+        "depth_confidence_std": 0.0011533224470668048,
+        "depth_m": 0.2502311458987452,
+        "depth_m_std": 5.551115123125783e-17,
+        "depth_norm": 0.8995377082025093,
+        "depth_norm_std": 2.220446049250313e-16,
+        "hand_size_norm": 0.15514720584959343,
+        "hand_size_norm_std": 0.0011533224470668124,
+        "palm_height_norm": 0.15514720584959343,
+        "palm_height_norm_std": 0.0011533224470668124,
+        "palm_width_norm": 0.07988136646130303,
+        "palm_width_norm_std": 0.000948104585385057,
+        "thumb_index_span_norm": 0.11979950300396155,
+        "thumb_index_span_norm_std": 0.0014019907865411084,
+        "wrist_to_middle_mcp_norm": 0.15514720584959343,
+        "wrist_to_middle_mcp_norm_std": 0.0011533224470668124,
+        "x_norm": 0.05626863124780357,
+        "x_norm_std": 0.0017422312749022027,
+        "y_norm": 0.8448145151138305,
+        "y_norm_std": 0.0022896809393890463,
+        "wrist_rpy_rad": [
+          2.92915585733229,
+          1.3781354677097981,
+          0.19266085908509845
+        ]
+      },
+      "samples": 20
+    },
+    "mirror_near_up": {
+      "hand": {
+        "x_norm": 0.3950165679678321,
+        "y_norm": 0.22534720934927463,
+        "depth_norm": 0.783053508221018,
+        "hand_size_norm": 0.4392770144140868,
+        "wrist_rpy_rad": [
+          -2.9002985225278275,
+          1.2478544622060896,
+          0.32294186458880675
+        ]
+      },
+      "std": {
+        "bbox_size_norm_std": 0.026872389241196438,
+        "depth_confidence_std": 1.1102230246251565e-16,
+        "depth_m_std": 0.016047300172456928,
+        "depth_norm_std": 0.032094600344913855,
+        "hand_size_norm_std": 0.014921443097794562,
+        "palm_height_norm_std": 0.014921443097794562,
+        "palm_width_norm_std": 0.008759695787985158,
+        "thumb_index_span_norm_std": 0.022463513185202517,
+        "wrist_to_middle_mcp_norm_std": 0.014921443097794562,
+        "x_norm_std": 0.021739462395506528,
+        "y_norm_std": 0.02229506208652642
+      },
+      "metrics": {
+        "bbox_size_norm": 0.557236756466177,
+        "bbox_size_norm_std": 0.026872389241196438,
+        "depth_confidence": 0.8000000000000002,
+        "depth_confidence_std": 1.1102230246251565e-16,
+        "depth_m": 0.308473245889491,
+        "depth_m_std": 0.016047300172456928,
+        "depth_norm": 0.783053508221018,
+        "depth_norm_std": 0.032094600344913855,
+        "hand_size_norm": 0.4392770144140868,
+        "hand_size_norm_std": 0.014921443097794562,
+        "palm_height_norm": 0.4392770144140868,
+        "palm_height_norm_std": 0.014921443097794562,
+        "palm_width_norm": 0.23403339238701984,
+        "palm_width_norm_std": 0.008759695787985158,
+        "thumb_index_span_norm": 0.3773873350504299,
+        "thumb_index_span_norm_std": 0.022463513185202517,
+        "wrist_to_middle_mcp_norm": 0.4392770144140868,
+        "wrist_to_middle_mcp_norm_std": 0.014921443097794562,
+        "x_norm": 0.3950165679678321,
+        "x_norm_std": 0.021739462395506528,
+        "y_norm": 0.22534720934927463,
+        "y_norm_std": 0.02229506208652642,
+        "wrist_rpy_rad": [
+          -2.9002985225278275,
+          1.2478544622060896,
+          0.32294186458880675
+        ]
+      },
+      "samples": 25
+    },
+    "mirror_near_down": {
+      "hand": {
+        "x_norm": 0.2940608439967036,
+        "y_norm": 0.9284000590443611,
+        "depth_norm": 0.8019597487468835,
+        "hand_size_norm": 0.37802185009222533,
+        "wrist_rpy_rad": [
+          2.9187544500046525,
+          1.361475750698815,
+          0.2093205760960813
+        ]
+      },
+      "std": {
+        "bbox_size_norm_std": 0.016481385422381138,
+        "depth_confidence_std": 1.1102230246251565e-16,
+        "depth_m_std": 0.008899318335936563,
+        "depth_norm_std": 0.017798636671873123,
+        "hand_size_norm_std": 0.01400299217288788,
+        "palm_height_norm_std": 0.01400299217288788,
+        "palm_width_norm_std": 0.0045290189109647066,
+        "thumb_index_span_norm_std": 0.00871699711882927,
+        "wrist_to_middle_mcp_norm_std": 0.01400299217288788,
+        "x_norm_std": 0.01670766983142263,
+        "y_norm_std": 0.01161761107949765
+      },
+      "metrics": {
+        "bbox_size_norm": 0.6025858898161784,
+        "bbox_size_norm_std": 0.016481385422381138,
+        "depth_confidence": 0.8000000000000002,
+        "depth_confidence_std": 1.1102230246251565e-16,
+        "depth_m": 0.29902012562655833,
+        "depth_m_std": 0.008899318335936563,
+        "depth_norm": 0.8019597487468835,
+        "depth_norm_std": 0.017798636671873123,
+        "hand_size_norm": 0.37802185009222533,
+        "hand_size_norm_std": 0.01400299217288788,
+        "palm_height_norm": 0.37802185009222533,
+        "palm_height_norm_std": 0.01400299217288788,
+        "palm_width_norm": 0.276878504542708,
+        "palm_width_norm_std": 0.0045290189109647066,
+        "thumb_index_span_norm": 0.33989420189161657,
+        "thumb_index_span_norm_std": 0.00871699711882927,
+        "wrist_to_middle_mcp_norm": 0.37802185009222533,
+        "wrist_to_middle_mcp_norm_std": 0.01400299217288788,
+        "x_norm": 0.2940608439967036,
+        "x_norm_std": 0.01670766983142263,
+        "y_norm": 0.9284000590443611,
+        "y_norm_std": 0.01161761107949765,
+        "wrist_rpy_rad": [
+          2.9187544500046525,
+          1.361475750698815,
+          0.2093205760960813
+        ]
+      },
+      "samples": 40
+    },
+    "mirror_far_up": {
+      "hand": {
+        "x_norm": 0.4000631421804428,
+        "y_norm": 0.1918792685493827,
+        "depth_norm": 0.8066923839571588,
+        "hand_size_norm": 0.15000434734585372,
+        "wrist_rpy_rad": [
+          -2.8850220777807363,
+          1.1804162757255963,
+          0.3903800510693003
+        ]
+      },
+      "std": {
+        "bbox_size_norm_std": 0.0018679530937494736,
+        "depth_confidence_std": 0.0013683776804449144,
+        "depth_m_std": 0.0,
+        "depth_norm_std": 0.0,
+        "hand_size_norm_std": 0.001368377680444904,
+        "palm_height_norm_std": 0.001368377680444904,
+        "palm_width_norm_std": 0.0006476470463356882,
+        "thumb_index_span_norm_std": 0.0020188664936825083,
+        "wrist_to_middle_mcp_norm_std": 0.001368377680444904,
+        "x_norm_std": 0.004917378967681381,
+        "y_norm_std": 0.002053994805891592
+      },
+      "metrics": {
+        "bbox_size_norm": 0.18602563506579867,
+        "bbox_size_norm_std": 0.0018679530937494736,
+        "depth_confidence": 0.6000043473458537,
+        "depth_confidence_std": 0.0013683776804449144,
+        "depth_m": 0.2966538080214206,
+        "depth_m_std": 0.0,
+        "depth_norm": 0.8066923839571588,
+        "depth_norm_std": 0.0,
+        "hand_size_norm": 0.15000434734585372,
+        "hand_size_norm_std": 0.001368377680444904,
+        "palm_height_norm": 0.15000434734585372,
+        "palm_height_norm_std": 0.001368377680444904,
+        "palm_width_norm": 0.08059308653703902,
+        "palm_width_norm_std": 0.0006476470463356882,
+        "thumb_index_span_norm": 0.17541806783259808,
+        "thumb_index_span_norm_std": 0.0020188664936825083,
+        "wrist_to_middle_mcp_norm": 0.15000434734585372,
+        "wrist_to_middle_mcp_norm_std": 0.001368377680444904,
+        "x_norm": 0.4000631421804428,
+        "x_norm_std": 0.004917378967681381,
+        "y_norm": 0.1918792685493827,
+        "y_norm_std": 0.002053994805891592,
+        "wrist_rpy_rad": [
+          -2.8850220777807363,
+          1.1804162757255963,
+          0.3903800510693003
+        ]
+      },
+      "samples": 20
+    },
+    "mirror_far_down": {
+      "hand": {
+        "x_norm": 0.32302627377212045,
+        "y_norm": 0.8472064755856991,
+        "depth_norm": 0.8066923839571588,
+        "hand_size_norm": 0.17364090182734096,
+        "wrist_rpy_rad": [
+          2.9326581851206663,
+          1.4586907902219872,
+          0.11210553657290925
+        ]
+      },
+      "std": {
+        "bbox_size_norm_std": 0.0008499938807016078,
+        "depth_confidence_std": 0.0013826917154948558,
+        "depth_m_std": 0.0,
+        "depth_norm_std": 0.0,
+        "hand_size_norm_std": 0.0013826917154948577,
+        "palm_height_norm_std": 0.0013826917154948577,
+        "palm_width_norm_std": 0.0005770627136176325,
+        "thumb_index_span_norm_std": 0.004105286211476587,
+        "wrist_to_middle_mcp_norm_std": 0.0013826917154948577,
+        "x_norm_std": 0.000617386917619382,
+        "y_norm_std": 0.0013215461517049004
+      },
+      "metrics": {
+        "bbox_size_norm": 0.22109840588986404,
+        "bbox_size_norm_std": 0.0008499938807016078,
+        "depth_confidence": 0.623640901827341,
+        "depth_confidence_std": 0.0013826917154948558,
+        "depth_m": 0.2966538080214206,
+        "depth_m_std": 0.0,
+        "depth_norm": 0.8066923839571588,
+        "depth_norm_std": 0.0,
+        "hand_size_norm": 0.17364090182734096,
+        "hand_size_norm_std": 0.0013826917154948577,
+        "palm_height_norm": 0.17364090182734096,
+        "palm_height_norm_std": 0.0013826917154948577,
+        "palm_width_norm": 0.08505545881203662,
+        "palm_width_norm_std": 0.0005770627136176325,
+        "thumb_index_span_norm": 0.11780238216780559,
+        "thumb_index_span_norm_std": 0.004105286211476587,
+        "wrist_to_middle_mcp_norm": 0.17364090182734096,
+        "wrist_to_middle_mcp_norm_std": 0.0013826917154948577,
+        "x_norm": 0.32302627377212045,
+        "x_norm_std": 0.000617386917619382,
+        "y_norm": 0.8472064755856991,
+        "y_norm_std": 0.0013215461517049004,
+        "wrist_rpy_rad": [
+          2.9326581851206663,
+          1.4586907902219872,
+          0.11210553657290925
+        ]
+      },
+      "samples": 20
+    },
+    "mirror_near_up_left": {
+      "hand": {
+        "x_norm": 0.648342176899314,
+        "y_norm": 0.2924314495176077,
+        "depth_norm": 0.9676400364529443,
+        "hand_size_norm": 0.5253982799185647,
+        "wrist_rpy_rad": [
+          2.413501116348705,
+          1.3448600013683136,
+          0.22593632542658276
+        ]
+      },
+      "std": {
+        "bbox_size_norm_std": 0.060412659048238955,
+        "depth_confidence_std": 1.1102230246251565e-16,
+        "depth_m_std": 0.004024355498103731,
+        "depth_norm_std": 0.008048710996207459,
+        "hand_size_norm_std": 0.004223584434077507,
+        "palm_height_norm_std": 0.004223584434077507,
+        "palm_width_norm_std": 0.007117114247206541,
+        "thumb_index_span_norm_std": 0.08195390609792559,
+        "wrist_to_middle_mcp_norm_std": 0.004223584434077507,
+        "x_norm_std": 0.026787447880207264,
+        "y_norm_std": 0.023486428095961215
+      },
+      "metrics": {
+        "bbox_size_norm": 0.724192624961985,
+        "bbox_size_norm_std": 0.060412659048238955,
+        "depth_confidence": 0.8000000000000002,
+        "depth_confidence_std": 1.1102230246251565e-16,
+        "depth_m": 0.21617998177352793,
+        "depth_m_std": 0.004024355498103731,
+        "depth_norm": 0.9676400364529443,
+        "depth_norm_std": 0.008048710996207459,
+        "hand_size_norm": 0.5253982799185647,
+        "hand_size_norm_std": 0.004223584434077507,
+        "palm_height_norm": 0.5253982799185647,
+        "palm_height_norm_std": 0.004223584434077507,
+        "palm_width_norm": 0.2712332960807452,
+        "palm_width_norm_std": 0.007117114247206541,
+        "thumb_index_span_norm": 0.5968540464918799,
+        "thumb_index_span_norm_std": 0.08195390609792559,
+        "wrist_to_middle_mcp_norm": 0.5253982799185647,
+        "wrist_to_middle_mcp_norm_std": 0.004223584434077507,
+        "x_norm": 0.648342176899314,
+        "x_norm_std": 0.026787447880207264,
+        "y_norm": 0.2924314495176077,
+        "y_norm_std": 0.023486428095961215,
+        "wrist_rpy_rad": [
+          2.413501116348705,
+          1.3448600013683136,
+          0.22593632542658276
+        ]
+      },
+      "samples": 20
+    },
+    "mirror_near_up_right": {
+      "hand": {
+        "x_norm": 0.1659988065250218,
+        "y_norm": 0.2937651066109538,
+        "depth_norm": 0.7070123912303832,
+        "hand_size_norm": 0.40393571184812815,
+        "wrist_rpy_rad": [
+          -2.9869834524508327,
+          1.2762993106665372,
+          0.2944970161283595
+        ]
+      },
+      "std": {
+        "bbox_size_norm_std": 0.0046426591141701026,
+        "depth_confidence_std": 1.1102230246251565e-16,
+        "depth_m_std": 0.004789412396194699,
+        "depth_norm_std": 0.009578824792389399,
+        "hand_size_norm_std": 0.004471926835848279,
+        "palm_height_norm_std": 0.004471926835848279,
+        "palm_width_norm_std": 0.005274314322129978,
+        "thumb_index_span_norm_std": 0.006857443202742075,
+        "wrist_to_middle_mcp_norm_std": 0.004471926835848279,
+        "x_norm_std": 0.003386527244344884,
+        "y_norm_std": 0.0038201857027693785
+      },
+      "metrics": {
+        "bbox_size_norm": 0.5425527061564159,
+        "bbox_size_norm_std": 0.0046426591141701026,
+        "depth_confidence": 0.8000000000000002,
+        "depth_confidence_std": 1.1102230246251565e-16,
+        "depth_m": 0.3464938043848084,
+        "depth_m_std": 0.004789412396194699,
+        "depth_norm": 0.7070123912303832,
+        "depth_norm_std": 0.009578824792389399,
+        "hand_size_norm": 0.40393571184812815,
+        "hand_size_norm_std": 0.004471926835848279,
+        "palm_height_norm": 0.40393571184812815,
+        "palm_height_norm_std": 0.004471926835848279,
+        "palm_width_norm": 0.20855308304859643,
+        "palm_width_norm_std": 0.005274314322129978,
+        "thumb_index_span_norm": 0.38485368396153813,
+        "thumb_index_span_norm_std": 0.006857443202742075,
+        "wrist_to_middle_mcp_norm": 0.40393571184812815,
+        "wrist_to_middle_mcp_norm_std": 0.004471926835848279,
+        "x_norm": 0.1659988065250218,
+        "x_norm_std": 0.003386527244344884,
+        "y_norm": 0.2937651066109538,
+        "y_norm_std": 0.0038201857027693785,
+        "wrist_rpy_rad": [
+          -2.9869834524508327,
+          1.2762993106665372,
+          0.2944970161283595
+        ]
+      },
+      "samples": 20
+    },
+    "mirror_far_down_left": {
+      "hand": {
+        "x_norm": 0.9042241044342518,
+        "y_norm": 0.833372239023447,
+        "depth_norm": 0.6284811337099182,
+        "hand_size_norm": 0.18718388735929162,
+        "wrist_rpy_rad": [
+          -2.160529645032499,
+          1.4126566259646245,
+          0.15813970083027196
+        ]
+      },
+      "std": {
+        "bbox_size_norm_std": 0.006312789847538823,
+        "depth_confidence_std": 0.0019815658819999533,
+        "depth_m_std": 0.0,
+        "depth_norm_std": 1.1102230246251565e-16,
+        "hand_size_norm_std": 0.001981565881999951,
+        "palm_height_norm_std": 0.001981565881999951,
+        "palm_width_norm_std": 0.0014514181855716432,
+        "thumb_index_span_norm_std": 0.006120598761009066,
+        "wrist_to_middle_mcp_norm_std": 0.001981565881999951,
+        "x_norm_std": 0.004650437448765711,
+        "y_norm_std": 0.0035651390219956646
+      },
+      "metrics": {
+        "bbox_size_norm": 0.19928903249888294,
+        "bbox_size_norm_std": 0.006312789847538823,
+        "depth_confidence": 0.6371838873592915,
+        "depth_confidence_std": 0.0019815658819999533,
+        "depth_m": 0.3857594331450409,
+        "depth_m_std": 0.0,
+        "depth_norm": 0.6284811337099182,
+        "depth_norm_std": 1.1102230246251565e-16,
+        "hand_size_norm": 0.18718388735929162,
+        "hand_size_norm_std": 0.001981565881999951,
+        "palm_height_norm": 0.18718388735929162,
+        "palm_height_norm_std": 0.001981565881999951,
+        "palm_width_norm": 0.04186138555986792,
+        "palm_width_norm_std": 0.0014514181855716432,
+        "thumb_index_span_norm": 0.17171130653775518,
+        "thumb_index_span_norm_std": 0.006120598761009066,
+        "wrist_to_middle_mcp_norm": 0.18718388735929162,
+        "wrist_to_middle_mcp_norm_std": 0.001981565881999951,
+        "x_norm": 0.9042241044342518,
+        "x_norm_std": 0.004650437448765711,
+        "y_norm": 0.833372239023447,
+        "y_norm_std": 0.0035651390219956646,
+        "wrist_rpy_rad": [
+          -2.160529645032499,
+          1.4126566259646245,
+          0.15813970083027196
+        ]
+      },
+      "samples": 20
+    },
+    "mirror_far_down_right": {
+      "hand": {
+        "x_norm": 0.09234352139756083,
+        "y_norm": 0.8842871531844139,
+        "depth_norm": 0.6284811337099182,
+        "hand_size_norm": 0.16723424750150873,
+        "wrist_rpy_rad": [
+          2.972670870203712,
+          1.3683685282748206,
+          0.20242779852007625
+        ]
+      },
+      "std": {
+        "bbox_size_norm_std": 0.0033519921257201034,
+        "depth_confidence_std": 0.0024799101273673325,
+        "depth_m_std": 0.0,
+        "depth_norm_std": 1.1102230246251565e-16,
+        "hand_size_norm_std": 0.002479910127367333,
+        "palm_height_norm_std": 0.002479910127367333,
+        "palm_width_norm_std": 0.0007688632985827325,
+        "thumb_index_span_norm_std": 0.0017654856305555787,
+        "wrist_to_middle_mcp_norm_std": 0.002479910127367333,
+        "x_norm_std": 0.001313597348035418,
+        "y_norm_std": 0.003266188561081808
+      },
+      "metrics": {
+        "bbox_size_norm": 0.2229670119662323,
+        "bbox_size_norm_std": 0.0033519921257201034,
+        "depth_confidence": 0.6172342475015088,
+        "depth_confidence_std": 0.0024799101273673325,
+        "depth_m": 0.3857594331450409,
+        "depth_m_std": 0.0,
+        "depth_norm": 0.6284811337099182,
+        "depth_norm_std": 1.1102230246251565e-16,
+        "hand_size_norm": 0.16723424750150873,
+        "hand_size_norm_std": 0.002479910127367333,
+        "palm_height_norm": 0.16723424750150873,
+        "palm_height_norm_std": 0.002479910127367333,
+        "palm_width_norm": 0.09340386221222652,
+        "palm_width_norm_std": 0.0007688632985827325,
+        "thumb_index_span_norm": 0.11536819079176545,
+        "thumb_index_span_norm_std": 0.0017654856305555787,
+        "wrist_to_middle_mcp_norm": 0.16723424750150873,
+        "wrist_to_middle_mcp_norm_std": 0.002479910127367333,
+        "x_norm": 0.09234352139756083,
+        "x_norm_std": 0.001313597348035418,
+        "y_norm": 0.8842871531844139,
+        "y_norm_std": 0.003266188561081808,
+        "wrist_rpy_rad": [
+          2.972670870203712,
+          1.3683685282748206,
+          0.20242779852007625
+        ]
+      },
+      "samples": 20
+    }
+  },
+  "notes": "Pairs by pose name with robot_mirror_workspace_calibration.json; no robot movement is performed here."
+}

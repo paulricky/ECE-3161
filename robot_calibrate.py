@@ -1362,29 +1362,52 @@ MIRROR_OPTIONAL_POSES = [str(x) for x in getattr(val, "ROBOT_MIRROR_OPTIONAL_POS
 
 def _mirror_pose_instruction(name: str) -> str:
     text = {
-        "center": "Place the end effector at the comfortable middle of the intended hand-control workspace. This should be the neutral pose when your hand is centered in the camera at normal depth. Choose a pose with good elbow clearance and wrist not near a limit.",
-        "mirror_left": "Place the end effector at the farthest LEFT position you want the robot to reach when your hand is at the left edge of the usable camera frame. Keep height and depth as close as possible to center; only change left/right as much as practical.",
-        "mirror_right": "Place the end effector at the farthest RIGHT position you want the robot to reach when your hand is at the right edge of the usable camera frame. Keep height and depth close to center.",
-        "mirror_up": "Place the end effector at the highest UP position you want the robot to reach when your hand is near the top of the usable camera frame. Keep left/right and depth close to center.",
-        "mirror_down": "Place the end effector at the lowest DOWN position you want the robot to reach when your hand is near the bottom of the usable camera frame. Keep left/right and depth close to center. Avoid table collision.",
-        "mirror_near": "Place the end effector at the nearest/front position you want the robot to reach when your hand moves closest to the camera. Keep left/right and height close to center.",
-        "mirror_far": "Place the end effector at the farthest/back position you want the robot to reach when your hand moves away from the camera. Keep left/right and height close to center.",
-        "mirror_up_left": "Optional pose: move to the combined top-left workspace corner, high and left. Keep depth near center.",
-        "mirror_up_right": "Optional pose: move to high and right. Keep depth near center.",
-        "mirror_down_left": "Optional pose: move to low and left. Keep depth near center. Avoid table/base collision.",
-        "mirror_down_right": "Optional pose: move to low and right. Keep depth near center.",
-        "mirror_near_left": "Optional pose: move to near/front and left. Keep height near center.",
-        "mirror_near_right": "Optional pose: move to near/front and right. Keep height near center.",
-        "mirror_far_left": "Optional pose: move to far/back and left. Keep height near center.",
-        "mirror_far_right": "Optional pose: move to far/back and right. Keep height near center.",
-        "mirror_near_up": "Optional pose: move to near/front and high. Keep left/right near center.",
-        "mirror_near_down": "Optional pose: move to near/front and low. Keep left/right near center.",
-        "mirror_far_up": "Optional pose: move to far/back and high. Keep left/right near center.",
-        "mirror_far_down": "Optional pose: move to far/back and low. Keep left/right near center.",
-        "mirror_near_up_left": "Optional pose: move to the combined near/front + high + left corner. This helps correct nonlinear distortion at the extreme of all three mirror axes.",
-        "mirror_near_up_right": "Optional pose: move to near/front + high + right.",
-        "mirror_far_down_left": "Optional pose: move to far/back + low + left.",
-        "mirror_far_down_right": "Optional pose: move to far/back + low + right.",
+        "center": (
+            "Place the gripper tip at the comfortable middle of the intended mirror workspace. "
+            "Suggested posture: shoulder_pan near 0 deg, shoulder_lift midrange, elbow_flex moderately bent (about 45-90 deg if possible), "
+            "wrist_flex/wrist_yaw/wrist_roll/wrist_pitch close to neutral or straight. Keep clear room to move in all directions."
+        ),
+        "mirror_left": (
+            "Move the gripper tip left from center. Prefer shoulder_pan/base rotation for most of the left motion. "
+            "Keep shoulder_lift, elbow_flex, and depth/reach close to the center pose as much as practical. "
+            "Keep wrist joints mostly straight/neutral; this pose should isolate left/right motion."
+        ),
+        "mirror_right": (
+            "Move the gripper tip right from center. Prefer shoulder_pan/base rotation for most of the right motion. "
+            "Keep shoulder_lift, elbow_flex, height, and depth close to center. Keep wrist joints mostly straight/neutral."
+        ),
+        "mirror_up": (
+            "Move the gripper tip upward from center. Prefer shoulder_lift plus elbow_flex adjustment to raise the arm. "
+            "Keep shoulder_pan close to the center pose and keep depth/reach close to center. Keep wrist mostly neutral."
+        ),
+        "mirror_down": (
+            "Move the gripper tip downward from center. Prefer lowering shoulder_lift and adjusting elbow_flex; do not simply bend the wrist down. "
+            "Keep shoulder_pan and depth close to center. Avoid table, base, and self-collision."
+        ),
+        "mirror_near": (
+            "Move the gripper tip toward the user/front/near side of the intended workspace. Prefer shoulder/elbow reach changes. "
+            "Keep left/right and height close to center. Keep wrist neutral; do not use wrist-only motion to fake depth."
+        ),
+        "mirror_far": (
+            "Move the gripper tip away/back from the user/front, opposite of mirror_near. Prefer shoulder/elbow reach changes. "
+            "Keep left/right and height close to center. Keep wrist neutral."
+        ),
+        "mirror_up_left": "Optional: high and left. Combine mirror_up and mirror_left: shoulder_pan left, shoulder_lift raised, elbow adjusted, wrist neutral, depth near center.",
+        "mirror_up_right": "Optional: high and right. Combine mirror_up and mirror_right: shoulder_pan right, shoulder_lift raised, elbow adjusted, wrist neutral, depth near center.",
+        "mirror_down_left": "Optional: low and left. Shoulder_pan left, shoulder_lift lowered, elbow adjusted. Keep wrist neutral and avoid table/base collision.",
+        "mirror_down_right": "Optional: low and right. Shoulder_pan right, shoulder_lift lowered, elbow adjusted. Keep wrist neutral and avoid collision.",
+        "mirror_near_left": "Optional: near/front and left. Combine near reach with left base sweep. Keep height near center and wrist neutral.",
+        "mirror_near_right": "Optional: near/front and right. Combine near reach with right base sweep. Keep height near center and wrist neutral.",
+        "mirror_far_left": "Optional: far/back and left. Combine far reach with left base sweep. Keep height near center and wrist neutral.",
+        "mirror_far_right": "Optional: far/back and right. Combine far reach with right base sweep. Keep height near center and wrist neutral.",
+        "mirror_near_up": "Optional: near/front and high. Combine near reach with raised shoulder. Keep left/right near center and wrist neutral.",
+        "mirror_near_down": "Optional: near/front and low. Combine near reach with lowered shoulder. Avoid table collision and keep left/right near center.",
+        "mirror_far_up": "Optional: far/back and high. Combine far reach with raised shoulder. Keep left/right near center.",
+        "mirror_far_down": "Optional: far/back and low. Combine far reach with lowered shoulder. Avoid collision and keep left/right near center.",
+        "mirror_near_up_left": "Optional extreme corner: near/front + high + left. Move slowly, keep wrist as straight as possible, and skip if unsafe or unreachable.",
+        "mirror_near_up_right": "Optional extreme corner: near/front + high + right. Move slowly, keep wrist straight, and skip if unsafe.",
+        "mirror_far_down_left": "Optional extreme corner: far/back + low + left. Avoid table/base collision. Skip if unsafe or unreachable.",
+        "mirror_far_down_right": "Optional extreme corner: far/back + low + right. Avoid table/base collision. Skip if unsafe or unreachable.",
     }
     return text.get(str(name), f"Place the robot end effector at {name}.")
 
@@ -1399,6 +1422,9 @@ def _print_mirror_pose_instruction(name: str, index: int, total: int, optional: 
     print("  Avoid table, base, and self-collisions.")
     print("  This recorded pose defines what hand motion should mirror during runtime.")
     print("  Do not worry whether the physical axis is called x/y/z; place the end effector in the intuitive mirror direction.")
+    print("[mirror] Joint guidance:")
+    print("  shoulder_pan = base left/right sweep; shoulder_lift = main up/down lift; elbow_flex = reach bend.")
+    print("  wrist_flex/wrist_yaw/wrist_roll/wrist_pitch should stay near neutral unless needed for reach; gripper is ignored for workspace poses.")
     if optional:
         print("  Optional poses improve nonlinear accuracy. Skip only if this pose is unsafe or unreachable.")
     print(f"[mirror] Pose-specific instruction: {_mirror_pose_instruction(name)}")

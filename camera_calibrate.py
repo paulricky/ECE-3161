@@ -501,6 +501,7 @@ def _calibration_status() -> int:
     cam_json = _resolve_output(getattr(val, "CAMERA_CALIBRATION_JSON", "calibration_data/camera_calibration.json"))
     legacy_intr = _resolve_output(getattr(val, "CALIB_INTRINSICS_FILE", "calibration_data/calibration_intrinsics.npz"))
     workspace_hand = _hand_workspace_calibration_path()
+    hand_mirror = _hand_mirror_position_calibration_path()
     print("For this RGB-only robot control setup, hand-depth calibration is required/recommended.")
     print("Camera intrinsics are optional.")
     print(f"hand-depth calibration: {hand_path} exists={os.path.exists(hand_path)}")
@@ -508,6 +509,7 @@ def _calibration_status() -> int:
     print(f"camera calibration JSON: {cam_json} exists={os.path.exists(cam_json)}")
     print(f"legacy intrinsics NPZ: {legacy_intr} exists={os.path.exists(legacy_intr)}")
     print(f"hand workspace calibration: {workspace_hand} exists={os.path.exists(workspace_hand)}")
+    print(f"hand mirror position calibration: {hand_mirror} exists={os.path.exists(hand_mirror)}")
     print("Runtime can proceed with RGB webcam + MediaPipe even if camera intrinsics are missing.")
     return 0
 
@@ -568,6 +570,10 @@ def _save_hand_depth_calibration(payload: dict, path: str, overwrite: bool) -> s
 
 def _hand_workspace_calibration_path() -> str:
     return _resolve_output(getattr(val, "HAND_WORKSPACE_CALIBRATION_FILE", "calibration_data/hand_workspace_calibration.json"))
+
+
+def _hand_mirror_position_calibration_path() -> str:
+    return _resolve_output(getattr(val, "HAND_MIRROR_POSITION_CALIBRATION_FILE", "calibration_data/hand_mirror_position_calibration.json"))
 
 
 def _print_hand_depth_camera_config(args, requested_index: int, use_main_defaults: bool) -> None:
@@ -729,13 +735,20 @@ def _print_pose_capture_summary(prefix: str, poses: dict) -> None:
             continue
         if "hand" in item:
             hand = item.get("hand", {})
-            robot = item.get("robot", {})
-            print(
-                f"[{prefix}] {name}: hand=({float(hand.get('x_norm', 0.0)):.3f},"
-                f"{float(hand.get('y_norm', 0.0)):.3f},{float(hand.get('depth_norm', 0.0)):.3f}) "
-                f"size={float(hand.get('hand_size_norm', 0.0)):.4f} "
-                f"robot=({float(robot.get('x_m', 0.0)):+.3f},{float(robot.get('y_m', 0.0)):+.3f},{float(robot.get('z_m', 0.0)):+.3f})"
-            )
+            robot = item.get("robot")
+            if isinstance(robot, dict):
+                print(
+                    f"[{prefix}] {name}: hand=({float(hand.get('x_norm', 0.0)):.3f},"
+                    f"{float(hand.get('y_norm', 0.0)):.3f},{float(hand.get('depth_norm', 0.0)):.3f}) "
+                    f"size={float(hand.get('hand_size_norm', 0.0)):.4f} "
+                    f"robot=({float(robot.get('x_m', 0.0)):+.3f},{float(robot.get('y_m', 0.0)):+.3f},{float(robot.get('z_m', 0.0)):+.3f})"
+                )
+            else:
+                print(
+                    f"[{prefix}] {name}: hand=({float(hand.get('x_norm', 0.0)):.3f},"
+                    f"{float(hand.get('y_norm', 0.0)):.3f},{float(hand.get('depth_norm', 0.0)):.3f}) "
+                    f"size={float(hand.get('hand_size_norm', 0.0)):.4f}"
+                )
         else:
             print(
                 f"[{prefix}] {name}: depth={float(item.get('depth_m', 0.0)):.3f}m "
@@ -1064,6 +1077,334 @@ def _run_hand_workspace_calibration(args) -> int:
         try:
             if robot is not None:
                 robot.disconnect()
+        except Exception:
+            pass
+        cv2.destroyAllWindows()
+
+
+
+def _mirror_required_poses() -> list[str]:
+    configured = list(getattr(val, "ROBOT_MIRROR_REQUIRED_POSES", []))
+    return [str(x) for x in configured] if configured else [
+        "center",
+        "mirror_left",
+        "mirror_right",
+        "mirror_up",
+        "mirror_down",
+        "mirror_near",
+        "mirror_far",
+    ]
+
+
+def _mirror_optional_poses() -> list[str]:
+    configured = list(getattr(val, "ROBOT_MIRROR_OPTIONAL_POSES", []))
+    if configured:
+        return [str(x) for x in configured]
+    return [
+        "mirror_up_left",
+        "mirror_up_right",
+        "mirror_down_left",
+        "mirror_down_right",
+        "mirror_near_left",
+        "mirror_near_right",
+        "mirror_far_left",
+        "mirror_far_right",
+        "mirror_near_up",
+        "mirror_near_down",
+        "mirror_far_up",
+        "mirror_far_down",
+        "mirror_near_up_left",
+        "mirror_near_up_right",
+        "mirror_far_down_left",
+        "mirror_far_down_right",
+    ]
+
+
+def _mirror_capture_pose_order() -> list[str]:
+    out: list[str] = []
+    for name in _mirror_required_poses() + _mirror_optional_poses():
+        if name not in out:
+            out.append(name)
+    return out
+
+
+def _mirror_pose_optional(name: str) -> bool:
+    return str(name) not in set(_mirror_required_poses())
+
+
+def _hand_mirror_pose_instruction(name: str) -> str:
+    text = {
+        "center": "Place your hand centered in the camera frame at normal runtime depth.",
+        "mirror_left": "Place your hand at the leftmost usable part of the camera frame before it leaves view.",
+        "mirror_right": "Place your hand at the rightmost usable part of the camera frame before it leaves view.",
+        "mirror_up": "Place your hand near the top of the usable camera frame before it leaves view.",
+        "mirror_down": "Place your hand near the bottom of the usable camera frame before it leaves view.",
+        "mirror_near": "Move your hand close to the camera at the closest intended runtime distance.",
+        "mirror_far": "Move your hand away from the camera at the farthest intended runtime distance.",
+        "mirror_up_left": "Optional: place your hand at the upper-left usable screen corner at center depth.",
+        "mirror_up_right": "Optional: place your hand at the upper-right usable screen corner at center depth.",
+        "mirror_down_left": "Optional: place your hand at the lower-left usable screen corner at center depth.",
+        "mirror_down_right": "Optional: place your hand at the lower-right usable screen corner at center depth.",
+        "mirror_near_left": "Optional: place your hand close to the camera and left in the image.",
+        "mirror_near_right": "Optional: place your hand close to the camera and right in the image.",
+        "mirror_far_left": "Optional: place your hand far from the camera and left in the image.",
+        "mirror_far_right": "Optional: place your hand far from the camera and right in the image.",
+        "mirror_near_up": "Optional: place your hand close to the camera and high in the image.",
+        "mirror_near_down": "Optional: place your hand close to the camera and low in the image.",
+        "mirror_far_up": "Optional: place your hand far from the camera and high in the image.",
+        "mirror_far_down": "Optional: place your hand far from the camera and low in the image.",
+        "mirror_near_up_left": "Optional: place your hand close, high, and left. Skip if tracking is unreliable.",
+        "mirror_near_up_right": "Optional: place your hand close, high, and right. Skip if tracking is unreliable.",
+        "mirror_far_down_left": "Optional: place your hand far, low, and left. Skip if tracking is unreliable.",
+        "mirror_far_down_right": "Optional: place your hand far, low, and right. Skip if tracking is unreliable.",
+    }
+    return text.get(str(name), f"Place your hand at {name}.")
+
+
+def _print_hand_mirror_pose_instruction(name: str, index: int, total: int, optional: bool) -> None:
+    print("\n[hand-mirror] Pose instruction")
+    print(f"[hand-mirror] Pose: {name} ({index}/{total})")
+    print(f"[hand-mirror] {_hand_mirror_pose_instruction(name)}")
+    print("[hand-mirror] This pose will be paired by name with the robot pose recorded in robot_calibrate.py.")
+    print("[hand-mirror] Press ENTER to open/continue camera preview. Sampling still waits for SPACE.")
+    if optional:
+        print("[hand-mirror] Optional pose: press S in the preview to skip if tracking is unreliable.")
+
+
+def _estimate_simple_wrist_rpy_from_landmarks(hand_lms) -> list[float]:
+    try:
+        lm = hand_lms.landmark
+        index = np.array([float(lm[5].x), float(lm[5].y)], dtype=np.float64)
+        pinky = np.array([float(lm[17].x), float(lm[17].y)], dtype=np.float64)
+        wrist = np.array([float(lm[0].x), float(lm[0].y)], dtype=np.float64)
+        middle = np.array([float(lm[9].x), float(lm[9].y)], dtype=np.float64)
+        lateral = pinky - index
+        forward = middle - wrist
+        roll = float(np.arctan2(lateral[1], lateral[0])) if np.linalg.norm(lateral) > 1e-6 else 0.0
+        yaw = float(np.arctan2(forward[0], max(abs(float(forward[1])), 1e-6))) if np.linalg.norm(forward) > 1e-6 else 0.0
+        pitch = -float(np.arctan2(forward[1], max(abs(float(forward[0])), 1e-6))) if np.linalg.norm(forward) > 1e-6 else 0.0
+        return [roll, pitch, yaw]
+    except Exception:
+        return [0.0, 0.0, 0.0]
+
+
+def _effective_hand_mirror_metrics(hand_lms, depth_estimator: HandDepthEstimator, frame_w: int, frame_h: int) -> dict:
+    # Use the raw normalized values that handtracking.py passes into RobotMirrorWorkspaceMapper.
+    # Pose names define direction, so this paired calibration should not apply HAND_IMAGE_* flips here.
+    metrics = _hand_landmark_metrics(hand_lms)
+    depth = depth_estimator.estimate_depth(hand_lms, frame_w=frame_w, frame_h=frame_h)
+    return {
+        "x_norm": float(np.clip(metrics["x_norm"], 0.0, 1.0)),
+        "y_norm": float(np.clip(metrics["y_norm"], 0.0, 1.0)),
+        "depth_norm": float(np.clip(float(depth.get("depth_norm", 0.5)), 0.0, 1.0)),
+        "hand_size_norm": float(depth.get("hand_size_norm", metrics["hand_size_norm"])),
+        "palm_width_norm": float(depth.get("palm_width_norm", metrics["palm_width_norm"])),
+        "wrist_to_middle_mcp_norm": float(depth.get("wrist_to_middle_mcp_norm", metrics["wrist_to_middle_mcp_norm"])),
+        "palm_height_norm": float(depth.get("palm_height_norm", metrics["palm_height_norm"])),
+        "bbox_size_norm": float(depth.get("bbox_size_norm", metrics["bbox_size_norm"])),
+        "thumb_index_span_norm": float(metrics.get("thumb_index_span_norm", 0.0)),
+        "depth_m": float(depth.get("depth_m", 0.0)),
+        "depth_source": str(depth.get("source", "unknown")),
+        "depth_confidence": float(depth.get("confidence", 0.0)),
+        "wrist_rpy_rad": _estimate_simple_wrist_rpy_from_landmarks(hand_lms),
+    }
+
+
+def _run_hand_mirror_position_calibration(args) -> int:
+    try:
+        import mediapipe as mp
+    except Exception as exc:
+        print(f"[hand-mirror] ERROR: MediaPipe is required: {exc}")
+        return 1
+
+    hands = None
+    camera = None
+    cap = None
+    pending_first_frame = None
+    depth_estimator = HandDepthEstimator()
+    poses = _mirror_capture_pose_order()
+    required = max(3, int(getattr(val, "HAND_DEPTH_CALIBRATION_REQUIRED_STABLE_FRAMES", 20)))
+    samples_per_pose = max(required, int(getattr(val, "HAND_DEPTH_CALIBRATION_SAMPLES_PER_POSE", 40)))
+    stability_max = float(getattr(val, "HAND_DEPTH_CALIBRATION_STABILITY_STD_MAX", 0.015))
+    pose_results = {}
+    pose_index = 0
+    samples: list[dict] = []
+    print("[hand-mirror] Hand-position mirror calibration.")
+    print("[hand-mirror] This records camera/MediaPipe hand positions only; it does not connect to or move the robot.")
+    print("[hand-mirror] Run robot_calibrate.py mirror_workspace separately to record matching robot poses.")
+    try:
+        while pose_index < len(poses):
+            state = "waiting_for_user_ready"
+            review_summary = None
+            pose_name = str(poses[pose_index])
+            samples.clear()
+            optional = _mirror_pose_optional(pose_name)
+            _print_hand_mirror_pose_instruction(pose_name, pose_index + 1, len(poses), optional)
+            try:
+                reply = input("[hand-mirror] Press ENTER when ready for camera preview, or Q to quit: ").strip().lower()
+            except EOFError:
+                reply = ""
+            if reply in {"q", "quit", "esc", "exit"}:
+                print("[hand-mirror] Quit before sampling; not saved.")
+                return 1
+            if hands is None:
+                hands = mp.solutions.hands.Hands(
+                    static_image_mode=False,
+                    max_num_hands=1,
+                    model_complexity=int(getattr(val, "HANDTRACKING_MODEL_COMPLEXITY", 0)),
+                    min_detection_confidence=float(getattr(val, "HANDTRACKING_MIN_DETECTION_CONFIDENCE", 0.55)),
+                    min_tracking_confidence=float(getattr(val, "HANDTRACKING_MIN_TRACKING_CONFIDENCE", 0.55)),
+                )
+            if camera is None:
+                camera = _open_hand_depth_camera(args)
+                if camera is None:
+                    return 1
+                cap = camera.cap
+                pending_first_frame = camera.frame
+
+            while True:
+                if cap is None or hands is None:
+                    print("[hand-mirror] ERROR: Camera/MediaPipe initialization failed.")
+                    return 1
+                if pending_first_frame is not None:
+                    ok, frame = True, pending_first_frame
+                    pending_first_frame = None
+                else:
+                    ok, frame = read_latest_from_capture(cap)
+                if not ok or frame is None:
+                    print("[hand-mirror] ERROR: Could not open/read webcam.")
+                    return 1
+                frame_h, frame_w = frame.shape[:2]
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                results = hands.process(rgb)
+                metrics = None
+                if results.multi_hand_landmarks:
+                    hand_lms = results.multi_hand_landmarks[0]
+                    metrics = _effective_hand_mirror_metrics(hand_lms, depth_estimator, frame_w, frame_h)
+                    mp.solutions.drawing_utils.draw_landmarks(frame, hand_lms, mp.solutions.hands.HAND_CONNECTIONS)
+
+                std = float("nan")
+                if state == "sampling" and metrics is not None:
+                    samples.append(metrics)
+                    samples = samples[-samples_per_pose:]
+                    recent = samples[-required:]
+                    if len(recent) >= required:
+                        std = float(np.std([s["hand_size_norm"] for s in recent]))
+                        if std <= stability_max:
+                            review_summary = _mean_metrics(recent)
+                            # average wrist_rpy separately because it is a list.
+                            rpy_samples = [s.get("wrist_rpy_rad") for s in recent if isinstance(s.get("wrist_rpy_rad"), list)]
+                            if rpy_samples:
+                                review_summary["wrist_rpy_rad"] = np.mean(np.asarray(rpy_samples, dtype=np.float64), axis=0).tolist()
+                            state = "review"
+
+                lines = [
+                    f"Hand mirror calibration: {pose_name} ({pose_index + 1}/{len(poses)})",
+                    _hand_mirror_pose_instruction(pose_name),
+                    "Required: one visible MediaPipe hand, held steady",
+                ]
+                if state == "waiting_for_user_ready":
+                    lines += [
+                        "Press SPACE when ready to start sampling",
+                        "R = reset current pose",
+                        "S = skip optional pose",
+                        "Q/ESC = quit without saving",
+                    ]
+                elif state == "sampling":
+                    std_text = "n/a" if not np.isfinite(std) else f"{std:.5f}"
+                    lines += [
+                        f"Sampling: {len(samples)}/{required} valid samples",
+                        f"stability std: {std_text} limit={stability_max:.5f}",
+                        "No hand detected: sampling paused" if metrics is None else "Hold steady",
+                        "R = reset current pose, Q/ESC = quit without saving",
+                    ]
+                else:
+                    s = review_summary or {}
+                    lines += [
+                        "Review summary",
+                        f"mean=({float(s.get('x_norm', 0.0)):.3f},{float(s.get('y_norm', 0.0)):.3f},{float(s.get('depth_norm', 0.0)):.3f}) size={float(s.get('hand_size_norm', 0.0)):.4f}",
+                        f"std=({float(s.get('x_norm_std', 0.0)):.4f},{float(s.get('y_norm_std', 0.0)):.4f},{float(s.get('depth_norm_std', 0.0)):.4f}) size_std={float(s.get('hand_size_norm_std', 0.0)):.5f}",
+                        "A = accept pose, R = resample, Q/ESC = quit",
+                    ]
+                if metrics is not None:
+                    lines.append(f"live hand=({metrics['x_norm']:.2f},{metrics['y_norm']:.2f},{metrics['depth_norm']:.2f}) size={metrics['hand_size_norm']:.3f}")
+                else:
+                    lines.append("live hand: not detected")
+                _draw_text_lines(frame, lines)
+                cv2.imshow("Hand mirror position calibration", frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key in (27, ord("q")):
+                    return 1
+                if key == ord("r"):
+                    samples.clear()
+                    review_summary = None
+                    state = "waiting_for_user_ready"
+                    continue
+                if state == "waiting_for_user_ready" and key == ord("s") and optional:
+                    print(f"[hand-mirror] skipped optional pose {pose_name}")
+                    pose_index += 1
+                    break
+                if state == "waiting_for_user_ready" and key == ord(" "):
+                    samples.clear()
+                    review_summary = None
+                    state = "sampling"
+                    continue
+                if state == "review" and key == ord("a") and review_summary:
+                    pose_results[pose_name] = {
+                        "hand": {
+                            "x_norm": float(review_summary.get("x_norm", 0.5)),
+                            "y_norm": float(review_summary.get("y_norm", 0.5)),
+                            "depth_norm": float(review_summary.get("depth_norm", 0.5)),
+                            "hand_size_norm": float(review_summary.get("hand_size_norm", 0.0)),
+                            "wrist_rpy_rad": list(review_summary.get("wrist_rpy_rad", [0.0, 0.0, 0.0])),
+                        },
+                        "std": {
+                            k: float(v) for k, v in review_summary.items()
+                            if k.endswith("_std") and isinstance(v, (int, float)) and np.isfinite(float(v))
+                        },
+                        "metrics": review_summary,
+                        "samples": int(len(samples)),
+                    }
+                    print(
+                        f"[hand-mirror] accepted {pose_name}: "
+                        f"hand=({review_summary.get('x_norm', 0.5):.3f},{review_summary.get('y_norm', 0.5):.3f},{review_summary.get('depth_norm', 0.5):.3f})"
+                    )
+                    pose_index += 1
+                    break
+        missing = [name for name in _mirror_required_poses() if name not in pose_results]
+        if missing:
+            print("[hand-mirror] Missing required poses; not saving: " + ", ".join(missing))
+            return 1
+        payload = {
+            "calibration_type": "hand_mirror_position_extrema",
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "source": "camera_calibrate.py",
+            "camera": {
+                "width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0) if cap is not None else 0,
+                "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0) if cap is not None else 0,
+                "index": int(camera.index) if camera is not None else int(getattr(val, "HANDTRACKING_CAMERA_INDEX", 0)),
+            },
+            "required_poses": _mirror_required_poses(),
+            "optional_poses": _mirror_optional_poses(),
+            "poses": pose_results,
+            "notes": "Pairs by pose name with robot_mirror_workspace_calibration.json; no robot movement is performed here.",
+        }
+        _print_pose_capture_summary("hand-mirror", pose_results)
+        if not _confirm_final_save("hand-mirror"):
+            print("[hand-mirror] Not saved.")
+            return 0
+        out_path = _save_hand_depth_calibration(payload, _hand_mirror_position_calibration_path(), bool(args.overwrite))
+        print(f"[hand-mirror] Saved calibration: {out_path}")
+        return 0
+    finally:
+        try:
+            if hands is not None:
+                hands.close()
+        except Exception:
+            pass
+        try:
+            if cap is not None:
+                cap.release()
         except Exception:
             pass
         cv2.destroyAllWindows()
@@ -1746,10 +2087,11 @@ def _no_arg_menu(args) -> int:
     print("3. Optional ChArUco camera intrinsics calibration")
     print("4. Optional chessboard camera intrinsics calibration")
     print("5. Quit")
-    print("6. Hand-to-workspace calibration")
+    print("6. Legacy hand-to-workspace calibration")
+    print("7. Hand mirror position calibration")
     print("\nTip: In PyCharm, add --hand-depth to Run Configuration > Parameters to launch calibration directly.")
     try:
-        choice = input("\nSelection [1/2/3/4/5/6]: ").strip()
+        choice = input("\nSelection [1/2/3/4/5/6/7]: ").strip()
     except EOFError:
         choice = ""
     if choice == "":
@@ -1769,6 +2111,8 @@ def _no_arg_menu(args) -> int:
         return 0
     if choice == "6":
         return _run_hand_workspace_calibration(args)
+    if choice == "7":
+        return _run_hand_mirror_position_calibration(args)
     print(f"[calib] Unknown selection: {choice}")
     return 1
 
@@ -1784,7 +2128,9 @@ def main() -> int:
     parser.add_argument("--status", action="store_true", help="Print calibration status and runtime readiness.")
     parser.add_argument("--list-cameras", action="store_true", help="Probe camera indices using the same backend/read logic as main.py.")
     parser.add_argument("--hand-depth", action="store_true", help="Run RGB MediaPipe hand-size depth calibration.")
-    parser.add_argument("--hand-workspace", action="store_true", help="Run nonlinear non-neural hand-to-workspace calibration.")
+    parser.add_argument("--hand-workspace", action="store_true", help="Run legacy nonlinear non-neural hand-to-workspace calibration.")
+    parser.add_argument("--hand-mirror", action="store_true", help="Run hand-side mirror position calibration paired by pose name with robot_calibrate.py mirror_workspace.")
+    parser.add_argument("--hand-positions", action="store_true", help="Alias for --hand-mirror.")
     parser.add_argument(
         "--use-main-camera-defaults",
         action="store_true",
@@ -1829,6 +2175,8 @@ def main() -> int:
         return _run_hand_depth_calibration(args)
     if args.hand_workspace:
         return _run_hand_workspace_calibration(args)
+    if args.hand_mirror or args.hand_positions:
+        return _run_hand_mirror_position_calibration(args)
     if args.charuco or args.chessboard or args.print_board:
         return _run_charuco_calibration(args)
     if not args.hand_marker:
