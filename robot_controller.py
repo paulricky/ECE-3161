@@ -333,6 +333,8 @@ class SOArmHardwareController:
         self._async_stop = threading.Event()
         self._async_thread: Optional[threading.Thread] = None
         self._pending_cmd: Optional[JointCommand] = None
+        self._last_serial_write_ms = 0.0
+        self._async_dropped_commands = 0
 
     def _find_candidate_ports(self) -> List[str]:
         ports = list(list_ports.comports())
@@ -781,7 +783,7 @@ class SOArmHardwareController:
 
     def ready_to_send(self) -> bool:
         now = time.time()
-        period = 1.0 / max(float(getattr(val, "REAL_ROBOT_HZ", 20.0)), 1e-6)
+        period = 1.0 / max(float(getattr(val, "ROBOT_COMMAND_MAX_HZ", getattr(val, "REAL_ROBOT_HZ", 20.0))), 1e-6)
         return (now - self.last_send_time) >= period
 
     def send_if_due(self, cmd: JointCommand):
@@ -817,11 +819,17 @@ class SOArmHardwareController:
             if not moved:
                 return None
 
+        t0 = time.perf_counter()
         sent = self.robot.send_action(control_action)
+        self._last_serial_write_ms = (time.perf_counter() - t0) * 1000.0
         if bool(getattr(val, "REAL_ROBOT_VERBOSE_ACTION_LOG", False)):
             print(f"[robot_controller] sent = {sent}")
         self._last_action = dict(sent)
         self.last_send_time = time.time()
+        self.last_command_diagnostics.update({
+            "serial_write_ms": self._last_serial_write_ms,
+            "async_dropped_commands": self._async_dropped_commands,
+        })
         return sent
 
     def start_async_sender(self) -> None:
@@ -847,6 +855,8 @@ class SOArmHardwareController:
         if not bool(getattr(val, "REAL_ROBOT_ASYNC_COMMAND_SENDER", True)):
             return self.send_if_due(cmd)
         with self._async_lock:
+            if self._pending_cmd is not None and bool(getattr(val, "ROBOT_COMMAND_DROP_OLD", True)):
+                self._async_dropped_commands += 1
             self._pending_cmd = cmd
         return None
 
@@ -862,7 +872,7 @@ class SOArmHardwareController:
                     self.send_if_due(cmd)
                 except Exception as exc:
                     print(f"[robot_controller] async sender warning: {exc}")
-            period = 1.0 / max(float(getattr(val, "REAL_ROBOT_HZ", 20.0)), 1e-6)
+            period = 1.0 / max(float(getattr(val, "ROBOT_COMMAND_MAX_HZ", getattr(val, "REAL_ROBOT_HZ", 20.0))), 1e-6)
             time.sleep(min(0.02, max(0.001, 0.5 * period)))
 
     def _cached_present_joints_rad(self) -> Optional[Dict[str, float]]:

@@ -13,7 +13,7 @@ import numpy as np
 
 import mathmodel as mm
 import values as val
-from depthcalibrator import DepthCalibrator
+from depthcalibrator import DepthCalibrator, HandDepthEstimator
 from residual_learning import BoundedResidualCorrector
 
 
@@ -47,9 +47,21 @@ def _get_hands():
         hands = mp_hands.Hands(
             static_image_mode=False,
             max_num_hands=int(getattr(val, "HANDTRACKING_MAX_NUM_HANDS", 2)),
-            model_complexity=int(getattr(val, "HANDTRACKING_MODEL_COMPLEXITY", 0)),
-            min_detection_confidence=float(getattr(val, "HANDTRACKING_MIN_DETECTION_CONFIDENCE", 0.6)),
-            min_tracking_confidence=float(getattr(val, "HANDTRACKING_MIN_TRACKING_CONFIDENCE", 0.6)),
+            model_complexity=int(getattr(
+                val,
+                "HANDTRACKING_MEDIAPIPE_MODEL_COMPLEXITY" if bool(getattr(val, "LOW_LATENCY_MODE", False)) else "HANDTRACKING_MODEL_COMPLEXITY",
+                getattr(val, "HANDTRACKING_MODEL_COMPLEXITY", 0),
+            )),
+            min_detection_confidence=float(getattr(
+                val,
+                "HANDTRACKING_MIN_DETECTION_CONFIDENCE",
+                getattr(val, "HANDTRACKING_MIN_DETECTION_CONFIDENCE", 0.6),
+            )),
+            min_tracking_confidence=float(getattr(
+                val,
+                "HANDTRACKING_MIN_TRACKING_CONFIDENCE",
+                getattr(val, "HANDTRACKING_MIN_TRACKING_CONFIDENCE", 0.6),
+            )),
         )
         return hands
     except Exception as exc:
@@ -751,14 +763,15 @@ class HandTracker:
         self._last_open01 = 1.0
         self._alpha = float(getattr(val, "HAND_CMD_SMOOTHING", 0.25))
         self._open_alpha = float(getattr(val, "HAND_STATE_SMOOTHING", 0.20))
-        self.aruco = ArucoGloveTracker()
+        if bool(getattr(val, "LOW_LATENCY_MODE", False)):
+            self._alpha = float(getattr(val, "HAND_TARGET_SMOOTHING_ALPHA_LOW_LATENCY", self._alpha))
+        self.aruco = ArucoGloveTracker() if bool(getattr(val, "HAND_DEPTH_ENABLE_ARUCO_GLOVE", False)) else None
         self.residual_corrector = BoundedResidualCorrector()
         try:
-            self.depth_calibrator = DepthCalibrator(
-                window=int(getattr(val, "HAND_DEPTH_AUTOCALIBRATE_WINDOW", 240)),
-                ema_alpha=float(getattr(val, "HAND_DEPTH_SMOOTHING_ALPHA", getattr(val, "HAND_DEPTH_AUTOCALIBRATE_EMA_ALPHA", 0.15))),
-            )
+            self.depth_estimator = HandDepthEstimator()
+            self.depth_calibrator = self.depth_estimator
         except Exception:
+            self.depth_estimator = None
             self.depth_calibrator = None
         self.lerobot_calibration = self._load_lerobot_calibration()
         self._last_ik_solution = None
@@ -833,13 +846,22 @@ class HandTracker:
             return None
 
     def process(self, frame):
+        process_t0 = time.perf_counter()
+        hand_ms = 0.0
+        aruco_ms = 0.0
+        command_ms = 0.0
         now = time.time()
         dt = now - self.prev_time
         if dt <= 0.0:
             dt = 1e-3
         self.prev_time = now
 
+        hand_t0 = time.perf_counter()
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        try:
+            rgb.flags.writeable = False
+        except Exception:
+            pass
         hands_processor = _get_hands()
         if hands_processor is None:
             detected_hands = []
@@ -850,40 +872,72 @@ class HandTracker:
             except Exception as exc:
                 log_event(f"MediaPipe process skipped: {exc}")
                 detected_hands = []
+        try:
+            rgb.flags.writeable = True
+        except Exception:
+            pass
+        hand_ms = (time.perf_counter() - hand_t0) * 1000.0
 
         clap_event, per_hand = draw_and_update_gestures(frame, detected_hands, now, dt)
         snap_event = any(bool(info.get("snap", False)) for info in per_hand.values())
         self.last_gesture_events = {"snap": snap_event, "clap": bool(clap_event), "per_hand": per_hand}
 
-        aruco_pose = self.aruco.detect(frame)
-        self.aruco.draw_debug(frame, aruco_pose)
+        aruco_t0 = time.perf_counter()
+        aruco_pose = None
+        if self.aruco is not None and bool(getattr(val, "HAND_DEPTH_ENABLE_ARUCO_GLOVE", False)):
+            aruco_pose = self.aruco.detect(frame)
+            if not bool(getattr(val, "DEBUG_DISABLE_EXPENSIVE_OVERLAYS", False)):
+                self.aruco.draw_debug(frame, aruco_pose)
+        aruco_ms = (time.perf_counter() - aruco_t0) * 1000.0
 
         driver = choose_driver(detected_hands)
 
         if aruco_pose is not None and driver is None:
+            command_t0 = time.perf_counter()
             open01 = self._estimate_gripper_open01(detected_hands)
             cmd = self._aruco_pose_to_command(aruco_pose, open01)
             if cmd is not None:
                 out = self._smooth_command(cmd)
+                command_ms = (time.perf_counter() - command_t0) * 1000.0
                 out["mode"] = "aruco"
                 out["snap_event"] = snap_event
                 out["clap_event"] = bool(clap_event)
                 out["ee_target_xyz"] = aruco_pose["workspace_xyz"].tolist()
-                self._draw_command_overlay(frame, out)
-                self._draw_aruco_overlay(frame, aruco_pose)
+                diag = dict(out.get("__diagnostics__", {})) if isinstance(out.get("__diagnostics__", {}), dict) else {}
+                diag.update({
+                    "perf_hand_ms": hand_ms,
+                    "perf_aruco_ms": aruco_ms,
+                    "perf_command_ms": command_ms,
+                    "perf_process_ms": (time.perf_counter() - process_t0) * 1000.0,
+                })
+                out["__diagnostics__"] = diag
+                if not bool(getattr(val, "DEBUG_DISABLE_EXPENSIVE_OVERLAYS", False)):
+                    self._draw_command_overlay(frame, out)
+                    self._draw_aruco_overlay(frame, aruco_pose)
                 return out
 
         if driver is None:
             return None
 
         hand_lms, label, _score = driver
+        command_t0 = time.perf_counter()
         cmd = self._landmarks_to_command(hand_lms, label, frame.shape[1], frame.shape[0], aruco_pose=aruco_pose)
         out = self._smooth_command(cmd)
+        command_ms = (time.perf_counter() - command_t0) * 1000.0
         diag = out.get("__diagnostics__", {}) if isinstance(out.get("__diagnostics__", {}), dict) else {}
+        diag = dict(diag)
+        diag.update({
+            "perf_hand_ms": hand_ms,
+            "perf_aruco_ms": aruco_ms,
+            "perf_command_ms": command_ms,
+            "perf_process_ms": (time.perf_counter() - process_t0) * 1000.0,
+        })
+        out["__diagnostics__"] = diag
         out["mode"] = "cartesian" if diag.get("hand_cartesian_ik_active") else "mediapipe"
         out["snap_event"] = snap_event
         out["clap_event"] = bool(clap_event)
-        self._draw_command_overlay(frame, out)
+        if not bool(getattr(val, "DEBUG_DISABLE_EXPENSIVE_OVERLAYS", False)):
+            self._draw_command_overlay(frame, out)
         return out
 
     def _smooth_command(self, cmd):
@@ -930,6 +984,8 @@ class HandTracker:
         xyz = np.asarray(xyz, dtype=np.float64).reshape(3)
         rpy = np.asarray(rpy, dtype=np.float64).reshape(3)
         alpha = _clip(float(getattr(val, "POSE_SMOOTH_ALPHA", 0.25)), 0.0, 1.0)
+        if bool(getattr(val, "LOW_LATENCY_MODE", False)):
+            alpha = _clip(float(getattr(val, "HAND_TARGET_SMOOTHING_ALPHA_LOW_LATENCY", alpha)), 0.0, 1.0)
         if self._filtered_target_xyz is None:
             self._filtered_target_xyz = xyz.copy()
         else:
@@ -1021,7 +1077,7 @@ class HandTracker:
             self._ik_last_request_time = now
 
     def _ik_worker_loop(self) -> None:
-        hz = float(getattr(val, "HAND_IK_HZ", 4.0))
+        hz = float(getattr(val, "IK_MAX_SOLVE_HZ", getattr(val, "HAND_IK_HZ", 4.0)))
         period = 1.0 / max(hz, 1e-3) if hz > 0.0 else 0.25
         last_start = 0.0
         while not self._ik_stop.is_set():
@@ -1051,6 +1107,7 @@ class HandTracker:
                 self._ik_busy = False
 
     def _solve_ik_now(self, xyz_f, rpy_f, open01):
+        ik_t0 = time.perf_counter()
         raw_xyz = np.asarray(xyz_f, dtype=np.float64).reshape(3)
         raw_rpy = np.asarray(rpy_f, dtype=np.float64).reshape(3)
         if not np.all(np.isfinite(raw_xyz)) or not np.all(np.isfinite(raw_rpy)):
@@ -1070,7 +1127,9 @@ class HandTracker:
         if not isinstance(solved, dict):
             return None
         diag = dict(solved.get("__diagnostics__", {})) if isinstance(solved.get("__diagnostics__", {}), dict) else {}
+        perf_ik_ms = (time.perf_counter() - ik_t0) * 1000.0
         diag.update({
+            "perf_ik_ms": perf_ik_ms,
             "residual_raw_xyz_m": raw_xyz.tolist(),
             "residual_raw_rpy_rad": raw_rpy.tolist(),
             "residual_corrected_xyz_m": corrected_xyz.tolist(),
@@ -1175,6 +1234,7 @@ class HandTracker:
                     f"n=({float(diag.get('camera_x_norm', 0.0)):.2f},"
                     f"{float(diag.get('camera_y_norm', 0.0)):.2f},"
                     f"{float(diag.get('camera_depth_norm', 0.5)):.2f}) "
+                    f"z={float(diag.get('depth_m', 0.0)):.2f}m c={float(diag.get('depth_confidence', 0.0)):.2f} "
                     f"size={float(diag.get('hand_size_norm', 0.0)):.2f}"
                 )
                 line2 = (
@@ -1298,7 +1358,7 @@ class HandTracker:
         if not bool(getattr(val, "HAND_USE_WRIST_ORIENTATION", True)):
             return np.array([0.0, float(getattr(val, "HAND_TARGET_PITCH_BIAS_RAD", -0.15)), 0.0], dtype=np.float64), "disabled"
 
-        if aruco_pose is not None:
+        if aruco_pose is not None and bool(getattr(val, "HAND_DEPTH_ENABLE_ARUCO_GLOVE", False)):
             rpy = _finite_vec3(aruco_pose.get("workspace_rpy"))
             if rpy is not None:
                 return self._configured_wrist_rpy(rpy), "aruco"
@@ -1338,41 +1398,46 @@ class HandTracker:
         return np.array([roll, pitch, yaw], dtype=np.float64)
 
     def build_hand_cartesian_target(self, hand_lms, frame_w: int, frame_h: int, aruco_pose=None):
-        del frame_w, frame_h
         metrics = self._hand_size_metrics(hand_lms)
         x_norm_raw = metrics["camera_x_norm"]
         y_norm_raw = metrics["camera_y_norm"]
         x_norm = 1.0 - x_norm_raw if bool(getattr(val, "HAND_IMAGE_X_FLIP", False)) else x_norm_raw
         y_norm = 1.0 - y_norm_raw if bool(getattr(val, "HAND_IMAGE_Y_FLIP", True)) else y_norm_raw
 
-        depth_source = "midpoint"
-        depth_raw = 0.5
-        depth_smooth = self.depth_calibrator.get_smoothed_depth_norm() if self.depth_calibrator is not None else 0.5
-        configured_depth_source = str(getattr(val, "HAND_DEPTH_SIZE_SOURCE", "auto")).strip().lower()
-        aruco_depth = None
-        if aruco_pose is not None:
-            aruco_depth = _finite_float(aruco_pose.get("camera_depth_m"), None)
-
+        depth_debug = {}
         if (
-            configured_depth_source in {"auto", "aruco_marker", "aruco"}
-            and aruco_depth is not None
-            and bool(getattr(val, "HAND_ARUCO_SIZE_DEPTH_ENABLED", True))
-            and self.depth_calibrator is not None
+            bool(getattr(val, "HAND_MONOCULAR_DEPTH_ENABLED", True))
+            and str(getattr(val, "HAND_DEPTH_MODE", "monocular_size")).strip().lower() == "monocular_size"
+            and self.depth_estimator is not None
         ):
-            depth_raw = self.depth_calibrator.depth_m_to_norm(aruco_depth, smooth=False)
-            depth_smooth = self.depth_calibrator.update_from_aruco_depth(aruco_depth)
-            depth_source = "aruco"
-        elif (
-            configured_depth_source in {"auto", "hand_landmarks", "hand", "mediapipe"}
-            and bool(getattr(val, "HAND_DEPTH_FROM_SIZE_ENABLED", True))
-            and self.depth_calibrator is not None
-        ):
-            depth_raw = self.depth_calibrator.normalize_hand_size(metrics["hand_size_norm"], smooth=False)
-            depth_smooth = self.depth_calibrator.update_from_hand_size(metrics["hand_size_norm"])
-            depth_source = "hand_size"
+            depth_debug = self.depth_estimator.estimate_depth(hand_lms, frame_w=frame_w, frame_h=frame_h)
+            depth_source = str(depth_debug.get("source", "monocular_size"))
+            depth_raw = float(depth_debug.get("depth_norm", 0.5))
+            depth_smooth = depth_raw
         else:
-            depth_raw = depth_smooth
-            depth_source = "old" if self.depth_calibrator is not None else "midpoint"
+            depth_source = "fixed"
+            depth_m = float(getattr(val, "HAND_DEPTH_DEFAULT_M", 0.45))
+            if self.depth_estimator is not None:
+                depth_raw = self.depth_estimator.depth_m_to_norm(depth_m)
+            else:
+                near = float(getattr(val, "HAND_MONOCULAR_NEAR_M", 0.20))
+                far = float(getattr(val, "HAND_MONOCULAR_FAR_M", 0.70))
+                depth_raw = _clip(1.0 - ((depth_m - near) / max(far - near, 1e-6)), 0.0, 1.0)
+            depth_smooth = depth_raw
+            depth_debug = {
+                "depth_m": depth_m,
+                "depth_norm": depth_smooth,
+                "source": depth_source,
+                "confidence": 0.2,
+                "raw_candidates": {},
+                "hand_size_norm": metrics["hand_size_norm"],
+                "palm_width_norm": metrics["palm_width_norm"],
+                "wrist_to_middle_mcp_norm": metrics["palm_height_norm"],
+                "palm_height_norm": metrics["palm_height_norm"],
+                "bbox_size_norm": metrics["bbox_size_norm"],
+                "thumb_index_span_norm": 0.0,
+                "valid": True,
+            }
 
         if bool(getattr(val, "HAND_DEPTH_FLIP", False)):
             depth_raw = 1.0 - depth_raw
@@ -1400,8 +1465,8 @@ class HandTracker:
             xyz_by_axis[depth_axis] = self._depth_coord(depth_axis, depth_norm)
 
         xyz_raw = np.array([xyz_by_axis["robot_x"], xyz_by_axis["robot_y"], xyz_by_axis["robot_z"]], dtype=np.float64)
-        mapping_source = "mediapipe_size_fallback"
-        if aruco_pose is not None:
+        mapping_source = "mediapipe_monocular_depth"
+        if aruco_pose is not None and bool(getattr(val, "HAND_DEPTH_ENABLE_ARUCO_GLOVE", False)):
             aruco_xyz = _finite_vec3(aruco_pose.get("workspace_xyz"))
             if aruco_xyz is not None:
                 xyz_raw = aruco_xyz
@@ -1435,10 +1500,15 @@ class HandTracker:
             "camera_x_norm": float(x_norm_raw),
             "camera_y_norm": float(y_norm_raw),
             "camera_depth_norm": float(depth_norm),
-            "hand_size_norm": float(metrics["hand_size_norm"]),
-            "palm_width_norm": float(metrics["palm_width_norm"]),
-            "palm_height_norm": float(metrics["palm_height_norm"]),
-            "bbox_size_norm": float(metrics["bbox_size_norm"]),
+            "depth_m": float(depth_debug.get("depth_m", 0.0)),
+            "depth_confidence": float(depth_debug.get("confidence", 0.0)),
+            "depth_candidates": dict(depth_debug.get("raw_candidates", {})) if isinstance(depth_debug.get("raw_candidates", {}), dict) else {},
+            "hand_size_norm": float(depth_debug.get("hand_size_norm", metrics["hand_size_norm"])),
+            "palm_width_norm": float(depth_debug.get("palm_width_norm", metrics["palm_width_norm"])),
+            "wrist_to_middle_mcp_norm": float(depth_debug.get("wrist_to_middle_mcp_norm", metrics["palm_height_norm"])),
+            "palm_height_norm": float(depth_debug.get("palm_height_norm", metrics["palm_height_norm"])),
+            "bbox_size_norm": float(depth_debug.get("bbox_size_norm", metrics["bbox_size_norm"])),
+            "thumb_index_span_norm": float(depth_debug.get("thumb_index_span_norm", 0.0)),
             "depth_source": depth_source,
             "depth_norm_raw": float(depth_raw),
             "depth_norm_smoothed": float(depth_smooth),
@@ -1461,7 +1531,11 @@ class HandTracker:
             "target_clamped": bool(clamped),
             "target_rpy_rad": rpy.tolist(),
             "target_rpy_source": rpy_source,
-            "aruco_detected": bool(aruco_pose is not None),
+            "using_monocular_depth": bool(getattr(val, "HAND_MONOCULAR_DEPTH_ENABLED", True)),
+            "using_depth_camera": False,
+            "using_cnn_depth": False,
+            "aruco_glove_disabled": not bool(getattr(val, "HAND_DEPTH_ENABLE_ARUCO_GLOVE", False)),
+            "aruco_detected": bool(aruco_pose is not None and bool(getattr(val, "HAND_DEPTH_ENABLE_ARUCO_GLOVE", False))),
         }
         return xyz_final, rpy, debug
 

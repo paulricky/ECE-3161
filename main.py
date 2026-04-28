@@ -10,9 +10,11 @@ import cv2
 import values as val
 from camera_utils import (
     CameraOpenError,
+    LatestFrameCamera,
     open_handtracking_camera,
     open_specific_handtracking_camera,
     print_camera_failure_help,
+    read_latest_from_capture,
     probe_camera_indices,
 )
 from pick_place_runtime import PickAndPlaceRuntime
@@ -113,6 +115,65 @@ def _draw_main_hud(frame, pick_runtime: PickAndPlaceRuntime, snap_event: bool) -
         cv2.putText(frame, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
 
 
+class PerfStats:
+    def __init__(self):
+        self.last_print = time.time()
+        self.camera_frames = 0
+        self.processed_frames = 0
+        self.robot_commands = 0
+        self.frame_age_ms = 0.0
+        self.hand_ms = 0.0
+        self.ik_ms = 0.0
+        self.robot_enqueue_ms = 0.0
+        self.display_ms = 0.0
+        self.total_ms = 0.0
+        self.queue_size = 0
+        self.cam_fps = 0.0
+        self.proc_fps = 0.0
+        self.robot_hz = 0.0
+        self._window_start = time.time()
+
+    def update_rates(self, now: float) -> None:
+        elapsed = max(now - self._window_start, 1e-6)
+        self.cam_fps = self.camera_frames / elapsed
+        self.proc_fps = self.processed_frames / elapsed
+        self.robot_hz = self.robot_commands / elapsed
+
+    def maybe_print(self) -> None:
+        interval = float(getattr(val, "DEBUG_PERF_PRINT_EVERY_S", 2.0))
+        if interval <= 0.0:
+            return
+        now = time.time()
+        if (now - self.last_print) < interval:
+            return
+        self.update_rates(now)
+        print(
+            "[perf] "
+            f"cam_fps={self.cam_fps:.1f} proc_fps={self.proc_fps:.1f} robot_hz={self.robot_hz:.1f} "
+            f"frame_age_ms={self.frame_age_ms:.0f} hand_ms={self.hand_ms:.1f} ik_ms={self.ik_ms:.1f} "
+            f"enqueue_ms={self.robot_enqueue_ms:.1f} display_ms={self.display_ms:.1f} total_ms={self.total_ms:.1f} "
+            f"queue={self.queue_size}"
+        )
+        self.last_print = now
+        self._window_start = now
+        self.camera_frames = 0
+        self.processed_frames = 0
+        self.robot_commands = 0
+
+
+def _draw_perf_overlay(frame, perf: PerfStats) -> None:
+    if not bool(getattr(val, "DEBUG_PERF_OVERLAY", True)):
+        return
+    lines = [
+        f"cam {perf.cam_fps:.1f}fps proc {perf.proc_fps:.1f}fps robot {perf.robot_hz:.1f}Hz q={perf.queue_size}",
+        f"age {perf.frame_age_ms:.0f}ms hand {perf.hand_ms:.1f}ms IK {perf.ik_ms:.1f}ms serial {perf.robot_enqueue_ms:.1f}ms total {perf.total_ms:.1f}ms",
+    ]
+    for i, line in enumerate(lines):
+        y = 82 + i * 22
+        cv2.putText(frame, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(frame, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (40, 255, 40), 1, cv2.LINE_AA)
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Hand tracking and robot control runtime.")
     parser.add_argument(
@@ -164,7 +225,7 @@ def _stop_robot_sender(robot: Optional[SOArmHardwareController], real_robot_enab
 def _start_robot_sender(robot: Optional[SOArmHardwareController], real_robot_enabled: bool) -> None:
     if not real_robot_enabled or robot is None:
         return
-    if bool(getattr(val, "REAL_ROBOT_ASYNC_COMMAND_SENDER", True)):
+    if bool(getattr(val, "ROBOT_COMMAND_ASYNC_ONLY", True)) or bool(getattr(val, "REAL_ROBOT_ASYNC_COMMAND_SENDER", True)):
         robot.start_async_sender()
 
 
@@ -201,6 +262,11 @@ def main() -> int:
 
     cap = camera.cap
     pending_first_frame = camera.frame
+    latest_camera = None
+    if bool(getattr(val, "CAMERA_THREADED_CAPTURE", True)):
+        latest_camera = LatestFrameCamera(cap, initial_frame=pending_first_frame)
+        latest_camera.start()
+        pending_first_frame = None
 
     robot = SOArmHardwareController()
 
@@ -216,7 +282,10 @@ def main() -> int:
             except Exception:
                 pass
             try:
-                cap.release()
+                if latest_camera is not None:
+                    latest_camera.release()
+                else:
+                    cap.release()
             except Exception:
                 pass
             return 1
@@ -240,16 +309,51 @@ def main() -> int:
     max_reopen_attempts = max(0, int(getattr(val, "MAIN_CAMERA_MAX_REOPEN_ATTEMPTS", 2)))
     reopen_on_live_failure = bool(getattr(val, "MAIN_CAMERA_REOPEN_ON_LIVE_FAILURE", True))
     camera_sender_paused = False
+    perf = PerfStats()
+    last_frame_sequence = -1
+    processed_frame_count = 0
+    last_process_time = 0.0
+    last_display_frame = None
+    last_snap_event = False
+    process_every_n = max(1, int(getattr(val, "HANDTRACKING_PROCESS_EVERY_N_FRAMES", 1)))
+    process_hz = float(getattr(val, "HANDTRACKING_MAX_PROCESS_HZ", 30.0))
+    process_period = 1.0 / max(process_hz, 1e-3) if process_hz > 0.0 else 0.0
 
     try:
         while True:
             loop_start = time.time()
-            if pending_first_frame is not None:
+            frame_timestamp = loop_start
+            frame_sequence = last_frame_sequence + 1
+            if latest_camera is not None:
+                latest = latest_camera.read_latest()
+                ret = bool(latest.ok)
+                frame = latest.frame
+                frame_timestamp = latest.timestamp
+                frame_sequence = latest.sequence
+                perf.frame_age_ms = latest.age_s * 1000.0
+                stats = latest_camera.stats()
+                perf.queue_size = int(stats.get("queue_size", 0))
+                if latest.failures >= camera_failure_limit:
+                    ret = False
+                    frame = None
+                if frame_sequence == last_frame_sequence:
+                    if latest.failures >= camera_failure_limit:
+                        ret = False
+                        frame = None
+                    else:
+                        key = cv2.waitKey(1) & 0xFF
+                        if key == 27:
+                            break
+                        time.sleep(0.001)
+                        continue
+                if frame is None:
+                    ret = False
+            elif pending_first_frame is not None:
                 frame = pending_first_frame
                 pending_first_frame = None
                 ret = True
             else:
-                ret, frame = cap.read()
+                ret, frame = read_latest_from_capture(cap)
 
             if not ret or frame is None:
                 camera_failures += 1
@@ -266,16 +370,25 @@ def main() -> int:
                         print(f"[main] Attempting to reopen hand-tracking camera ({reopen_attempts}/{max_reopen_attempts})")
                         _stop_robot_sender(robot, real_robot_enabled)
                         try:
-                            cap.release()
+                            if latest_camera is not None:
+                                latest_camera.release()
+                                latest_camera = None
+                            elif cap is not None:
+                                cap.release()
                         except Exception:
                             pass
                         try:
                             camera = open_specific_handtracking_camera(camera.index, camera.backend_name, camera.used_props)
                             cap = camera.cap
                             pending_first_frame = camera.frame
+                            if bool(getattr(val, "CAMERA_THREADED_CAPTURE", True)):
+                                latest_camera = LatestFrameCamera(cap, initial_frame=pending_first_frame)
+                                latest_camera.start()
+                                pending_first_frame = None
                             camera_failures = 0
                             _start_robot_sender(robot, real_robot_enabled)
                             camera_sender_paused = False
+                            last_frame_sequence = -1
                             continue
                         except CameraOpenError as exc:
                             print_camera_failure_help(exc)
@@ -288,10 +401,18 @@ def main() -> int:
                 _start_robot_sender(robot, real_robot_enabled)
                 camera_sender_paused = False
             camera_failures = 0
+            perf.camera_frames += 1
+            last_frame_sequence = frame_sequence
 
             frame = cv2.flip(frame, 1)
-
+            last_display_frame = frame
             now = time.time()
+            should_process = (
+                (processed_frame_count % process_every_n) == 0
+                and (process_period <= 0.0 or (now - last_process_time) >= process_period)
+            )
+            snap_event = last_snap_event
+
             if (
                 real_robot_enabled
                 and bool(getattr(val, "MAIN_READ_ROBOT_FEEDBACK", True))
@@ -306,27 +427,51 @@ def main() -> int:
                     print(f"[main] warning: robot feedback read failed: {exc}")
                 last_feedback_time = now
 
-            hand_data = tracker.process(frame)
-            snap_event = tracker.consume_snap_event()
-            if snap_event and bool(getattr(val, "PICKPLACE_TRIGGER_ON_SNAP", True)):
-                pick_runtime.request_start("snap")
-
             command_to_send = None
-            if pick_runtime.active:
-                command_to_send = pick_runtime.tick(robot_feedback=robot_feedback)
-            elif hand_data is not None:
-                command_to_send = _command_from_hand_data(hand_data)
+            if should_process:
+                last_process_time = now
+                processed_frame_count += 1
+                t_hand = time.perf_counter()
+                hand_data = tracker.process(frame)
+                perf.hand_ms = (time.perf_counter() - t_hand) * 1000.0
+                perf.processed_frames += 1
+                snap_event = tracker.consume_snap_event()
+                last_snap_event = snap_event
+                if isinstance(hand_data, dict):
+                    diag = hand_data.get("__diagnostics__", {})
+                    if isinstance(diag, dict):
+                        perf.ik_ms = float(diag.get("perf_ik_ms", diag.get("ik_time_ms", perf.ik_ms)))
+                if snap_event and bool(getattr(val, "PICKPLACE_TRIGGER_ON_SNAP", True)):
+                    pick_runtime.request_start("snap")
+
+                if pick_runtime.active:
+                    command_to_send = pick_runtime.tick(robot_feedback=robot_feedback)
+                elif hand_data is not None:
+                    command_to_send = _command_from_hand_data(hand_data)
+            else:
+                processed_frame_count += 1
+                if pick_runtime.active:
+                    command_to_send = pick_runtime.tick(robot_feedback=robot_feedback)
 
             if command_to_send is not None and real_robot_enabled:
-                if bool(getattr(val, "REAL_ROBOT_ASYNC_COMMAND_SENDER", True)):
+                t_robot = time.perf_counter()
+                if bool(getattr(val, "ROBOT_COMMAND_ASYNC_ONLY", True)) or bool(getattr(val, "REAL_ROBOT_ASYNC_COMMAND_SENDER", True)):
                     robot.submit_latest_command(command_to_send)
                 else:
                     robot.send_if_due(command_to_send)
+                perf.robot_enqueue_ms = (time.perf_counter() - t_robot) * 1000.0
+                if isinstance(getattr(robot, "last_command_diagnostics", None), dict):
+                    perf.robot_enqueue_ms = float(robot.last_command_diagnostics.get("serial_write_ms", perf.robot_enqueue_ms))
+                perf.robot_commands += 1
 
             _draw_main_hud(frame, pick_runtime, snap_event)
+            perf.update_rates(time.time())
+            _draw_perf_overlay(frame, perf)
+            t_display = time.perf_counter()
             cv2.imshow("Hand Tracking / Main", frame)
 
             key = cv2.waitKey(1) & 0xFF
+            perf.display_ms = (time.perf_counter() - t_display) * 1000.0
             if key == 27:
                 break
             if key == trigger_key_code:
@@ -335,8 +480,10 @@ def main() -> int:
                 pick_runtime.cancel()
 
             elapsed = time.time() - loop_start
+            perf.total_ms = elapsed * 1000.0
+            perf.maybe_print()
             sleep = period - elapsed
-            if sleep > 0:
+            if sleep > 0 and not bool(getattr(val, "LOW_LATENCY_MODE", True)):
                 time.sleep(sleep)
             # No work is scheduled here; the sleep above only rate-limits this
             # foreground loop so the camera UI and serial bus stay stable.
@@ -358,7 +505,9 @@ def main() -> int:
         except Exception:
             pass
         try:
-            if cap is not None:
+            if latest_camera is not None:
+                latest_camera.release()
+            elif cap is not None:
                 cap.release()
         except Exception:
             pass

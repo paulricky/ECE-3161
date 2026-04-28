@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import platform
+import threading
 import time
 from dataclasses import dataclass
 from typing import Iterable, Optional
@@ -35,6 +36,16 @@ class CameraOpenError(RuntimeError):
     def __init__(self, message: str, attempts: list[CameraProbeResult]):
         super().__init__(message)
         self.attempts = attempts
+
+
+@dataclass
+class LatestFrame:
+    ok: bool
+    frame: object
+    timestamp: float
+    age_s: float
+    sequence: int
+    failures: int
 
 
 def _unique_ints(items: Iterable[int]) -> list[int]:
@@ -80,9 +91,98 @@ def _open_capture(index: int, backend: Optional[int]) -> cv2.VideoCapture:
 
 def _apply_camera_props(cap: cv2.VideoCapture) -> None:
     cap.set(cv2.CAP_PROP_BUFFERSIZE, int(getattr(val, "MAIN_CAMERA_BUFFERSIZE", 1)))
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(getattr(val, "MAIN_CAMERA_FRAME_WIDTH", 640)))
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(getattr(val, "MAIN_CAMERA_FRAME_HEIGHT", 480)))
-    cap.set(cv2.CAP_PROP_FPS, int(getattr(val, "MAIN_CAMERA_FPS", 30)))
+    if bool(getattr(val, "CAMERA_FORCE_MJPEG", False)):
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(getattr(val, "CAMERA_CAPTURE_WIDTH", getattr(val, "MAIN_CAMERA_FRAME_WIDTH", 640))))
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(getattr(val, "CAMERA_CAPTURE_HEIGHT", getattr(val, "MAIN_CAMERA_FRAME_HEIGHT", 480))))
+    cap.set(cv2.CAP_PROP_FPS, int(getattr(val, "CAMERA_CAPTURE_FPS", getattr(val, "MAIN_CAMERA_FPS", 30))))
+
+
+def read_latest_from_capture(cap: cv2.VideoCapture):
+    if bool(getattr(val, "CAMERA_FLUSH_STALE_FRAMES", True)):
+        flush_count = max(0, int(getattr(val, "CAMERA_FLUSH_COUNT", 3)))
+        for _ in range(flush_count):
+            try:
+                if not cap.grab():
+                    break
+            except Exception:
+                break
+        try:
+            return cap.retrieve()
+        except Exception:
+            return False, None
+    return cap.read()
+
+
+class LatestFrameCamera:
+    def __init__(self, cap: cv2.VideoCapture, initial_frame=None, initial_timestamp: Optional[float] = None):
+        self.cap = cap
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._frame = initial_frame
+        self._timestamp = float(initial_timestamp if initial_timestamp is not None else time.time())
+        self._sequence = 1 if initial_frame is not None else 0
+        self._failures = 0
+        self._reads = 0
+        self._start_time = time.time()
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._capture_loop, name="latest-frame-camera", daemon=True)
+        self._thread.start()
+
+    def _capture_loop(self) -> None:
+        delay_s = max(0.001, float(getattr(val, "MAIN_CAMERA_READ_RETRY_DELAY_S", 0.05)))
+        while not self._stop.is_set():
+            ok, frame = read_latest_from_capture(self.cap)
+            now = time.time()
+            if ok and frame is not None:
+                with self._lock:
+                    self._frame = frame
+                    self._timestamp = now
+                    self._sequence += 1
+                    self._failures = 0
+                    self._reads += 1
+            else:
+                with self._lock:
+                    self._failures += 1
+                self._stop.wait(delay_s)
+
+    def read_latest(self) -> LatestFrame:
+        now = time.time()
+        with self._lock:
+            frame = self._frame
+            ts = self._timestamp
+            seq = self._sequence
+            failures = self._failures
+        return LatestFrame(
+            ok=frame is not None,
+            frame=frame,
+            timestamp=ts,
+            age_s=max(0.0, now - ts),
+            sequence=seq,
+            failures=failures,
+        )
+
+    def stats(self) -> dict:
+        elapsed = max(time.time() - self._start_time, 1e-6)
+        with self._lock:
+            reads = self._reads
+            failures = self._failures
+        return {"capture_fps": reads / elapsed, "queue_size": 1 if self._frame is not None else 0, "failures": failures}
+
+    def release(self) -> None:
+        self._stop.set()
+        th = self._thread
+        if th is not None and th.is_alive():
+            th.join(timeout=1.0)
+        try:
+            self.cap.release()
+        except Exception:
+            pass
 
 
 def _read_first_valid_frame(cap: cv2.VideoCapture):
@@ -93,7 +193,7 @@ def _read_first_valid_frame(cap: cv2.VideoCapture):
     first_valid = None
 
     for _ in range(retries):
-        ok, frame = cap.read()
+        ok, frame = read_latest_from_capture(cap)
         if ok and frame is not None:
             first_valid = frame
             valid_count += 1
@@ -237,9 +337,9 @@ def open_previous_style_handtracking_camera(attempts: Optional[list[CameraProbeR
     if opened:
         try:
             cap.set(cv2.CAP_PROP_BUFFERSIZE, int(getattr(val, "MAIN_CAMERA_BUFFERSIZE", 1)))
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(getattr(val, "MAIN_CAMERA_FRAME_WIDTH", 640)))
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(getattr(val, "MAIN_CAMERA_FRAME_HEIGHT", 480)))
-            cap.set(cv2.CAP_PROP_FPS, int(getattr(val, "MAIN_CAMERA_FPS", 30)))
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(getattr(val, "CAMERA_CAPTURE_WIDTH", getattr(val, "MAIN_CAMERA_FRAME_WIDTH", 640))))
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(getattr(val, "CAMERA_CAPTURE_HEIGHT", getattr(val, "MAIN_CAMERA_FRAME_HEIGHT", 480))))
+            cap.set(cv2.CAP_PROP_FPS, int(getattr(val, "CAMERA_CAPTURE_FPS", getattr(val, "MAIN_CAMERA_FPS", 30))))
         except Exception:
             pass
     frame = validate_live_camera_stream(cap) if opened else None
