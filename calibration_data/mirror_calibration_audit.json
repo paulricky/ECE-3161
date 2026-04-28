@@ -2,99 +2,115 @@
   "grade": "BAD",
   "critical": [],
   "warnings": [
-    "Robot mirror_left/mirror_right are not mostly opposite (cos=0.80); redo one or both poses.",
-    "Robot mirror_down/mirror_up are not mostly opposite (cos=0.21); redo one or both poses.",
-    "Robot pose mirror_down has strong motion on non-target axes: {'horizontal': 0.07040021685156206, 'depth': 0.9643364924432568}; redo with other axes closer to center.",
-    "Robot pose mirror_far has strong motion on non-target axes: {'horizontal': 0.07147935938165209, 'vertical': 0.7251344254386699}; redo with other axes closer to center.",
+    "Robot mirror_left/mirror_right are not mostly opposite (cos=0.36); redo one or both poses.",
+    "Robot mirror_down/mirror_up are not mostly opposite (cos=0.85); redo one or both poses.",
+    "Robot mirror_far/mirror_near are not mostly opposite (cos=-0.03); redo one or both poses.",
+    "Robot pose mirror_left has strong motion on non-target axes: {'vertical': 0.6821373908451775, 'depth': 0.549343491981554}; redo with other axes closer to center.",
+    "Robot pose mirror_near has strong motion on non-target axes: {'horizontal': 0.22964344595012476, 'vertical': 0.7519227802520078}; redo with other axes closer to center.",
     "Hand mirror calibration frame preprocessing does not match runtime flip setting; re-run camera_calibrate.py --hand-mirror.",
     "Hand x order is not left < center < right. Re-run hand mirror calibration after frame flip fix.",
     "Hand depth_norm is not near > center > far; redo mirror_near/mirror_far.",
     "Hand depth_norm is not near > center > far; redo mirror_near/mirror_far.",
     "Hand near/far depth range is small; redo mirror_near/mirror_far.",
     "Hand calibration lacks depth_norm_raw for some poses; re-run camera_calibrate.py --hand-mirror to record raw depth anchors.",
-    "Optional pose mirror_down_left residual 0.313 m is more than 2x clamp; redo it or improve required extrema first.",
-    "Optional pose mirror_down_right residual 0.311 m is more than 2x clamp; redo it or improve required extrema first.",
-    "Optional pose mirror_far_down residual 0.543 m is more than 2x clamp; redo it or improve required extrema first.",
-    "Optional pose mirror_far_left residual 0.612 m is more than 2x clamp; redo it or improve required extrema first.",
-    "Optional pose mirror_far_right residual 0.637 m is more than 2x clamp; redo it or improve required extrema first.",
-    "Optional pose mirror_far_up residual 0.329 m is more than 2x clamp; redo it or improve required extrema first.",
-    "Optional pose mirror_near_down residual 0.118 m is more than 2x clamp; redo it or improve required extrema first.",
-    "Optional pose mirror_near_left residual 0.127 m is more than 2x clamp; redo it or improve required extrema first.",
-    "Optional pose mirror_near_right residual 0.139 m is more than 2x clamp; redo it or improve required extrema first.",
-    "Optional pose mirror_near_up_left residual 0.194 m is more than 2x clamp; redo it or improve required extrema first.",
-    "Optional pose mirror_near_up_right residual 0.134 m is more than 2x clamp; redo it or improve required extrema first.",
-    "Optional pose mirror_up_left residual 0.372 m is more than 2x clamp; redo it or improve required extrema first.",
-    "Optional pose mirror_up_right residual 0.324 m is more than 2x clamp; redo it or improve required extrema first.",
-    "Legacy HAND_TARGET/WORKSPACE bounds would clip 20 recorded mirror poses; runtime mapper calibrated bounds should be used."
+    "Optional pose mirror_down_left residual 0.419 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Optional pose mirror_down_right residual 0.385 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Optional pose mirror_far_down residual 0.642 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Optional pose mirror_far_down_left residual 0.326 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Optional pose mirror_far_down_right residual 0.309 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Optional pose mirror_far_left residual 0.712 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Optional pose mirror_far_right residual 0.734 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Optional pose mirror_far_up residual 0.367 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Optional pose mirror_near_down residual 0.275 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Optional pose mirror_near_left residual 0.259 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Optional pose mirror_near_right residual 0.112 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Optional pose mirror_near_up residual 0.124 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Optional pose mirror_near_up_left residual 0.206 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Optional pose mirror_near_up_right residual 0.240 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Optional pose mirror_up_left residual 0.362 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Optional pose mirror_up_right residual 0.313 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Legacy HAND_TARGET/WORKSPACE bounds would clip 23 recorded mirror poses; runtime mapper calibrated bounds should be used."
   ],
   "redo_poses": {
-    "mirror_down": [
-      "Robot pose mirror_down has strong motion on non-target axes: {'horizontal': 0.07040021685156206, 'depth': 0.9643364924432568}; redo with other axes closer to center."
-    ],
-    "mirror_far": [
-      "Robot pose mirror_far has strong motion on non-target axes: {'horizontal': 0.07147935938165209, 'vertical': 0.7251344254386699}; redo with other axes closer to center.",
-      "Hand depth_norm is not near > center > far; redo mirror_near/mirror_far."
+    "mirror_left": [
+      "Robot pose mirror_left has strong motion on non-target axes: {'vertical': 0.6821373908451775, 'depth': 0.549343491981554}; redo with other axes closer to center."
     ],
     "mirror_near": [
+      "Robot pose mirror_near has strong motion on non-target axes: {'horizontal': 0.22964344595012476, 'vertical': 0.7519227802520078}; redo with other axes closer to center.",
+      "Hand depth_norm is not near > center > far; redo mirror_near/mirror_far."
+    ],
+    "mirror_far": [
       "Hand depth_norm is not near > center > far; redo mirror_near/mirror_far."
     ],
     "mirror_down_left": [
-      "Optional pose mirror_down_left residual 0.313 m is more than 2x clamp; redo it or improve required extrema first."
+      "Optional pose mirror_down_left residual 0.419 m is more than 2x clamp; redo it or improve required extrema first."
     ],
     "mirror_down_right": [
-      "Optional pose mirror_down_right residual 0.311 m is more than 2x clamp; redo it or improve required extrema first."
+      "Optional pose mirror_down_right residual 0.385 m is more than 2x clamp; redo it or improve required extrema first."
     ],
     "mirror_far_down": [
-      "Optional pose mirror_far_down residual 0.543 m is more than 2x clamp; redo it or improve required extrema first."
+      "Optional pose mirror_far_down residual 0.642 m is more than 2x clamp; redo it or improve required extrema first."
+    ],
+    "mirror_far_down_left": [
+      "Optional pose mirror_far_down_left residual 0.326 m is more than 2x clamp; redo it or improve required extrema first."
+    ],
+    "mirror_far_down_right": [
+      "Optional pose mirror_far_down_right residual 0.309 m is more than 2x clamp; redo it or improve required extrema first."
     ],
     "mirror_far_left": [
-      "Optional pose mirror_far_left residual 0.612 m is more than 2x clamp; redo it or improve required extrema first."
+      "Optional pose mirror_far_left residual 0.712 m is more than 2x clamp; redo it or improve required extrema first."
     ],
     "mirror_far_right": [
-      "Optional pose mirror_far_right residual 0.637 m is more than 2x clamp; redo it or improve required extrema first."
+      "Optional pose mirror_far_right residual 0.734 m is more than 2x clamp; redo it or improve required extrema first."
     ],
     "mirror_far_up": [
-      "Optional pose mirror_far_up residual 0.329 m is more than 2x clamp; redo it or improve required extrema first."
+      "Optional pose mirror_far_up residual 0.367 m is more than 2x clamp; redo it or improve required extrema first."
     ],
     "mirror_near_down": [
-      "Optional pose mirror_near_down residual 0.118 m is more than 2x clamp; redo it or improve required extrema first."
+      "Optional pose mirror_near_down residual 0.275 m is more than 2x clamp; redo it or improve required extrema first."
     ],
     "mirror_near_left": [
-      "Optional pose mirror_near_left residual 0.127 m is more than 2x clamp; redo it or improve required extrema first."
+      "Optional pose mirror_near_left residual 0.259 m is more than 2x clamp; redo it or improve required extrema first."
     ],
     "mirror_near_right": [
-      "Optional pose mirror_near_right residual 0.139 m is more than 2x clamp; redo it or improve required extrema first."
+      "Optional pose mirror_near_right residual 0.112 m is more than 2x clamp; redo it or improve required extrema first."
+    ],
+    "mirror_near_up": [
+      "Optional pose mirror_near_up residual 0.124 m is more than 2x clamp; redo it or improve required extrema first."
     ],
     "mirror_near_up_left": [
-      "Optional pose mirror_near_up_left residual 0.194 m is more than 2x clamp; redo it or improve required extrema first."
+      "Optional pose mirror_near_up_left residual 0.206 m is more than 2x clamp; redo it or improve required extrema first."
     ],
     "mirror_near_up_right": [
-      "Optional pose mirror_near_up_right residual 0.134 m is more than 2x clamp; redo it or improve required extrema first."
+      "Optional pose mirror_near_up_right residual 0.240 m is more than 2x clamp; redo it or improve required extrema first."
     ],
     "mirror_up_left": [
-      "Optional pose mirror_up_left residual 0.372 m is more than 2x clamp; redo it or improve required extrema first."
+      "Optional pose mirror_up_left residual 0.362 m is more than 2x clamp; redo it or improve required extrema first."
     ],
     "mirror_up_right": [
-      "Optional pose mirror_up_right residual 0.324 m is more than 2x clamp; redo it or improve required extrema first."
+      "Optional pose mirror_up_right residual 0.313 m is more than 2x clamp; redo it or improve required extrema first."
     ]
   },
   "action_items": [
-    "Redo mirror_down: Robot pose mirror_down has strong motion on non-target axes: {'horizontal': 0.07040021685156206, 'depth': 0.9643364924432568}; redo with other axes closer to center.",
-    "Redo mirror_down_left: Optional pose mirror_down_left residual 0.313 m is more than 2x clamp; redo it or improve required extrema first.",
-    "Redo mirror_down_right: Optional pose mirror_down_right residual 0.311 m is more than 2x clamp; redo it or improve required extrema first.",
-    "Redo mirror_far: Robot pose mirror_far has strong motion on non-target axes: {'horizontal': 0.07147935938165209, 'vertical': 0.7251344254386699}; redo with other axes closer to center. Hand depth_norm is not near > center > far; redo mirror_near/mirror_far.",
-    "Redo mirror_far_down: Optional pose mirror_far_down residual 0.543 m is more than 2x clamp; redo it or improve required extrema first.",
-    "Redo mirror_far_left: Optional pose mirror_far_left residual 0.612 m is more than 2x clamp; redo it or improve required extrema first.",
-    "Redo mirror_far_right: Optional pose mirror_far_right residual 0.637 m is more than 2x clamp; redo it or improve required extrema first.",
-    "Redo mirror_far_up: Optional pose mirror_far_up residual 0.329 m is more than 2x clamp; redo it or improve required extrema first.",
-    "Redo mirror_near: Hand depth_norm is not near > center > far; redo mirror_near/mirror_far.",
-    "Redo mirror_near_down: Optional pose mirror_near_down residual 0.118 m is more than 2x clamp; redo it or improve required extrema first.",
-    "Redo mirror_near_left: Optional pose mirror_near_left residual 0.127 m is more than 2x clamp; redo it or improve required extrema first.",
-    "Redo mirror_near_right: Optional pose mirror_near_right residual 0.139 m is more than 2x clamp; redo it or improve required extrema first.",
-    "Redo mirror_near_up_left: Optional pose mirror_near_up_left residual 0.194 m is more than 2x clamp; redo it or improve required extrema first.",
-    "Redo mirror_near_up_right: Optional pose mirror_near_up_right residual 0.134 m is more than 2x clamp; redo it or improve required extrema first.",
-    "Redo mirror_up_left: Optional pose mirror_up_left residual 0.372 m is more than 2x clamp; redo it or improve required extrema first.",
-    "Redo mirror_up_right: Optional pose mirror_up_right residual 0.324 m is more than 2x clamp; redo it or improve required extrema first."
+    "Redo mirror_down_left: Optional pose mirror_down_left residual 0.419 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Redo mirror_down_right: Optional pose mirror_down_right residual 0.385 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Redo mirror_far: Hand depth_norm is not near > center > far; redo mirror_near/mirror_far.",
+    "Redo mirror_far_down: Optional pose mirror_far_down residual 0.642 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Redo mirror_far_down_left: Optional pose mirror_far_down_left residual 0.326 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Redo mirror_far_down_right: Optional pose mirror_far_down_right residual 0.309 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Redo mirror_far_left: Optional pose mirror_far_left residual 0.712 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Redo mirror_far_right: Optional pose mirror_far_right residual 0.734 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Redo mirror_far_up: Optional pose mirror_far_up residual 0.367 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Redo mirror_left: Robot pose mirror_left has strong motion on non-target axes: {'vertical': 0.6821373908451775, 'depth': 0.549343491981554}; redo with other axes closer to center.",
+    "Redo mirror_near: Robot pose mirror_near has strong motion on non-target axes: {'horizontal': 0.22964344595012476, 'vertical': 0.7519227802520078}; redo with other axes closer to center. Hand depth_norm is not near > center > far; redo mirror_near/mirror_far.",
+    "Redo mirror_near_down: Optional pose mirror_near_down residual 0.275 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Redo mirror_near_left: Optional pose mirror_near_left residual 0.259 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Redo mirror_near_right: Optional pose mirror_near_right residual 0.112 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Redo mirror_near_up: Optional pose mirror_near_up residual 0.124 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Redo mirror_near_up_left: Optional pose mirror_near_up_left residual 0.206 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Redo mirror_near_up_right: Optional pose mirror_near_up_right residual 0.240 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Redo mirror_up_left: Optional pose mirror_up_left residual 0.362 m is more than 2x clamp; redo it or improve required extrema first.",
+    "Redo mirror_up_right: Optional pose mirror_up_right residual 0.313 m is more than 2x clamp; redo it or improve required extrema first."
   ],
   "sections": {
     "file_presence_schema": {
@@ -126,94 +142,94 @@
         },
         "mirror_left": {
           "delta_xyz_m": [
-            0.0573241511259016,
-            0.1244090428972151,
-            -0.24958755481685596
+            -0.1632746052800002,
+            -0.03409053567448096,
+            0.026773359508019873
           ],
-          "delta_norm_m": 0.28470619202322134
+          "delta_norm_m": 0.1689306784786547
         },
         "mirror_right": {
           "delta_xyz_m": [
-            0.07764918361904011,
-            -0.048676766900122875,
-            -0.2560126592097598
+            -0.11522465075207713,
+            0.18313507647552024,
+            0.02736384982926672
           ],
-          "delta_norm_m": 0.2719215052698203
+          "delta_norm_m": 0.21809162444741306
         },
         "mirror_up": {
           "delta_xyz_m": [
-            0.23071270307511244,
-            0.03907459882839264,
-            -0.19046276862538541
+            -0.30315172354064457,
+            0.012862123550173604,
+            0.3051621834014333
           ],
-          "delta_norm_m": 0.3017138410253529
+          "delta_norm_m": 0.4303374953292048
         },
         "mirror_down": {
           "delta_xyz_m": [
-            -0.08808232610600499,
-            0.009349938658817863,
-            -0.16785409005384724
+            -0.10976081761978684,
+            0.07998935741124048,
+            0.4614642800808797
           ],
-          "delta_norm_m": 0.18979176239492937
+          "delta_norm_m": 0.48103535854882007
         },
         "mirror_near": {
           "delta_xyz_m": [
-            -0.08802101834223926,
-            0.006641947425414709,
-            -0.16096402578654118
+            0.048429020850692714,
+            0.0646440735435303,
+            0.31379762379880216
           ],
-          "delta_norm_m": 0.18357895503847135
+          "delta_norm_m": 0.3240265035558554
         },
         "mirror_far": {
           "delta_xyz_m": [
-            0.20393348933509425,
-            0.03693584283573691,
-            0.16928103283965856
+            -0.25179629918612806,
+            0.09829597360707071,
+            0.010230706395100639
           ],
-          "delta_norm_m": 0.26759893990379485
+          "delta_norm_m": 0.2704961036032401
         }
       },
       "opposites": {
         "horizontal": {
           "negative_pose": "mirror_left",
           "positive_pose": "mirror_right",
-          "cosine": 0.8046336686013561
+          "cosine": 0.3610709656733949
         },
         "vertical": {
           "negative_pose": "mirror_down",
           "positive_pose": "mirror_up",
-          "cosine": 0.20979742395557088
+          "cosine": 0.8459810289761753
         },
         "depth": {
           "negative_pose": "mirror_far",
           "positive_pose": "mirror_near",
-          "cosine": -0.915069223201186
+          "cosine": -0.03000213946555004
         }
       },
       "coupling": {
         "mirror_left": {
-          "vertical": 0.3021934034489598,
-          "depth": 0.4922395633431372
+          "vertical": 0.6821373908451775,
+          "depth": 0.549343491981554
         },
         "mirror_right": {
-          "vertical": 0.3333567333380985,
-          "depth": 0.5272960881143509
+          "vertical": 0.10170697506526499,
+          "depth": 0.34741152569862066
         },
         "mirror_down": {
-          "horizontal": 0.07040021685156206,
-          "depth": 0.9643364924432568
+          "horizontal": 0.11562598888333085,
+          "depth": 0.5069533575693308
         },
         "mirror_up": {
-          "horizontal": 0.016159670807508957,
-          "depth": 0.042322861482538617
+          "horizontal": 0.12108014926275412,
+          "depth": 0.006459379491247156
         },
         "mirror_far": {
-          "horizontal": 0.07147935938165209,
-          "vertical": 0.7251344254386699
+          "horizontal": 0.1538677847924532,
+          "vertical": 0.5812904469701081
         },
         "mirror_near": {
-          "horizontal": 0.059486110738984264,
-          "vertical": 0.4111048371605252
+          "horizontal": 0.22964344595012476,
+          "vertical": 0.7519227802520078
         }
       }
     },
@@ -727,12 +743,11 @@
         "mirror_far_up",
         "mirror_far_down",
         "mirror_near_up_left",
-        "mirror_near_up_right"
-      ],
-      "missing_robot_for_hand": [
+        "mirror_near_up_right",
         "mirror_far_down_left",
         "mirror_far_down_right"
       ],
+      "missing_robot_for_hand": [],
       "missing_hand_for_robot": [],
       "paired_axis_blend_ready": true,
       "knn_residual_ready": true,
@@ -748,19 +763,19 @@
             0.0
           ],
           "recorded_xyz_m": [
-            -0.08970020968717128,
-            -0.030206493422953562,
-            0.08679765425812647
+            0.11615659522519232,
+            -0.06928833682935906,
+            -0.12643959466667878
           ],
           "base_xyz_m": [
-            -0.08970020968717128,
-            -0.030206493422953562,
-            0.08679765425812647
+            0.11615659522519232,
+            -0.06928833682935906,
+            -0.12643959466667878
           ],
           "final_xyz_m": [
-            -0.08970020968717128,
-            -0.030206493422953562,
-            0.08679765425812647
+            0.11615659522519232,
+            -0.06928833682935906,
+            -0.12643959466667878
           ],
           "base_error_m": 0.0,
           "final_error_m": 0.0,
@@ -773,19 +788,19 @@
             0.0
           ],
           "recorded_xyz_m": [
-            -0.03237605856126968,
-            0.09420254947426154,
-            -0.1627899005587295
+            -0.04711801005480788,
+            -0.10337887250384002,
+            -0.09966623515865891
           ],
           "base_xyz_m": [
-            -0.03237605856126968,
-            0.09420254947426154,
-            -0.1627899005587295
+            -0.04711801005480788,
+            -0.10337887250384002,
+            -0.09966623515865891
           ],
           "final_xyz_m": [
-            -0.03237605856126968,
-            0.09420254947426154,
-            -0.1627899005587295
+            -0.04711801005480788,
+            -0.10337887250384002,
+            -0.09966623515865891
           ],
           "base_error_m": 0.0,
           "final_error_m": 0.0,
@@ -798,22 +813,22 @@
             0.0
           ],
           "recorded_xyz_m": [
-            -0.012051026068131169,
-            -0.07888326032307644,
-            -0.16921500495163336
+            0.0009319444731151899,
+            0.11384673964616117,
+            -0.09907574483741206
           ],
           "base_xyz_m": [
-            -0.012051026068131174,
-            -0.07888326032307644,
-            -0.16921500495163333
+            0.0009319444731151899,
+            0.11384673964616118,
+            -0.09907574483741206
           ],
           "final_xyz_m": [
-            -0.012051026068131174,
-            -0.07888326032307644,
-            -0.16921500495163333
+            0.0009319444731151899,
+            0.11384673964616118,
+            -0.09907574483741206
           ],
-          "base_error_m": 2.823925224926892e-17,
-          "final_error_m": 2.823925224926892e-17,
+          "base_error_m": 1.3877787807814457e-17,
+          "final_error_m": 1.3877787807814457e-17,
           "target_clamped": false
         },
         "mirror_up": {
@@ -823,22 +838,22 @@
             0.0
           ],
           "recorded_xyz_m": [
-            0.14101249338794114,
-            0.008868105405439078,
-            -0.10366511436725893
+            -0.18699512831545223,
+            -0.056426213279185455,
+            0.17872258873475455
           ],
           "base_xyz_m": [
-            0.14101249338794114,
-            0.00886810540543908,
-            -0.10366511436725895
+            -0.18699512831545223,
+            -0.056426213279185455,
+            0.17872258873475452
           ],
           "final_xyz_m": [
-            0.14101249338794114,
-            0.00886810540543908,
-            -0.10366511436725895
+            -0.18699512831545223,
+            -0.056426213279185455,
+            0.17872258873475452
           ],
-          "base_error_m": 1.3985787785349405e-17,
-          "final_error_m": 1.3985787785349405e-17,
+          "base_error_m": 2.7755575615628914e-17,
+          "final_error_m": 2.7755575615628914e-17,
           "target_clamped": false
         },
         "mirror_down": {
@@ -848,22 +863,22 @@
             0.0
           ],
           "recorded_xyz_m": [
-            -0.17778253579317627,
-            -0.0208565547641357,
-            -0.08105643579572078
+            0.0063957776054054845,
+            0.01070102058188142,
+            0.33502468541420094
           ],
           "base_xyz_m": [
-            -0.17778253579317627,
-            -0.0208565547641357,
-            -0.08105643579572078
+            0.006395777605405481,
+            0.010701020581881424,
+            0.33502468541420094
           ],
           "final_xyz_m": [
-            -0.17778253579317627,
-            -0.0208565547641357,
-            -0.08105643579572078
+            0.006395777605405481,
+            0.010701020581881424,
+            0.33502468541420094
           ],
-          "base_error_m": 0.0,
-          "final_error_m": 0.0,
+          "base_error_m": 4.9065389333867974e-18,
+          "final_error_m": 4.9065389333867974e-18,
           "target_clamped": false
         },
         "mirror_near": {
@@ -873,22 +888,22 @@
             1.0
           ],
           "recorded_xyz_m": [
-            -0.17772122802941054,
-            -0.023564545997538853,
-            -0.0741663715284147
+            0.16458561607588504,
+            -0.004644263285828752,
+            0.18735802913212335
           ],
           "base_xyz_m": [
-            -0.17772122802941054,
-            -0.023564545997538853,
-            -0.07416637152841471
+            0.16458561607588504,
+            -0.004644263285828759,
+            0.18735802913212338
           ],
           "final_xyz_m": [
-            -0.17772122802941054,
-            -0.023564545997538853,
-            -0.07416637152841471
+            0.16458561607588504,
+            -0.004644263285828759,
+            0.18735802913212338
           ],
-          "base_error_m": 1.3877787807814457e-17,
-          "final_error_m": 1.3877787807814457e-17,
+          "base_error_m": 2.8609792490763984e-17,
+          "final_error_m": 2.8609792490763984e-17,
           "target_clamped": false
         },
         "mirror_far": {
@@ -898,163 +913,181 @@
             -1.0
           ],
           "recorded_xyz_m": [
-            0.11423327964792296,
-            0.006729349412783347,
-            0.25607868709778503
+            -0.13563970396093575,
+            0.029007636777711655,
+            -0.11620888827157815
           ],
           "base_xyz_m": [
-            0.11423327964792297,
-            0.006729349412783345,
-            0.25607868709778503
+            -0.13563970396093572,
+            0.02900763677771165,
+            -0.11620888827157815
           ],
           "final_xyz_m": [
-            0.11423327964792297,
-            0.006729349412783345,
-            0.25607868709778503
+            -0.13563970396093572,
+            0.02900763677771165,
+            -0.11620888827157815
           ],
-          "base_error_m": 1.411962612463446e-17,
-          "final_error_m": 1.411962612463446e-17,
+          "base_error_m": 2.8609792490763984e-17,
+          "final_error_m": 2.8609792490763984e-17,
           "target_clamped": false
         }
       },
       "optional_residuals": {
         "mirror_down_left": {
           "residual_xyz_m": [
-            0.18484727704788304,
-            -0.02658364684250429,
-            0.251074001194244
+            0.12060854571847172,
+            -0.19684718572578405,
+            -0.34977875234049083
           ],
-          "residual_norm_m": 0.31291110588656174,
+          "residual_norm_m": 0.41909475231426657,
           "exceeds_configured_limit": true
         },
         "mirror_down_right": {
           "residual_xyz_m": [
-            0.15487290849191315,
-            -0.03230730930944173,
-            0.2678753910684353
+            0.14867453780464962,
+            -0.08669424536029585,
+            -0.34413255356658906
           ],
-          "residual_norm_m": 0.31110545665357203,
+          "residual_norm_m": 0.38476905384175414,
           "exceeds_configured_limit": true
         },
         "mirror_far_down": {
           "residual_xyz_m": [
-            0.288173819668668,
-            0.0297290436492102,
-            0.4593072853340855
+            -0.08583750342929505,
+            -0.04369650022493724,
+            -0.634632050097761
           ],
-          "residual_norm_m": 0.5430388096072818,
+          "residual_norm_m": 0.6418997586369457,
+          "exceeds_configured_limit": true
+        },
+        "mirror_far_down_left": {
+          "residual_xyz_m": [
+            0.17089937419926973,
+            -0.1728780856521325,
+            -0.21794654066625935
+          ],
+          "residual_norm_m": 0.3264875544164548,
+          "exceeds_configured_limit": true
+        },
+        "mirror_far_down_right": {
+          "residual_xyz_m": [
+            0.22203305822556024,
+            -0.08164366592179784,
+            -0.19923580758687295
+          ],
+          "residual_norm_m": 0.30928833498038466,
           "exceeds_configured_limit": true
         },
         "mirror_far_left": {
           "residual_xyz_m": [
-            0.2995680271186692,
-            0.0549075440609814,
-            0.5302793762936855
+            0.0030078497667153786,
+            -0.05603591589184985,
+            -0.7094604076487542
           ],
-          "residual_norm_m": 0.6115161961788096,
+          "residual_norm_m": 0.7116762895103321,
           "exceeds_configured_limit": true
         },
         "mirror_far_right": {
           "residual_xyz_m": [
-            0.31052526702193795,
-            -0.05561959791660494,
-            0.5536591483066838
+            0.0002595455627862897,
+            -0.16213199667513611,
+            -0.7154212357184009
           ],
-          "residual_norm_m": 0.6372267521339112,
+          "residual_norm_m": 0.7335628100078474,
           "exceeds_configured_limit": true
         },
         "mirror_far_up": {
           "residual_xyz_m": [
-            0.10115189331531708,
-            0.01998495388368004,
-            0.3119097196654008
+            -0.021832715617294968,
+            0.07564755485320307,
+            -0.35813210702051057
           ],
-          "residual_norm_m": 0.32850993459065286,
+          "residual_norm_m": 0.3666849139321721,
           "exceeds_configured_limit": true
         },
         "mirror_near_down": {
           "residual_xyz_m": [
-            0.11581640959042541,
-            0.014383797866197857,
-            0.016364943190825182
+            0.15128202298874116,
+            -0.1234077928871998,
+            -0.19325083053872283
           ],
-          "residual_norm_m": 0.11784797722961458,
+          "residual_norm_m": 0.27470277998003984,
           "exceeds_configured_limit": true
         },
         "mirror_near_left": {
           "residual_xyz_m": [
-            0.08773327913702109,
-            -0.08470656391625045,
-            -0.03672850270530731
+            0.12086997902474761,
+            -0.029723158469882216,
+            0.22687575640628074
           ],
-          "residual_norm_m": 0.12736291905262712,
+          "residual_norm_m": 0.25877717601015493,
           "exceeds_configured_limit": true
         },
         "mirror_near_right": {
           "residual_xyz_m": [
-            0.12971935267614393,
-            0.04975614397693436,
-            0.0034225963448202557
+            0.03711541789144543,
+            -0.0022526097005722,
+            0.10602101663878033
           ],
-          "residual_norm_m": 0.13897661129812747,
+          "residual_norm_m": 0.11235250092828497,
           "exceeds_configured_limit": true
         },
         "mirror_near_up": {
           "residual_xyz_m": [
-            -0.006853048355184271,
-            -0.010472109331115993,
-            -0.0002989374430259484
+            0.1028610059748704,
+            0.06700829685860782,
+            0.015104836434594593
           ],
-          "residual_norm_m": 0.012518734328844245,
-          "exceeds_configured_limit": false
+          "residual_norm_m": 0.12368772971386245,
+          "exceeds_configured_limit": true
         },
         "mirror_near_up_left": {
           "residual_xyz_m": [
-            0.0029959329508993937,
-            -0.10865255018767778,
-            0.16103163300562343
+            0.15840409639499195,
+            0.01883167386211454,
+            -0.1297764183456241
           ],
-          "residual_norm_m": 0.19428211215907118,
+          "residual_norm_m": 0.20564145606803455,
           "exceeds_configured_limit": true
         },
         "mirror_near_up_right": {
           "residual_xyz_m": [
-            -0.0963917790457024,
-            0.07300213671032461,
-            0.05873788590469137
+            0.20041123086056148,
+            -0.028326752087868542,
+            0.1296460005894436
           ],
-          "residual_norm_m": 0.13442777344143203,
+          "residual_norm_m": 0.2403646226209898,
           "exceeds_configured_limit": true
         },
         "mirror_up_left": {
           "residual_xyz_m": [
-            -0.11325147035027287,
-            -0.2038778391013396,
-            0.28959577385674623
+            0.30381435092258136,
+            0.10722168108937732,
+            -0.16487152682067607
           ],
-          "residual_norm_m": 0.371830312170509,
+          "residual_norm_m": 0.36191472625236243,
           "exceeds_configured_limit": true
         },
         "mirror_up_right": {
           "residual_xyz_m": [
-            -0.1027890975773417,
-            0.12200383348370639,
-            0.2818667132828912
+            0.22123555929431057,
+            -0.17177492055281032,
+            -0.1404349970498205
           ],
-          "residual_norm_m": 0.3238817346229698,
+          "residual_norm_m": 0.3133269608948036,
           "exceeds_configured_limit": true
         }
       },
       "bounds": {
         "calibrated_min_m": [
-          -0.19778253579317626,
-          -0.14060929206950518,
-          -0.20580865468952428
+          -0.22385516328100916,
+          -0.1996020008034208,
+          -0.19615157301825026
         ],
         "calibrated_max_m": [
-          0.23311904325613023,
-          0.17422615060751206,
-          0.3098861939001508
+          0.18458561607588503,
+          0.1570579191421277,
+          0.35502468541420096
         ],
         "clamp_to_calibrated_bounds": true
       },
@@ -1062,9 +1095,9 @@
       "hand_loaded": true,
       "hand_error": "",
       "optional_residual_summary": {
-        "mean_m": 0.29753117352528463,
-        "median_m": 0.31200828127006686,
-        "max_m": 0.6372267521339112
+        "mean_m": 0.36151446375679314,
+        "median_m": 0.3199072576556292,
+        "max_m": 0.7335628100078474
       }
     },
     "runtime_clamp_quality": {
@@ -1081,20 +1114,21 @@
       "legacy_bounds_would_clip": {
         "center": {
           "xyz_m": [
-            -0.08970020968717128,
-            -0.030206493422953562,
-            0.08679765425812647
+            0.11615659522519232,
+            -0.06928833682935906,
+            -0.12643959466667878
           ],
           "below_axes": [
-            "y"
+            "y",
+            "z"
           ],
           "above_axes": []
         },
         "mirror_left": {
           "xyz_m": [
-            -0.03237605856126968,
-            0.09420254947426154,
-            -0.1627899005587295
+            -0.04711801005480788,
+            -0.10337887250384002,
+            -0.09966623515865891
           ],
           "below_axes": [
             "y",
@@ -1104,61 +1138,32 @@
         },
         "mirror_right": {
           "xyz_m": [
-            -0.012051026068131169,
-            -0.07888326032307644,
-            -0.16921500495163336
+            0.0009319444731151899,
+            0.11384673964616117,
+            -0.09907574483741206
           ],
           "below_axes": [
-            "y",
             "z"
           ],
           "above_axes": []
         },
         "mirror_up": {
           "xyz_m": [
-            0.14101249338794114,
-            0.008868105405439078,
-            -0.10366511436725893
+            -0.18699512831545223,
+            -0.056426213279185455,
+            0.17872258873475455
           ],
           "below_axes": [
-            "y",
-            "z"
+            "x",
+            "y"
           ],
-          "above_axes": [
-            "x"
-          ]
+          "above_axes": []
         },
         "mirror_down": {
           "xyz_m": [
-            -0.17778253579317627,
-            -0.0208565547641357,
-            -0.08105643579572078
-          ],
-          "below_axes": [
-            "x",
-            "y",
-            "z"
-          ],
-          "above_axes": []
-        },
-        "mirror_near": {
-          "xyz_m": [
-            -0.17772122802941054,
-            -0.023564545997538853,
-            -0.0741663715284147
-          ],
-          "below_axes": [
-            "x",
-            "y",
-            "z"
-          ],
-          "above_axes": []
-        },
-        "mirror_far": {
-          "xyz_m": [
-            0.11423327964792296,
-            0.006729349412783347,
-            0.25607868709778503
+            0.0063957776054054845,
+            0.01070102058188142,
+            0.33502468541420094
           ],
           "below_axes": [
             "y"
@@ -1167,71 +1172,114 @@
             "z"
           ]
         },
-        "mirror_up_left": {
+        "mirror_near": {
           "xyz_m": [
-            0.012793548194561927,
-            -0.07494875786778232,
-            -0.16886791868167822
+            0.16458561607588504,
+            -0.004644263285828752,
+            0.18735802913212335
           ],
           "below_axes": [
+            "y"
+          ],
+          "above_axes": [
+            "x"
+          ]
+        },
+        "mirror_far": {
+          "xyz_m": [
+            -0.13563970396093575,
+            0.029007636777711655,
+            -0.11620888827157815
+          ],
+          "below_axes": [
+            "x",
             "y",
             "z"
           ],
           "above_axes": []
+        },
+        "mirror_up_left": {
+          "xyz_m": [
+            0.0033509199616003405,
+            0.06918718103020233,
+            0.28074538098525187
+          ],
+          "below_axes": [
+            "y"
+          ],
+          "above_axes": [
+            "z"
+          ]
         },
         "mirror_up_right": {
           "xyz_m": [
-            0.019615246629250384,
-            0.08741398994130276,
-            -0.16345698687656307
+            -0.005341048376217902,
+            -0.010905287596370584,
+            0.2762986805057162
           ],
           "below_axes": [
-            "y",
-            "z"
+            "y"
           ],
-          "above_axes": []
+          "above_axes": [
+            "z"
+          ]
         },
         "mirror_down_left": {
           "xyz_m": [
-            -0.007666709398051272,
-            0.07313301108927464,
-            -0.1858086546895243
+            0.012863760282708036,
+            -0.16789481494581354,
+            0.2522504877153484
           ],
           "below_axes": [
-            "y",
-            "z"
+            "y"
           ],
-          "above_axes": []
+          "above_axes": [
+            "z"
+          ]
         },
         "mirror_down_right": {
           "xyz_m": [
-            -0.021654211729976017,
-            -0.0914069747862101,
-            -0.16549349797746046
+            0.08978348652681717,
+            0.1370579191421277,
+            0.25743179650762343
           ],
-          "below_axes": [
-            "y",
+          "below_axes": [],
+          "above_axes": [
             "z"
-          ],
-          "above_axes": []
+          ]
         },
         "mirror_near_left": {
           "xyz_m": [
-            0.013184876280252628,
-            -0.02171172024088803,
-            -0.18184309653390263
+            0.10462384241446127,
+            -0.10159051241672398,
+            0.2410554465971467
           ],
           "below_axes": [
-            "y",
-            "z"
+            "y"
           ],
-          "above_axes": []
+          "above_axes": [
+            "z"
+          ]
         },
         "mirror_near_right": {
           "xyz_m": [
-            0.018682622068469885,
-            -0.002855537097147443,
-            -0.18204191177340795
+            0.12195402916743892,
+            0.08322243716564458,
+            0.23971318503495323
+          ],
+          "below_axes": [
+            "y"
+          ],
+          "above_axes": [
+            "x",
+            "z"
+          ]
+        },
+        "mirror_far_left": {
+          "xyz_m": [
+            -0.10922200785373272,
+            -0.0327984621813113,
+            -0.1348884473477038
           ],
           "below_axes": [
             "y",
@@ -1241,59 +1289,73 @@
         },
         "mirror_far_right": {
           "xyz_m": [
-            0.15017844206611944,
-            -0.12060929206950519,
-            0.10647768277802738
+            -0.07543997298475374,
+            0.07592585827736299,
+            -0.13836982749952975
           ],
           "below_axes": [
-            "y"
+            "y",
+            "z"
           ],
-          "above_axes": [
-            "x"
-          ]
+          "above_axes": []
         },
         "mirror_near_up": {
           "xyz_m": [
-            0.10228670718451613,
-            0.008192701138689203,
-            -0.16472004383914035
+            -0.06952755558527028,
+            0.02745294943659387,
+            0.28056363149598673
           ],
           "below_axes": [
-            "y",
-            "z"
+            "y"
           ],
-          "above_axes": []
+          "above_axes": [
+            "z"
+          ]
         },
         "mirror_near_down": {
           "xyz_m": [
-            -0.07867603261364112,
-            -0.013913826168348995,
-            -0.1761381118106811
+            0.15213663252507298,
+            -0.05162561338785421,
+            0.26316611545690105
           ],
           "below_axes": [
-            "y",
-            "z"
+            "y"
           ],
-          "above_axes": []
+          "above_axes": [
+            "x",
+            "z"
+          ]
         },
         "mirror_far_up": {
           "xyz_m": [
-            0.21311904325613024,
-            0.04180209064954192,
-            0.12551370372332446
+            -0.20385516328100917,
+            0.04122198478696209,
+            -0.05654784575171577
           ],
           "below_axes": [
-            "y"
+            "x",
+            "y",
+            "z"
           ],
-          "above_axes": [
-            "x"
-          ]
+          "above_axes": []
         },
         "mirror_far_down": {
           "xyz_m": [
-            0.08459022688045509,
-            0.0063890572515978615,
-            0.2898861939001508
+            -0.07274786516993502,
+            0.010802911565941061,
+            -0.17615157301825027
+          ],
+          "below_axes": [
+            "y",
+            "z"
+          ],
+          "above_axes": []
+        },
+        "mirror_near_up_left": {
+          "xyz_m": [
+            -0.005972378443168588,
+            0.00019912527161581456,
+            0.2816478764192005
           ],
           "below_axes": [
             "y"
@@ -1302,40 +1364,54 @@
             "z"
           ]
         },
-        "mirror_near_up_left": {
-          "xyz_m": [
-            0.04540459762644469,
-            -0.03678529797301915,
-            -0.17860197460054308
-          ],
-          "below_axes": [
-            "y",
-            "z"
-          ],
-          "above_axes": []
-        },
         "mirror_near_up_right": {
           "xyz_m": [
-            0.039199194756489725,
-            0.04246611265415028,
-            -0.17874105314815483
+            0.00782528894110353,
+            0.034509704344348635,
+            0.2796128696024319
           ],
           "below_axes": [
-            "y",
-            "z"
+            "y"
           ],
-          "above_axes": []
+          "above_axes": [
+            "z"
+          ]
+        },
+        "mirror_far_down_left": {
+          "xyz_m": [
+            0.029259564192472803,
+            -0.1796020008034208,
+            0.22090646508061557
+          ],
+          "below_axes": [
+            "y"
+          ],
+          "above_axes": [
+            "z"
+          ]
+        },
+        "mirror_far_down_right": {
+          "xyz_m": [
+            0.13693218440044272,
+            0.10949600175679444,
+            0.2379517559566802
+          ],
+          "below_axes": [],
+          "above_axes": [
+            "x",
+            "z"
+          ]
         }
       },
       "mapper_bounds_min_m": [
-        -0.19778253579317626,
-        -0.14060929206950518,
-        -0.20580865468952428
+        -0.22385516328100916,
+        -0.1996020008034208,
+        -0.19615157301825026
       ],
       "mapper_bounds_max_m": [
-        0.23311904325613023,
-        0.17422615060751206,
-        0.3098861939001508
+        0.18458561607588503,
+        0.1570579191421277,
+        0.35502468541420096
       ]
     },
     "ik_seed_quality": {
@@ -1444,9 +1520,19 @@
         "length": 7,
         "near_nominal_limits": []
       },
-      "mirror_left<->mirror_right_jump_rad": 2.8099421383788887,
-      "mirror_up<->mirror_down_jump_rad": 1.7658997346784462,
-      "mirror_near<->mirror_far_jump_rad": 3.5969252408296573
+      "mirror_far_down_left": {
+        "finite": true,
+        "length": 7,
+        "near_nominal_limits": []
+      },
+      "mirror_far_down_right": {
+        "finite": true,
+        "length": 7,
+        "near_nominal_limits": []
+      },
+      "mirror_left<->mirror_right_jump_rad": 3.560402123762343,
+      "mirror_up<->mirror_down_jump_rad": 4.544313681603476,
+      "mirror_near<->mirror_far_jump_rad": 3.022301487183691
     }
   },
   "files": {

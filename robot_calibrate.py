@@ -1360,56 +1360,456 @@ MIRROR_OPTIONAL_POSES = [str(x) for x in getattr(val, "ROBOT_MIRROR_OPTIONAL_POS
 ])]
 
 
-def _mirror_pose_instruction(name: str) -> str:
-    text = {
-        "center": (
-            "Place the gripper tip at the comfortable middle of the intended mirror workspace. "
-            "Suggested posture: shoulder_pan near 0 deg, shoulder_lift midrange, elbow_flex moderately bent (about 45-90 deg if possible), "
-            "wrist_flex/wrist_yaw/wrist_roll/wrist_pitch close to neutral or straight. Keep clear room to move in all directions."
-        ),
-        "mirror_left": (
-            "Move the gripper tip left from center. Prefer shoulder_pan/base rotation for most of the left motion. "
-            "Keep shoulder_lift, elbow_flex, and depth/reach close to the center pose as much as practical. "
-            "Keep wrist joints mostly straight/neutral; this pose should isolate left/right motion."
-        ),
-        "mirror_right": (
-            "Move the gripper tip right from center. Prefer shoulder_pan/base rotation for most of the right motion. "
-            "Keep shoulder_lift, elbow_flex, height, and depth close to center. Keep wrist joints mostly straight/neutral."
-        ),
-        "mirror_up": (
-            "Move the gripper tip upward from center. Prefer shoulder_lift plus elbow_flex adjustment to raise the arm. "
-            "Keep shoulder_pan close to the center pose and keep depth/reach close to center. Keep wrist mostly neutral."
-        ),
-        "mirror_down": (
-            "Move the gripper tip downward from center. Prefer lowering shoulder_lift and adjusting elbow_flex; do not simply bend the wrist down. "
-            "Keep shoulder_pan and depth close to center. Avoid table, base, and self-collision."
-        ),
-        "mirror_near": (
-            "Move the gripper tip toward the user/front/near side of the intended workspace. Prefer shoulder/elbow reach changes. "
-            "Keep left/right and height close to center. Keep wrist neutral; do not use wrist-only motion to fake depth."
-        ),
-        "mirror_far": (
-            "Move the gripper tip away/back from the user/front, opposite of mirror_near. Prefer shoulder/elbow reach changes. "
-            "Keep left/right and height close to center. Keep wrist neutral."
-        ),
-        "mirror_up_left": "Optional: high and left. Combine mirror_up and mirror_left: shoulder_pan left, shoulder_lift raised, elbow adjusted, wrist neutral, depth near center.",
-        "mirror_up_right": "Optional: high and right. Combine mirror_up and mirror_right: shoulder_pan right, shoulder_lift raised, elbow adjusted, wrist neutral, depth near center.",
-        "mirror_down_left": "Optional: low and left. Shoulder_pan left, shoulder_lift lowered, elbow adjusted. Keep wrist neutral and avoid table/base collision.",
-        "mirror_down_right": "Optional: low and right. Shoulder_pan right, shoulder_lift lowered, elbow adjusted. Keep wrist neutral and avoid collision.",
-        "mirror_near_left": "Optional: near/front and left. Combine near reach with left base sweep. Keep height near center and wrist neutral.",
-        "mirror_near_right": "Optional: near/front and right. Combine near reach with right base sweep. Keep height near center and wrist neutral.",
-        "mirror_far_left": "Optional: far/back and left. Combine far reach with left base sweep. Keep height near center and wrist neutral.",
-        "mirror_far_right": "Optional: far/back and right. Combine far reach with right base sweep. Keep height near center and wrist neutral.",
-        "mirror_near_up": "Optional: near/front and high. Combine near reach with raised shoulder. Keep left/right near center and wrist neutral.",
-        "mirror_near_down": "Optional: near/front and low. Combine near reach with lowered shoulder. Avoid table collision and keep left/right near center.",
-        "mirror_far_up": "Optional: far/back and high. Combine far reach with raised shoulder. Keep left/right near center.",
-        "mirror_far_down": "Optional: far/back and low. Combine far reach with lowered shoulder. Avoid collision and keep left/right near center.",
-        "mirror_near_up_left": "Optional extreme corner: near/front + high + left. Move slowly, keep wrist as straight as possible, and skip if unsafe or unreachable.",
-        "mirror_near_up_right": "Optional extreme corner: near/front + high + right. Move slowly, keep wrist straight, and skip if unsafe.",
-        "mirror_far_down_left": "Optional extreme corner: far/back + low + left. Avoid table/base collision. Skip if unsafe or unreachable.",
-        "mirror_far_down_right": "Optional extreme corner: far/back + low + right. Avoid table/base collision. Skip if unsafe or unreachable.",
+MIRROR_CALIBRATION_MOTOR_GUIDE = {
+    1: {
+        "name": "shoulder_pan",
+        "role": "base left/right sweep",
+        "instruction": "Use Motor 1 mainly to move the gripper tip left or right.",
+    },
+    2: {
+        "name": "shoulder_lift",
+        "role": "main shoulder up/down lift",
+        "instruction": "Use Motor 2 mainly to raise or lower the arm.",
+    },
+    3: {
+        "name": "elbow_flex",
+        "role": "elbow reach bend",
+        "instruction": "Use Motor 3 mainly to extend/retract reach while keeping the pose smooth.",
+    },
+    4: {
+        "name": "wrist_flex",
+        "role": "main wrist bend",
+        "instruction": "Keep Motor 4 near neutral unless needed to keep the gripper usable.",
+    },
+    5: {
+        "name": "wrist_yaw",
+        "role": "wrist side yaw",
+        "instruction": "Keep Motor 5 near neutral unless needed to aim the gripper.",
+    },
+    6: {
+        "name": "wrist_roll",
+        "role": "wrist roll",
+        "instruction": "Keep Motor 6 near neutral for workspace poses.",
+    },
+    7: {
+        "name": "wrist_pitch",
+        "role": "extra wrist pitch",
+        "instruction": "Keep Motor 7 near neutral unless needed to keep the end effector orientation usable.",
+    },
+    8: {
+        "name": "gripper",
+        "role": "gripper open/close",
+        "instruction": "Motor 8 is ignored for workspace position; keep the gripper normal/open.",
+    },
+}
+
+
+def _motor_label(motor_id: int) -> str:
+    item = MIRROR_CALIBRATION_MOTOR_GUIDE[int(motor_id)]
+    return f"Motor {int(motor_id)} / {item['name']}"
+
+
+def _print_mirror_motor_reference() -> None:
+    print("[mirror] Motor number reference:")
+    for motor_id in sorted(MIRROR_CALIBRATION_MOTOR_GUIDE):
+        item = MIRROR_CALIBRATION_MOTOR_GUIDE[motor_id]
+        print(f"  Motor {motor_id} / {item['name']}: {item['role']}.")
+
+
+def _print_robot_pose_recording_guidance() -> None:
+    print("[mirror] Robot pose recording guidance:")
+    print("  * Move the gripper tip/end effector, not just one joint.")
+    print("  * The pose should look like a clean workspace extreme from center.")
+    print("  * Keep the gripper roughly forward-facing and usable.")
+    print("  * Keep wrist motors 4-7 near neutral unless needed for clearance.")
+    print("  * Use shoulder/elbow motors 1-3 for most workspace movement.")
+    print("  * Avoid table, base, cable, and self-collisions.")
+    print("  * If an optional pose is unsafe or unreachable, skip it.")
+    print("  * For required poses, choose the safest reachable version.")
+    print("  * This records what the robot should do for matching hand motion.")
+
+
+def _mirror_pose_main_motors(name: str) -> str:
+    name = str(name)
+    if name in {"mirror_left", "mirror_right"}:
+        return f"{_motor_label(1)}"
+    if name in {"mirror_up", "mirror_down"}:
+        return f"{_motor_label(2)} and {_motor_label(3)}"
+    if name in {"mirror_near", "mirror_far"}:
+        return f"{_motor_label(3)} with {_motor_label(2)} as needed"
+    if name in {"mirror_up_left", "mirror_up_right", "mirror_down_left", "mirror_down_right"}:
+        return f"{_motor_label(1)} for left/right; Motors 2-3 for up/down"
+    if name in {"mirror_near_left", "mirror_near_right", "mirror_far_left", "mirror_far_right"}:
+        return f"{_motor_label(1)} for left/right; {_motor_label(3)} with Motor 2 as needed for depth"
+    if name in {"mirror_near_up", "mirror_near_down", "mirror_far_up", "mirror_far_down"}:
+        return "Motors 2-3 for vertical/depth; keep Motor 1 near center"
+    if name in {"mirror_near_up_left", "mirror_near_up_right", "mirror_far_down_left", "mirror_far_down_right"}:
+        return "Motor 1 for left/right; Motors 2-3 for up/down/near/far"
+    return "Motor 1 for left/right; Motors 2-3 for height/reach; Motors 4-7 neutral"
+
+
+def _section_lines(title: str, items: list[str]) -> list[str]:
+    return [title, *[f"  * {item}" for item in items]]
+
+
+def get_robot_mirror_pose_instruction(pose_name: str) -> list[str]:
+    name = str(pose_name)
+    required = {
+        "center": [
+            *_section_lines("Robot should look like:", [
+                "Arm is in the middle of its comfortable usable workspace.",
+                "Gripper tip is not far left/right, high/low, or near/far.",
+                "Elbow is moderately bent, not fully folded or fully straight.",
+                "Wrist is mostly straight and the gripper points normally.",
+            ]),
+            *_section_lines("Main movement:", [
+                "This is the neutral reference pose for all mirror directions.",
+            ]),
+            *_section_lines("Main motors:", [
+                "Motor 1 / shoulder_pan near center.",
+                "Motors 2-3 at comfortable mid-lift and mid-reach.",
+            ]),
+            *_section_lines("Keep steady/neutral:", [
+                "Motors 4-7 near neutral.",
+                "Motor 8 / gripper can stay open/normal.",
+            ]),
+            *_section_lines("Avoid:", [
+                "Do not choose a pose near a joint limit.",
+                "Do not choose a pose with little room to move in several directions.",
+                "Bad example: arm starts near a limit or fully straight.",
+            ]),
+        ],
+        "mirror_left": [
+            *_section_lines("Robot should look like:", [
+                "Gripper tip is clearly left of the center pose.",
+                "Height looks about the same as center.",
+                "Near/far reach looks about the same as center.",
+                "Arm looks swept left around the base, not dipped or pushed forward.",
+            ]),
+            *_section_lines("Main movement:", [
+                "Move horizontally left from center.",
+            ]),
+            *_section_lines("Main motors:", [
+                "Mainly Motor 1 / shoulder_pan.",
+            ]),
+            *_section_lines("Keep steady/neutral:", [
+                "Keep Motors 2-3 close to the center pose.",
+                "Keep Motors 4-7 mostly straight/neutral.",
+            ]),
+            *_section_lines("Avoid:", [
+                "Do not lower or raise the arm to create left motion.",
+                "Do not twist only the wrist to fake left motion.",
+                "Bad example: arm also moved much higher/lower than center.",
+            ]),
+        ],
+        "mirror_right": [
+            *_section_lines("Robot should look like:", [
+                "Gripper tip is clearly right of the center pose.",
+                "Height looks about the same as center.",
+                "Near/far reach looks about the same as center.",
+                "Arm looks swept right around the base.",
+            ]),
+            *_section_lines("Main movement:", [
+                "Move horizontally right from center.",
+            ]),
+            *_section_lines("Main motors:", [
+                "Mainly Motor 1 / shoulder_pan.",
+            ]),
+            *_section_lines("Keep steady/neutral:", [
+                "Keep Motors 2-3 close to center.",
+                "Keep Motors 4-7 mostly neutral.",
+            ]),
+            *_section_lines("Avoid:", [
+                "Do not change height/depth much.",
+                "Do not use wrist-only motion.",
+                "Bad example: arm also moved much higher/lower than center.",
+            ]),
+        ],
+        "mirror_up": [
+            *_section_lines("Robot should look like:", [
+                "Gripper tip is clearly higher than center.",
+                "Left/right still looks centered.",
+                "Near/far reach stays close to center.",
+                "Shoulder and elbow lift the arm upward.",
+                "Wrist remains mostly straight, not bent upward as the main motion.",
+            ]),
+            *_section_lines("Main movement:", [
+                "Move vertically upward from center.",
+            ]),
+            *_section_lines("Main motors:", [
+                "Mainly Motor 2 / shoulder_lift and Motor 3 / elbow_flex.",
+            ]),
+            *_section_lines("Keep steady/neutral:", [
+                "Keep Motor 1 near center.",
+                "Keep Motors 4-7 mostly neutral.",
+            ]),
+            *_section_lines("Avoid:", [
+                "Do not fake up by only pitching the wrist.",
+                "Do not move far forward/back while raising.",
+                "Bad example: only wrist bent while gripper tip barely changed height.",
+            ]),
+        ],
+        "mirror_down": [
+            *_section_lines("Robot should look like:", [
+                "Gripper tip is clearly lower than center.",
+                "Left/right still looks centered.",
+                "Near/far reach stays close to center.",
+                "Shoulder and elbow lower the arm.",
+                "Wrist remains mostly straight and usable.",
+            ]),
+            *_section_lines("Main movement:", [
+                "Move vertically downward from center.",
+            ]),
+            *_section_lines("Main motors:", [
+                "Mainly Motor 2 / shoulder_lift and Motor 3 / elbow_flex.",
+            ]),
+            *_section_lines("Keep steady/neutral:", [
+                "Keep Motor 1 near center.",
+                "Keep Motors 4-7 mostly neutral.",
+            ]),
+            *_section_lines("Avoid:", [
+                "Do not collide with table/base.",
+                "Do not fake down with wrist bend only.",
+                "Bad example: only wrist bent while gripper tip barely changed height.",
+            ]),
+        ],
+        "mirror_near": [
+            *_section_lines("Robot should look like:", [
+                "Gripper tip is clearly closer/front compared with center.",
+                "Height looks close to center.",
+                "Left/right looks centered.",
+                "Arm looks like it reached forward/outward using shoulder and elbow.",
+            ]),
+            *_section_lines("Main movement:", [
+                "Move toward the near/front edge of the usable workspace.",
+            ]),
+            *_section_lines("Main motors:", [
+                "Mainly Motor 3 / elbow_flex.",
+                "Adjust Motor 2 / shoulder_lift as needed.",
+            ]),
+            *_section_lines("Keep steady/neutral:", [
+                "Keep Motor 1 near center.",
+                "Keep Motors 4-7 mostly neutral.",
+            ]),
+            *_section_lines("Avoid:", [
+                "Do not lower/raise significantly.",
+                "Do not use wrist extension alone to fake reach.",
+                "Bad example: only wrist stretched while shoulder/elbow stayed at center.",
+            ]),
+        ],
+        "mirror_far": [
+            *_section_lines("Robot should look like:", [
+                "Gripper tip is clearly farther/back compared with center.",
+                "Height looks close to center.",
+                "Left/right looks centered.",
+                "Arm looks more retracted/back from the near/front pose.",
+            ]),
+            *_section_lines("Main movement:", [
+                "Move away/back from the near/front edge.",
+            ]),
+            *_section_lines("Main motors:", [
+                "Mainly Motor 3 / elbow_flex.",
+                "Adjust Motor 2 / shoulder_lift as needed.",
+            ]),
+            *_section_lines("Keep steady/neutral:", [
+                "Keep Motor 1 near center.",
+                "Keep Motors 4-7 mostly neutral.",
+            ]),
+            *_section_lines("Avoid:", [
+                "Do not fold into an awkward posture near joint limits.",
+                "Do not twist the wrist to fake far/back motion.",
+                "Bad example: only wrist stretched while shoulder/elbow stayed at center.",
+            ]),
+        ],
     }
-    return text.get(str(name), f"Place the robot end effector at {name}.")
+    text = {
+        "mirror_up_left": [
+            *_section_lines("Robot should look like:", [
+                "Gripper tip is high and left of center.",
+                "It looks like mirror_up combined with mirror_left.",
+                "Depth stays close to center.",
+            ]),
+            *_section_lines("Main movement:", ["Move high and left from center."]),
+            *_section_lines("Main motors:", ["Motor 1 left sweep plus Motors 2-3 lift."]),
+            *_section_lines("Keep steady/neutral:", ["Keep Motors 4-7 neutral."]),
+            *_section_lines("Avoid:", ["Do not drift far near/back."]),
+        ],
+        "mirror_up_right": [
+            *_section_lines("Robot should look like:", [
+                "Gripper tip is high and right of center.",
+                "It looks like mirror_up combined with mirror_right.",
+                "Depth stays close to center.",
+            ]),
+            *_section_lines("Main movement:", ["Move high and right from center."]),
+            *_section_lines("Main motors:", ["Motor 1 right sweep plus Motors 2-3 lift."]),
+            *_section_lines("Keep steady/neutral:", ["Keep Motors 4-7 neutral."]),
+            *_section_lines("Avoid:", ["Do not drift far near/back."]),
+        ],
+        "mirror_down_left": [
+            *_section_lines("Robot should look like:", [
+                "Gripper tip is low and left of center.",
+                "It looks like mirror_down combined with mirror_left.",
+                "Depth stays close to center.",
+            ]),
+            *_section_lines("Main movement:", ["Move low and left from center."]),
+            *_section_lines("Main motors:", ["Motor 1 left sweep plus Motors 2-3 lower."]),
+            *_section_lines("Keep steady/neutral:", ["Keep Motors 4-7 neutral."]),
+            *_section_lines("Avoid:", ["Avoid table/base collision."]),
+        ],
+        "mirror_down_right": [
+            *_section_lines("Robot should look like:", [
+                "Gripper tip is low and right of center.",
+                "It looks like mirror_down combined with mirror_right.",
+                "Depth stays close to center.",
+            ]),
+            *_section_lines("Main movement:", ["Move low and right from center."]),
+            *_section_lines("Main motors:", ["Motor 1 right sweep plus Motors 2-3 lower."]),
+            *_section_lines("Keep steady/neutral:", ["Keep Motors 4-7 neutral."]),
+            *_section_lines("Avoid:", ["Avoid table/base collision."]),
+        ],
+        "mirror_near_left": [
+            *_section_lines("Robot should look like:", [
+                "Gripper tip is near/front and left of center.",
+                "Height stays close to center.",
+            ]),
+            *_section_lines("Main movement:", ["Move near/front and left."]),
+            *_section_lines("Main motors:", ["Motor 1 left sweep plus Motor 3 reach.", "Use Motor 2 as needed."]),
+            *_section_lines("Keep steady/neutral:", ["Keep Motors 4-7 neutral."]),
+            *_section_lines("Avoid:", ["Do not change height much."]),
+        ],
+        "mirror_near_right": [
+            *_section_lines("Robot should look like:", [
+                "Gripper tip is near/front and right of center.",
+                "Height stays close to center.",
+            ]),
+            *_section_lines("Main movement:", ["Move near/front and right."]),
+            *_section_lines("Main motors:", ["Motor 1 right sweep plus Motor 3 reach.", "Use Motor 2 as needed."]),
+            *_section_lines("Keep steady/neutral:", ["Keep Motors 4-7 neutral."]),
+            *_section_lines("Avoid:", ["Do not change height much."]),
+        ],
+        "mirror_far_left": [
+            *_section_lines("Robot should look like:", [
+                "Gripper tip is far/back and left of center.",
+                "Height stays close to center.",
+            ]),
+            *_section_lines("Main movement:", ["Move far/back and left."]),
+            *_section_lines("Main motors:", ["Motor 1 left sweep plus Motor 3 retract/reach adjustment."]),
+            *_section_lines("Keep steady/neutral:", ["Keep Motors 4-7 neutral."]),
+            *_section_lines("Avoid:", ["Do not change height much."]),
+        ],
+        "mirror_far_right": [
+            *_section_lines("Robot should look like:", [
+                "Gripper tip is far/back and right of center.",
+                "Height stays close to center.",
+            ]),
+            *_section_lines("Main movement:", ["Move far/back and right."]),
+            *_section_lines("Main motors:", ["Motor 1 right sweep plus Motor 3 retract/reach adjustment."]),
+            *_section_lines("Keep steady/neutral:", ["Keep Motors 4-7 neutral."]),
+            *_section_lines("Avoid:", ["Do not change height much."]),
+        ],
+        "mirror_near_up": [
+            *_section_lines("Robot should look like:", [
+                "Gripper tip is near/front and high.",
+                "Left/right stays near center.",
+            ]),
+            *_section_lines("Main movement:", ["Move near/front and upward."]),
+            *_section_lines("Main motors:", ["Motors 2-3 create the high and near position."]),
+            *_section_lines("Keep steady/neutral:", ["Keep Motor 1 near center.", "Keep Motors 4-7 neutral."]),
+            *_section_lines("Avoid:", ["Avoid moving left/right."]),
+        ],
+        "mirror_near_down": [
+            *_section_lines("Robot should look like:", [
+                "Gripper tip is near/front and low.",
+                "Left/right stays near center.",
+            ]),
+            *_section_lines("Main movement:", ["Move near/front and downward."]),
+            *_section_lines("Main motors:", ["Motors 2-3 create the low and near position."]),
+            *_section_lines("Keep steady/neutral:", ["Keep Motor 1 near center.", "Keep Motors 4-7 neutral."]),
+            *_section_lines("Avoid:", ["Avoid table/base collision."]),
+        ],
+        "mirror_far_up": [
+            *_section_lines("Robot should look like:", [
+                "Gripper tip is far/back and high.",
+                "Left/right stays near center.",
+            ]),
+            *_section_lines("Main movement:", ["Move far/back and upward."]),
+            *_section_lines("Main motors:", ["Motors 2-3 create the high and far position."]),
+            *_section_lines("Keep steady/neutral:", ["Keep Motor 1 near center.", "Keep Motors 4-7 neutral."]),
+            *_section_lines("Avoid:", ["Avoid moving left/right."]),
+        ],
+        "mirror_far_down": [
+            *_section_lines("Robot should look like:", [
+                "Gripper tip is far/back and low.",
+                "Left/right stays near center.",
+            ]),
+            *_section_lines("Main movement:", ["Move far/back and downward."]),
+            *_section_lines("Main motors:", ["Motors 2-3 create the low and far position."]),
+            *_section_lines("Keep steady/neutral:", ["Keep Motor 1 near center.", "Keep Motors 4-7 neutral."]),
+            *_section_lines("Avoid:", ["Avoid collision and joint limits."]),
+        ],
+        "mirror_near_up_left": [
+            *_section_lines("Robot should look like:", [
+                "Extreme corner: near/front, high, and left.",
+                "Gripper tip is visibly in all three directions from center.",
+            ]),
+            *_section_lines("Main movement:", ["Move near/front + high + left."]),
+            *_section_lines("Main motors:", ["Motor 1 left plus Motors 2-3 near/up."]),
+            *_section_lines("Keep steady/neutral:", ["Keep Motors 4-7 as neutral as practical."]),
+            *_section_lines("Avoid:", ["Skip if unsafe or unreachable."]),
+        ],
+        "mirror_near_up_right": [
+            *_section_lines("Robot should look like:", [
+                "Extreme corner: near/front, high, and right.",
+                "Gripper tip is visibly in all three directions from center.",
+            ]),
+            *_section_lines("Main movement:", ["Move near/front + high + right."]),
+            *_section_lines("Main motors:", ["Motor 1 right plus Motors 2-3 near/up."]),
+            *_section_lines("Keep steady/neutral:", ["Keep Motors 4-7 as neutral as practical."]),
+            *_section_lines("Avoid:", ["Skip if unsafe or unreachable."]),
+        ],
+        "mirror_far_down_left": [
+            *_section_lines("Robot should look like:", [
+                "Extreme corner: far/back, low, and left.",
+                "Gripper tip is visibly in all three directions from center.",
+            ]),
+            *_section_lines("Main movement:", ["Move far/back + low + left."]),
+            *_section_lines("Main motors:", ["Motor 1 left plus Motors 2-3 far/down."]),
+            *_section_lines("Keep steady/neutral:", ["Keep Motors 4-7 as neutral as practical."]),
+            *_section_lines("Avoid:", ["Avoid table/base collision.", "Skip if unsafe or unreachable."]),
+        ],
+        "mirror_far_down_right": [
+            *_section_lines("Robot should look like:", [
+                "Extreme corner: far/back, low, and right.",
+                "Gripper tip is visibly in all three directions from center.",
+            ]),
+            *_section_lines("Main movement:", ["Move far/back + low + right."]),
+            *_section_lines("Main motors:", ["Motor 1 right plus Motors 2-3 far/down."]),
+            *_section_lines("Keep steady/neutral:", ["Keep Motors 4-7 as neutral as practical."]),
+            *_section_lines("Avoid:", ["Avoid collision.", "Skip if unsafe or unreachable."]),
+        ],
+    }
+    if name in required:
+        return required[name]
+    return text.get(name, [
+        "Robot should look like:",
+        f"  * End effector is placed at {name}.",
+        "Main movement:",
+        "  * Use the pose name to choose the visible direction from center.",
+        "Main motors:",
+        "  * Use Motor 1 for left/right and Motors 2-3 for height/reach.",
+        "Keep steady/neutral:",
+        "  * Keep Motors 4-7 as neutral as practical.",
+        "Avoid:",
+        "  * Skip optional poses that are unsafe or unreachable.",
+    ])
+
+
+def _mirror_pose_instruction_lines(name: str) -> list[str]:
+    return get_robot_mirror_pose_instruction(name)
+
+
+def _mirror_pose_instruction(name: str) -> str:
+    return " ".join(_mirror_pose_instruction_lines(name))
 
 
 def _print_mirror_pose_instruction(name: str, index: int, total: int, optional: bool) -> None:
@@ -1418,16 +1818,23 @@ def _print_mirror_pose_instruction(name: str, index: int, total: int, optional: 
     print("[mirror] General placement rules:")
     print("  Move the END EFFECTOR / gripper tip, not just one joint.")
     print("  Keep the pose within safe mechanical limits.")
-    print("  Keep the gripper in a normal forward/usable orientation unless this pose specifically asks otherwise.")
+    print("  Keep the gripper forward-facing and usable when possible.")
     print("  Avoid table, base, and self-collisions.")
     print("  This recorded pose defines what hand motion should mirror during runtime.")
-    print("  Do not worry whether the physical axis is called x/y/z; place the end effector in the intuitive mirror direction.")
-    print("[mirror] Joint guidance:")
-    print("  shoulder_pan = base left/right sweep; shoulder_lift = main up/down lift; elbow_flex = reach bend.")
-    print("  wrist_flex/wrist_yaw/wrist_roll/wrist_pitch should stay near neutral unless needed for reach; gripper is ignored for workspace poses.")
+    print("  Do not worry whether the physical axis is called x/y/z.")
+    print("  Place the end effector in the intuitive mirror direction.")
+    print(f"[mirror] Main motors for this pose: {_mirror_pose_main_motors(name)}.")
+    print("[mirror] Motor guide:")
+    print("  Motor 1 / shoulder_pan: base left/right sweep.")
+    print("  Motor 2 / shoulder_lift: main arm up/down lift.")
+    print("  Motor 3 / elbow_flex: reach bend/extension.")
+    print("  Motors 4-7 / wrist joints: keep near neutral unless needed.")
+    print("  Motor 8 / gripper: ignored for workspace; keep normal/open.")
     if optional:
         print("  Optional poses improve nonlinear accuracy. Skip only if this pose is unsafe or unreachable.")
-    print(f"[mirror] Pose-specific instruction: {_mirror_pose_instruction(name)}")
+    print("[mirror] Pose-specific instruction:")
+    for line in _mirror_pose_instruction_lines(name):
+        print(f"  {line}")
 
 
 def _load_joint_calibration_payload() -> dict[str, Any] | None:
@@ -1529,6 +1936,8 @@ def run_mirror_workspace_calibration() -> int:
     print("This robot-side workflow does not open a camera and does not use MediaPipe.")
     print("It records motor ticks, calibrated joints, and FK poses only.")
     print("Saved joints are IK seeds only; runtime still uses 7-DOF IK.")
+    _print_mirror_motor_reference()
+    _print_robot_pose_recording_guidance()
     joint_cal = _load_joint_calibration_payload()
     if not isinstance(joint_cal, dict):
         print(f"[mirror] Missing robot joint calibration: {PROJECT_JSON_PATH}")
@@ -1554,7 +1963,9 @@ def run_mirror_workspace_calibration() -> int:
             optional = pose_name in MIRROR_OPTIONAL_POSES
             while True:
                 _print_mirror_pose_instruction(pose_name, i, len(poses), optional)
-                print("[mirror] Press ENTER or SPACE then ENTER to record. R=resample, S=skip optional, Q=quit without saving.")
+                print("[mirror] Look at the robot. Does it visually match this description?")
+                print("[mirror] Press SPACE/ENTER to record, or adjust the robot first.")
+                print("[mirror] R=resample, S=skip optional, Q=quit without saving.")
                 reply = input("[mirror] Ready to record? ").strip().lower()
                 if reply in {"q", "quit", "esc", "exit"}:
                     print("[mirror] Quit without saving.")
@@ -1606,6 +2017,7 @@ def run_mirror_workspace_calibration() -> int:
             "calibration_type": "robot_mirror_workspace_extrema",
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "source": "robot_calibrate.py",
+            "instruction_version": "visual_pose_guidance_v1",
             "joint_calibration_file": str(PROJECT_JSON_PATH),
             "motor_names": list(session.motor_names),
             "motor_ids": [int(x) for x in session.motor_ids],
