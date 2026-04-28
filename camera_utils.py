@@ -278,9 +278,9 @@ def _print_probe(prefix: str, probe: CameraProbeResult) -> None:
     )
 
 
-def open_handtracking_camera() -> CameraOpenResult:
+def open_handtracking_camera(candidate_indices: Optional[Iterable[int]] = None) -> CameraOpenResult:
     attempts: list[CameraProbeResult] = []
-    indices = handtracking_candidate_indices()
+    indices = handtracking_candidate_indices() if candidate_indices is None else _unique_ints(candidate_indices)
     backends = _backend_candidates()
     open_retries = max(1, int(getattr(val, "MAIN_CAMERA_OPEN_RETRIES", 3)))
     retry_without_props = bool(getattr(val, "MAIN_CAMERA_TRY_WITHOUT_PROP_SET_ON_FAIL", True))
@@ -304,7 +304,7 @@ def open_handtracking_camera() -> CameraOpenResult:
                         print(f"[camera] selected stable hand-tracking camera index={result.index} backend={result.backend_name} props=no frame_shape={result.frame.shape}")
                         return result
 
-    fallback = open_previous_style_handtracking_camera(attempts)
+    fallback = open_previous_style_handtracking_camera(attempts, index=indices[0] if indices else None)
     if fallback is not None:
         return fallback
 
@@ -329,9 +329,9 @@ def open_specific_handtracking_camera(index: int, backend_name: str, used_props:
     return result
 
 
-def open_previous_style_handtracking_camera(attempts: Optional[list[CameraProbeResult]] = None) -> Optional[CameraOpenResult]:
+def open_previous_style_handtracking_camera(attempts: Optional[list[CameraProbeResult]] = None, index: Optional[int] = None) -> Optional[CameraOpenResult]:
     print("[camera] using previous-style default OpenCV camera fallback")
-    index = int(getattr(val, "HANDTRACKING_CAMERA_INDEX", 0))
+    index = int(getattr(val, "HANDTRACKING_CAMERA_INDEX", 0) if index is None else index)
     cap = cv2.VideoCapture(index)
     opened = bool(cap.isOpened())
     if opened:
@@ -376,6 +376,7 @@ def print_camera_failure_help(exc: CameraOpenError) -> None:
 def probe_camera_indices(indices: Iterable[int], read_retries: int = 8) -> list[CameraProbeResult]:
     old_retries = getattr(val, "MAIN_CAMERA_READ_RETRIES", 30)
     old_stability = getattr(val, "MAIN_CAMERA_STABILITY_FRAMES", 10)
+    retry_without_props = bool(getattr(val, "MAIN_CAMERA_TRY_WITHOUT_PROP_SET_ON_FAIL", True))
     try:
         setattr(val, "MAIN_CAMERA_READ_RETRIES", int(read_retries))
         setattr(val, "MAIN_CAMERA_STABILITY_FRAMES", max(2, int(read_retries)))
@@ -383,6 +384,12 @@ def probe_camera_indices(indices: Iterable[int], read_retries: int = 8) -> list[
         for index in _unique_ints(indices):
             for backend_name, backend in _backend_candidates():
                 result, probe = _try_camera(index, backend_name, backend, use_props=True)
+                if result is not None:
+                    result.cap.release()
+                out.append(probe)
+                if probe.read_ok or not retry_without_props:
+                    continue
+                result, probe = _try_camera(index, backend_name, backend, use_props=False)
                 if result is not None:
                     result.cap.release()
                 out.append(probe)

@@ -92,8 +92,9 @@ class HandDepthEstimator:
         return self.calibration.get(key, getattr(val, key.upper(), default))
 
     def _near_far_m(self) -> tuple[float, float]:
-        near = _finite_float(self.calibration.get("near_depth_m"), getattr(val, "HAND_MONOCULAR_NEAR_M", 0.20))
-        far = _finite_float(self.calibration.get("far_depth_m"), getattr(val, "HAND_MONOCULAR_FAR_M", 0.70))
+        fit = self.calibration.get("fit", {}) if isinstance(self.calibration.get("fit", {}), dict) else {}
+        near = _finite_float(fit.get("near_depth_m", self.calibration.get("near_depth_m")), getattr(val, "HAND_MONOCULAR_NEAR_M", 0.20))
+        far = _finite_float(fit.get("far_depth_m", self.calibration.get("far_depth_m")), getattr(val, "HAND_MONOCULAR_FAR_M", 0.70))
         near = 0.20 if near is None else float(near)
         far = 0.70 if far is None else float(far)
         if far < near:
@@ -103,13 +104,50 @@ class HandDepthEstimator:
         return near, far
 
     def _near_far_size(self) -> tuple[float, float]:
-        near = _finite_float(self.calibration.get("near_size_norm"), getattr(val, "HAND_MONOCULAR_NEAR_SIZE_NORM", 0.32))
-        far = _finite_float(self.calibration.get("far_size_norm"), getattr(val, "HAND_MONOCULAR_FAR_SIZE_NORM", 0.12))
+        fit = self.calibration.get("fit", {}) if isinstance(self.calibration.get("fit", {}), dict) else {}
+        near = _finite_float(fit.get("near_size_norm", self.calibration.get("near_size_norm")), getattr(val, "HAND_MONOCULAR_NEAR_SIZE_NORM", 0.32))
+        far = _finite_float(fit.get("far_size_norm", self.calibration.get("far_size_norm")), getattr(val, "HAND_MONOCULAR_FAR_SIZE_NORM", 0.12))
         near = 0.32 if near is None else float(near)
         far = 0.12 if far is None else float(far)
         if abs(near - far) < 1e-6:
             near = far + 1e-3
         return near, far
+
+    def _size_depth_points(self) -> list[tuple[float, float]]:
+        fit = self.calibration.get("fit", {}) if isinstance(self.calibration.get("fit", {}), dict) else {}
+        points = [
+            (
+                _finite_float(fit.get("near_size_norm"), getattr(val, "HAND_MONOCULAR_NEAR_SIZE_NORM", 0.32)),
+                _finite_float(fit.get("near_depth_m"), getattr(val, "HAND_MONOCULAR_NEAR_M", 0.20)),
+            ),
+            (
+                _finite_float(fit.get("center_size_norm"), getattr(val, "HAND_MONOCULAR_CENTER_SIZE_NORM", 0.20)),
+                _finite_float(fit.get("center_depth_m"), getattr(val, "HAND_MONOCULAR_CENTER_M", 0.45)),
+            ),
+            (
+                _finite_float(fit.get("far_size_norm"), getattr(val, "HAND_MONOCULAR_FAR_SIZE_NORM", 0.12)),
+                _finite_float(fit.get("far_depth_m"), getattr(val, "HAND_MONOCULAR_FAR_M", 0.70)),
+            ),
+        ]
+        clean = [(float(s), float(d)) for s, d in points if s is not None and d is not None and s > 0.0 and d > 0.0]
+        clean.sort(key=lambda item: item[0])
+        return clean
+
+    def _calibrated_depth_from_size(self, size_norm: float) -> Optional[float]:
+        pts = self._size_depth_points()
+        if len(pts) < 2 or not math.isfinite(float(size_norm)) or float(size_norm) <= 0.0:
+            return None
+        size = float(size_norm)
+        near_m, far_m = self._near_far_m()
+        if size <= pts[0][0]:
+            return _clamp(pts[0][1], near_m, far_m)
+        if size >= pts[-1][0]:
+            return _clamp(pts[-1][1], near_m, far_m)
+        for (s0, d0), (s1, d1) in zip(pts[:-1], pts[1:]):
+            if s0 <= size <= s1 and abs(s1 - s0) > 1e-9:
+                t = (size - s0) / (s1 - s0)
+                return _clamp(d0 + t * (d1 - d0), near_m, far_m)
+        return None
 
     def _safe_depth(self) -> float:
         near, far = self._near_far_m()
@@ -167,17 +205,40 @@ class HandDepthEstimator:
     def _camera_focal_px(self, frame_w: int, frame_h: int) -> Optional[float]:
         if not bool(getattr(val, "HAND_MONOCULAR_USE_CAMERA_INTRINSICS", True)):
             return None
-        path = Path(__file__).resolve().parent / "calibration_data" / "camera_intrinsics.json"
+        root = Path(__file__).resolve().parent
+        candidates = [
+            root / str(getattr(val, "CAMERA_CALIBRATION_JSON", "calibration_data/camera_calibration.json")),
+            root / "calibration_data" / "camera_intrinsics.json",
+        ]
+        for path in candidates:
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                K = data.get("camera_matrix", data.get("K"))
+                if not (isinstance(K, list) and len(K) >= 2):
+                    continue
+                fx = _finite_float(K[0][0])
+                fy = _finite_float(K[1][1])
+                src_w = _finite_float(data.get("image_width", data.get("image_w")), frame_w)
+                src_h = _finite_float(data.get("image_height", data.get("image_h")), frame_h)
+                if fx is None or fy is None or src_w is None or src_h is None or src_w <= 0 or src_h <= 0:
+                    continue
+                fx *= float(frame_w) / float(src_w)
+                fy *= float(frame_h) / float(src_h)
+                return 0.5 * (fx + fy)
+            except Exception:
+                pass
+        npz_path = root / str(getattr(val, "CAMERA_CALIBRATION_FILE", "calibration_data/camera_calibration.npz"))
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            K = data.get("K")
+            import numpy as np
+            data = np.load(npz_path, allow_pickle=True)
+            K = data["camera_matrix"] if "camera_matrix" in data else data["K"]
             if not (isinstance(K, list) and len(K) >= 2):
-                return None
+                K = np.asarray(K)
             fx = _finite_float(K[0][0])
             fy = _finite_float(K[1][1])
-            src_w = _finite_float(data.get("image_w"), frame_w)
-            src_h = _finite_float(data.get("image_h"), frame_h)
+            src_w = _finite_float(data["image_width"][0] if "image_width" in data else None, frame_w)
+            src_h = _finite_float(data["image_height"][0] if "image_height" in data else None, frame_h)
             if fx is None or fy is None or src_w is None or src_h is None or src_w <= 0 or src_h <= 0:
                 return None
             fx *= float(frame_w) / float(src_w)
@@ -203,14 +264,25 @@ class HandDepthEstimator:
                 candidates["wrist_to_middle_intrinsics_m"] = _clamp(wrist_real * focal / metrics["wrist_to_middle_mcp_px"], near_m, far_m)
 
         if size_norm > 1e-6:
-            t = (size_norm - far_size) / (near_size - far_size)
-            t = _sat01(t)
-            candidates["calibrated_size_m"] = _clamp(far_m + (near_m - far_m) * t, near_m, far_m)
+            calibrated = self._calibrated_depth_from_size(size_norm)
+            if calibrated is not None:
+                candidates["hand_depth_calibration_m" if self.calibration else "default_hand_size_m"] = calibrated
+            else:
+                t = (size_norm - far_size) / (near_size - far_size)
+                t = _sat01(t)
+                candidates["default_hand_size_m"] = _clamp(far_m + (near_m - far_m) * t, near_m, far_m)
 
         clean = [float(x) for x in candidates.values() if math.isfinite(float(x))]
         if clean:
             depth_m = float(statistics.median(clean))
-            source = "monocular_intrinsics" if any("intrinsics" in k for k in candidates) else "monocular_calibrated"
+            if any("intrinsics" in k for k in candidates) and any("hand_depth_calibration" in k or "default_hand_size" in k for k in candidates):
+                source = "intrinsics_fused"
+            elif any("hand_depth_calibration" in k for k in candidates):
+                source = "hand_depth_calibration"
+            elif any("intrinsics" in k for k in candidates):
+                source = "intrinsics_fused"
+            else:
+                source = "default_hand_size"
             confidence = _clamp(0.45 + min(size_norm, 0.35), 0.0, 1.0)
         else:
             depth_m = self._safe_depth()
@@ -319,6 +391,8 @@ class HandDepthEstimator:
             "bbox_size_norm": float(size_est.get("bbox_size_norm", 0.0)),
             "thumb_index_span_norm": float(size_est.get("thumb_index_span_norm", 0.0)),
             "valid": bool(valid),
+            "using_camera_intrinsics": any("intrinsics" in k for k in raw_candidates),
+            "using_hand_depth_calibration": bool(self.calibration),
         }
 
 

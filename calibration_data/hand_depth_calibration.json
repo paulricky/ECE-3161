@@ -1,0 +1,64 @@
+{
+  "calibration_type": "monocular_hand_depth",
+  "created_at": "2026-04-28T02:10:44-0400",
+  "camera_index": 0,
+  "image_width": 640,
+  "image_height": 480,
+  "poses": {
+    "near": {
+      "depth_m": 0.2,
+      "hand_size_norm_mean": 0.5753682029833057,
+      "hand_size_norm_std": 0.010300039054351074,
+      "palm_width_norm_mean": 0.28122987128274674,
+      "palm_width_norm_std": 0.011630518105973486,
+      "wrist_to_middle_mcp_norm_mean": 0.5753682029833057,
+      "wrist_to_middle_mcp_norm_std": 0.010300039054351074,
+      "palm_height_norm_mean": 0.5753682029833057,
+      "palm_height_norm_std": 0.010300039054351074,
+      "bbox_size_norm_mean": 0.8808229220052333,
+      "bbox_size_norm_std": 0.0310167462373139,
+      "thumb_index_span_norm_mean": 0.5921885600539345,
+      "thumb_index_span_norm_std": 0.03292553079630479
+    },
+    "center": {
+      "depth_m": 0.45,
+      "hand_size_norm_mean": 0.5694690133629424,
+      "hand_size_norm_std": 0.0013536888962937615,
+      "palm_width_norm_mean": 0.2718618447278002,
+      "palm_width_norm_std": 0.0009761697894248968,
+      "wrist_to_middle_mcp_norm_mean": 0.5694690133629424,
+      "wrist_to_middle_mcp_norm_std": 0.0013536888962937615,
+      "palm_height_norm_mean": 0.5694690133629424,
+      "palm_height_norm_std": 0.0013536888962937615,
+      "bbox_size_norm_mean": 0.8638140376970538,
+      "bbox_size_norm_std": 0.0018904730113492375,
+      "thumb_index_span_norm_mean": 0.5638550772706921,
+      "thumb_index_span_norm_std": 0.004496974238304509
+    },
+    "far": {
+      "depth_m": 0.7,
+      "hand_size_norm_mean": 0.274953477285126,
+      "hand_size_norm_std": 0.012155310425565374,
+      "palm_width_norm_mean": 0.13888763260415354,
+      "palm_width_norm_std": 0.005092336307416563,
+      "wrist_to_middle_mcp_norm_mean": 0.274953477285126,
+      "wrist_to_middle_mcp_norm_std": 0.012155310425565374,
+      "palm_height_norm_mean": 0.274953477285126,
+      "palm_height_norm_std": 0.012155310425565374,
+      "bbox_size_norm_mean": 0.39171908692109964,
+      "bbox_size_norm_std": 0.020482137515866344,
+      "thumb_index_span_norm_mean": 0.2510373295190239,
+      "thumb_index_span_norm_std": 0.014628841589525501
+    }
+  },
+  "fit": {
+    "method": "inverse_or_piecewise",
+    "near_depth_m": 0.2,
+    "center_depth_m": 0.45,
+    "far_depth_m": 0.7,
+    "near_size_norm": 0.5753682029833057,
+    "center_size_norm": 0.5694690133629424,
+    "far_size_norm": 0.274953477285126
+  },
+  "notes": "Runtime uses RGB MediaPipe hand size only; no markers required."
+}

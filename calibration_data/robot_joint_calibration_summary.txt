@@ -7,72 +7,72 @@ JSON files:
 shoulder_pan:
   id            = 1
   baudrate      = 1000000
-  neutral_pos   = 2130
-  min_pos       = 719
-  max_pos       = 3590
-  homing_offset = -2130
+  neutral_pos   = 2210
+  min_pos       = 1124
+  max_pos       = 3227
+  homing_offset = -2210
   drive_mode    = 0
 
 shoulder_lift:
   id            = 2
   baudrate      = 1000000
-  neutral_pos   = 2033
-  min_pos       = 839
-  max_pos       = 3296
-  homing_offset = -2033
+  neutral_pos   = 2108
+  min_pos       = 762
+  max_pos       = 3362
+  homing_offset = -2108
   drive_mode    = 0
 
 elbow_flex:
   id            = 3
   baudrate      = 1000000
-  neutral_pos   = 2369
-  min_pos       = 1233
-  max_pos       = 3479
-  homing_offset = -2369
+  neutral_pos   = 2287
+  min_pos       = 1227
+  max_pos       = 3482
+  homing_offset = -2287
   drive_mode    = 0
 
 wrist_flex:
   id            = 4
   baudrate      = 1000000
-  neutral_pos   = 2676
-  min_pos       = 1342
-  max_pos       = 3888
-  homing_offset = -2676
+  neutral_pos   = 2697
+  min_pos       = 1308
+  max_pos       = 3889
+  homing_offset = -2697
   drive_mode    = 0
 
 wrist_yaw:
   id            = 5
   baudrate      = 1000000
-  neutral_pos   = 2760
-  min_pos       = 1
-  max_pos       = 4088
-  homing_offset = -2760
+  neutral_pos   = 1839
+  min_pos       = 675
+  max_pos       = 3154
+  homing_offset = -1839
   drive_mode    = 0
 
 wrist_roll:
   id            = 6
   baudrate      = 1000000
-  neutral_pos   = 559
-  min_pos       = 185
-  max_pos       = 4084
-  homing_offset = -559
+  neutral_pos   = 753
+  min_pos       = 288
+  max_pos       = 3905
+  homing_offset = -753
   drive_mode    = 0
 
 wrist_pitch:
   id            = 7
   baudrate      = 1000000
-  neutral_pos   = 3558
-  min_pos       = 5
-  max_pos       = 4061
-  homing_offset = -3558
+  neutral_pos   = 2561
+  min_pos       = 285
+  max_pos       = 3989
+  homing_offset = -2561
   drive_mode    = 0
 
 gripper:
   id            = 8
   baudrate      = 1000000
-  neutral_pos   = 1150
-  min_pos       = 592
-  max_pos       = 2051
-  homing_offset = -1150
+  neutral_pos   = 975
+  min_pos       = 581
+  max_pos       = 2038
+  homing_offset = -975
   drive_mode    = 0
 

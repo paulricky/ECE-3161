@@ -517,6 +517,24 @@ class ArucoGloveTracker:
     def _load_intrinsics(self):
         path = getattr(val, "CALIB_INTRINSICS_FILE", "")
         if not path or not os.path.exists(path):
+            fallback = getattr(val, "CAMERA_CALIBRATION_FILE", "")
+            if fallback and os.path.exists(fallback):
+                path = fallback
+            else:
+                return
+        try:
+            if str(path).lower().endswith(".json"):
+                with open(path, "r", encoding="utf-8") as f:
+                    jd = json.load(f)
+                K = jd.get("camera_matrix", jd.get("K"))
+                dist = jd.get("dist_coeffs", jd.get("dist"))
+                if K is None or dist is None:
+                    return
+                self.camera_matrix = np.asarray(K, dtype=np.float64)
+                self.dist_coeffs = np.asarray(dist, dtype=np.float64).reshape(-1, 1)
+                return
+        except Exception as exc:
+            self.last_debug["status"] = f"intrinsics_json_load_failed:{exc}"
             return
         try:
             d = np.load(path, allow_pickle=True)
@@ -1532,6 +1550,8 @@ class HandTracker:
             "target_rpy_rad": rpy.tolist(),
             "target_rpy_source": rpy_source,
             "using_monocular_depth": bool(getattr(val, "HAND_MONOCULAR_DEPTH_ENABLED", True)),
+            "using_camera_intrinsics": bool(depth_debug.get("using_camera_intrinsics", False)),
+            "using_hand_depth_calibration": bool(depth_debug.get("using_hand_depth_calibration", False)),
             "using_depth_camera": False,
             "using_cnn_depth": False,
             "aruco_glove_disabled": not bool(getattr(val, "HAND_DEPTH_ENABLE_ARUCO_GLOVE", False)),

@@ -180,6 +180,25 @@ LEROBOT_DRIVER_CALIBRATION_FILE = ""
 CALIB_INTRINSICS_FILE = "calibration_data/calibration_intrinsics.npz"
 CALIB_EXTRINSICS_FILE = "calibration_data/calibration_extrinsics.npz"
 CALIB_WORKSPACE_FILE = "calibration_data/calibration_workspace.npz"
+CAMERA_CALIBRATION_FILE = "calibration_data/camera_calibration.npz"
+CAMERA_CALIBRATION_JSON = "calibration_data/camera_calibration.json"
+CAMERA_INTRINSICS_OPTIONAL = True
+CAMERA_UNDISTORT_RUNTIME = False
+CHARUCO_ENABLED = True
+CHARUCO_SQUARES_X = 7
+CHARUCO_SQUARES_Y = 5
+CHARUCO_SQUARE_LENGTH_M = 0.030
+CHARUCO_MARKER_LENGTH_M = 0.022
+CHARUCO_DICTIONARY = "DICT_4X4_50"
+CHARUCO_MIN_MARKERS = 4
+CHARUCO_MIN_CORNERS = 8
+CHARUCO_REQUIRED_FRAMES = 25
+CHARUCO_CAPTURE_DELAY_S = 0.4
+CHARUCO_REPROJECTION_ERROR_WARN = 1.0
+CHARUCO_CAMERA_INDEX = 0
+CHARUCO_FRAME_WIDTH = 1280
+CHARUCO_FRAME_HEIGHT = 720
+CHARUCO_FPS = 30
 
 EXTRINSICS_MODE = "workspace_to_camera"
 
@@ -546,8 +565,10 @@ HAND_MONOCULAR_DEPTH_ENABLED = True
 HAND_MONOCULAR_DEPTH_CALIBRATION_FILE = "calibration_data/hand_depth_calibration.json"
 HAND_MONOCULAR_DEPTH_AUTO_CALIBRATE = False
 HAND_MONOCULAR_NEAR_M = 0.20
+HAND_MONOCULAR_CENTER_M = 0.45
 HAND_MONOCULAR_FAR_M = 0.70
 HAND_MONOCULAR_NEAR_SIZE_NORM = 0.32
+HAND_MONOCULAR_CENTER_SIZE_NORM = 0.20
 HAND_MONOCULAR_FAR_SIZE_NORM = 0.12
 HAND_MONOCULAR_REAL_PALM_WIDTH_M = 0.085
 HAND_MONOCULAR_REAL_WRIST_TO_MIDDLE_MCP_M = 0.095
@@ -564,6 +585,10 @@ HAND_DEPTH_CONFIDENCE_MIN = 0.35
 HAND_DEPTH_OUTLIER_REJECT_STD = 2.5
 HAND_DEPTH_DEBUG = True
 HAND_DEPTH_SHOW_SOURCE = True
+HAND_DEPTH_CALIBRATION_SAMPLES_PER_POSE = 40
+HAND_DEPTH_CALIBRATION_REQUIRED_STABLE_FRAMES = 20
+HAND_DEPTH_CALIBRATION_STABILITY_STD_MAX = 0.015
+HAND_DEPTH_CALIBRATION_POSES = ["near", "center", "far"]
 
 # MediaPipe model_complexity=0 is much faster and is usually stable enough for
 # real-time robot teleop. Increase to 1 only if landmark quality is too low.
@@ -688,7 +713,7 @@ IK_NULLSPACE_FD_EPS_RAD = 1e-4
 REAL_ROBOT_ENABLE_TORQUE_LIMIT = True
 
 # Default fallback torque/current limit if a motor is not listed in a group.
-REAL_ROBOT_TORQUE_LIMIT_PERCENT = 50.0
+REAL_ROBOT_TORQUE_LIMIT_PERCENT = 70.0
 
 # Per-motor torque/current limit overrides (percent of full PWM, 0-100). Take
 # precedence over REAL_ROBOT_TORQUE_LIMIT_GROUPS below. Allocated proportional
@@ -708,7 +733,7 @@ REAL_ROBOT_TORQUE_LIMIT_BY_MOTOR_ID = {
 
 # Floor applied at bus startup before the per-motor table lands. Even if the
 # per-motor write fails, motors will not come online unrestricted.
-REAL_ROBOT_SAFE_INITIAL_TORQUE_PERCENT = 30.0
+REAL_ROBOT_SAFE_INITIAL_TORQUE_PERCENT = 70.0
 
 # Split available current/torque budget by motor group:
 # Motors 1-4 are shoulder/elbow/high-load joints and receive 75%.
@@ -716,11 +741,11 @@ REAL_ROBOT_SAFE_INITIAL_TORQUE_PERCENT = 30.0
 REAL_ROBOT_TORQUE_LIMIT_GROUPS = {
     "high_load": {
         "motor_ids": [1, 2, 3, 4],
-        "percent": 75.0,
+        "percent": 95.0,
     },
     "low_load": {
         "motor_ids": [5, 6, 7, 8],
-        "percent": 25.0,
+        "percent": 35.0,
     },
 }
 
