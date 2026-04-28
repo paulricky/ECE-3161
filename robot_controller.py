@@ -583,22 +583,32 @@ class SOArmHardwareController:
         return self.get_effective_rate_hz(base, 20.0)
 
     def get_effective_velocity_deg(self, motor_id: int) -> float:
-        base = float(getattr(val, "REAL_ROBOT_GRIPPER_MAX_VELOCITY_DEG", getattr(val, "REAL_ROBOT_MAX_VELOCITY_DEG", 25.0))) if self._is_gripper_motor_id(motor_id) else float(getattr(val, "REAL_ROBOT_MAX_VELOCITY_DEG", 25.0))
-        return float(base * self._arm_speed_scale_for_motor(motor_id))
+        return float(self.get_base_velocity_deg(motor_id) * self._arm_speed_scale_for_motor(motor_id))
 
     def get_effective_acceleration_deg(self, motor_id: int) -> float:
-        base = float(getattr(val, "REAL_ROBOT_GRIPPER_MAX_ACCELERATION_DEG", getattr(val, "REAL_ROBOT_MAX_ACCELERATION_DEG", 20.0))) if self._is_gripper_motor_id(motor_id) else float(getattr(val, "REAL_ROBOT_MAX_ACCELERATION_DEG", 20.0))
-        return float(base * self._arm_speed_scale_for_motor(motor_id))
+        return float(self.get_base_acceleration_deg(motor_id) * self._arm_speed_scale_for_motor(motor_id))
 
     def get_effective_relative_target_deg(self, motor_id: int) -> float:
-        base = float(getattr(val, "REAL_ROBOT_MAX_RELATIVE_TARGET_DEG", 360.0))
-        return float(base * self._arm_speed_scale_for_motor(motor_id))
+        return float(self.get_base_relative_target_deg(motor_id) * self._arm_speed_scale_for_motor(motor_id))
 
     def get_effective_torque_percent(self, motor_id: int, base_percent: Optional[float] = None) -> float:
         base = float(getattr(val, "REAL_ROBOT_TORQUE_LIMIT_PERCENT", 100.0) if base_percent is None else base_percent)
         if self._is_gripper_motor_id(motor_id) or not bool(getattr(val, "REAL_ROBOT_APPLY_SPEED_PERCENT_TO_TORQUE", True)):
             return max(0.0, min(100.0, base))
         return max(0.0, min(100.0, base * self._arm_speed_scale_for_motor(motor_id)))
+
+    def get_base_velocity_deg(self, motor_id: int) -> float:
+        if self._is_gripper_motor_id(motor_id):
+            return float(getattr(val, "REAL_ROBOT_GRIPPER_MAX_VELOCITY_DEG", getattr(val, "REAL_ROBOT_MAX_VELOCITY_DEG", 25.0)))
+        return float(getattr(val, "REAL_ROBOT_MAX_VELOCITY_DEG", 25.0))
+
+    def get_base_acceleration_deg(self, motor_id: int) -> float:
+        if self._is_gripper_motor_id(motor_id):
+            return float(getattr(val, "REAL_ROBOT_GRIPPER_MAX_ACCELERATION_DEG", getattr(val, "REAL_ROBOT_MAX_ACCELERATION_DEG", 20.0)))
+        return float(getattr(val, "REAL_ROBOT_MAX_ACCELERATION_DEG", 20.0))
+
+    def get_base_relative_target_deg(self, motor_id: int) -> float:
+        return float(getattr(val, "REAL_ROBOT_MAX_RELATIVE_TARGET_DEG", 360.0))
 
     def _configured_motor_models(self, motor_names: list[str]) -> list[str]:
         models = list(getattr(val, "REAL_ROBOT_MOTOR_MODELS", []))
@@ -749,41 +759,52 @@ class SOArmHardwareController:
         self.robot = None
 
     def _motor_limit_percent_by_name(self) -> Dict[str, float]:
-        default_percent = float(getattr(val, "REAL_ROBOT_TORQUE_LIMIT_PERCENT", 50.0))
-        default_percent = max(0.0, min(100.0, default_percent))
         motor_names = self._configured_motor_names()
         motor_ids = self._configured_motor_ids(motor_names)
+        return {
+            str(name): self.get_effective_torque_percent(int(motor_id), self.get_base_torque_percent(int(motor_id), str(name)))
+            for name, motor_id in zip(motor_names, motor_ids, strict=True)
+        }
+
+    def get_base_torque_percent(self, motor_id: int, motor_name: Optional[str] = None) -> float:
+        default_percent = float(getattr(val, "REAL_ROBOT_TORQUE_LIMIT_PERCENT", 50.0))
+        default_percent = max(0.0, min(100.0, default_percent))
+        name = str(motor_name or "")
+        if not name:
+            names = self._configured_motor_names()
+            ids = self._configured_motor_ids(names)
+            for n, sid in zip(names, ids, strict=True):
+                if int(sid) == int(motor_id):
+                    name = str(n)
+                    break
 
         groups = getattr(val, "REAL_ROBOT_TORQUE_LIMIT_GROUPS", None)
         by_id = getattr(val, "REAL_ROBOT_TORQUE_LIMIT_BY_MOTOR_ID", {})
         if not isinstance(by_id, dict):
             by_id = {}
 
-        out: Dict[str, float] = {}
-        for name, motor_id in zip(motor_names, motor_ids, strict=True):
-            value = by_id.get(int(motor_id), by_id.get(str(int(motor_id)), None))
-            if value is None and isinstance(groups, dict):
-                for group in groups.values():
-                    if not isinstance(group, dict):
-                        continue
-                    ids = {int(x) for x in group.get("motor_ids", [])}
-                    names = {str(x) for x in group.get("motor_names", [])}
-                    if int(motor_id) in ids or str(name) in names:
-                        value = group.get("percent", default_percent)
-                        break
-            if value is None:
-                if int(motor_id) in {1, 2, 3, 4}:
-                    value = getattr(val, "REAL_ROBOT_TORQUE_LIMIT_HIGH_LOAD_PERCENT", 75.0)
-                elif int(motor_id) in {5, 6, 7, 8}:
-                    value = getattr(val, "REAL_ROBOT_TORQUE_LIMIT_LOW_LOAD_PERCENT", 25.0)
-                else:
-                    value = default_percent
-            try:
-                pct = float(value)
-            except Exception:
-                pct = default_percent
-            out[str(name)] = self.get_effective_torque_percent(int(motor_id), pct)
-        return out
+        value = by_id.get(int(motor_id), by_id.get(str(int(motor_id)), None))
+        if value is None and isinstance(groups, dict):
+            for group in groups.values():
+                if not isinstance(group, dict):
+                    continue
+                ids = {int(x) for x in group.get("motor_ids", [])}
+                names = {str(x) for x in group.get("motor_names", [])}
+                if int(motor_id) in ids or str(name) in names:
+                    value = group.get("percent", default_percent)
+                    break
+        if value is None:
+            if int(motor_id) in {1, 2, 3, 4}:
+                value = getattr(val, "REAL_ROBOT_TORQUE_LIMIT_HIGH_LOAD_PERCENT", 75.0)
+            elif int(motor_id) in {5, 6, 7, 8}:
+                value = getattr(val, "REAL_ROBOT_TORQUE_LIMIT_LOW_LOAD_PERCENT", 25.0)
+            else:
+                value = default_percent
+        try:
+            pct = float(value)
+        except Exception:
+            pct = default_percent
+        return max(0.0, min(100.0, pct))
 
     def _apply_torque_limits(self):
         if not getattr(val, "REAL_ROBOT_ENABLE_TORQUE_LIMIT", True):
@@ -825,33 +846,74 @@ class SOArmHardwareController:
         if self._speed_diag_printed or not bool(getattr(val, "REAL_ROBOT_SPEED_PERCENT_VERBOSE", True)):
             return
         self._speed_diag_printed = True
-        motor_names = self._configured_motor_names()
-        motor_ids = self._configured_motor_ids(motor_names)
-        if motor_limits is None:
-            motor_limits = self._motor_limit_percent_by_name()
-        print("[robot_controller] speed-percent diagnostics:")
-        print(f"  arm_speed_percent = {self.get_effective_arm_speed_percent():.1f}")
-        print(f"  torque_scaled = {bool(getattr(val, 'REAL_ROBOT_APPLY_SPEED_PERCENT_TO_TORQUE', True))}")
-        print(f"  rate_scaled = {bool(getattr(val, 'REAL_ROBOT_APPLY_SPEED_PERCENT_TO_RATES', False))}")
-        for name, sid in zip(motor_names, motor_ids, strict=True):
-            pct = float(motor_limits.get(name, self.get_effective_torque_percent(int(sid)))) if isinstance(motor_limits, dict) else self.get_effective_torque_percent(int(sid))
-            print(f"  motor {int(sid)} {name}: effective_torque_current_percent={pct:.1f}")
-        print(
-            "  motor 1 effective: "
-            f"velocity={self.get_effective_velocity_deg(1):.1f} deg/s, "
-            f"accel={self.get_effective_acceleration_deg(1):.1f} deg/s^2, "
-            f"relative_step={self.get_effective_relative_target_deg(1):.1f} deg"
-        )
-        print(
-            "  gripper motor 8 effective: "
-            f"velocity={self.get_effective_velocity_deg(8):.1f}, "
-            f"accel={self.get_effective_acceleration_deg(8):.1f}, "
-            "gripper_unscaled=True"
-        )
+        self.print_effective_limits(motor_limits=motor_limits)
         print(
             "[robot_controller] Hardware servo profile speed/accel registers are not configured by this controller; "
             "values.py speed limits are software-side command shaping only."
         )
+
+    def effective_limits_rows(self, motor_limits: Optional[Dict[str, float]] = None) -> list[dict[str, Any]]:
+        motor_names = self._configured_motor_names()
+        motor_ids = self._configured_motor_ids(motor_names)
+        rows: list[dict[str, Any]] = []
+        for name, sid in zip(motor_names, motor_ids, strict=True):
+            sid = int(sid)
+            base_torque = self.get_base_torque_percent(sid, str(name))
+            effective_torque = (
+                float(motor_limits[str(name)])
+                if isinstance(motor_limits, dict) and str(name) in motor_limits
+                else self.get_effective_torque_percent(sid, base_torque)
+            )
+            rows.append({
+                "motor_id": sid,
+                "name": str(name),
+                "is_gripper": self._is_gripper_motor_id(sid),
+                "speed_factor": self._arm_speed_scale_for_motor(sid),
+                "torque_factor": (effective_torque / base_torque) if abs(base_torque) > 1e-12 else 1.0,
+                "base_velocity": self.get_base_velocity_deg(sid),
+                "effective_velocity": self.get_effective_velocity_deg(sid),
+                "base_acceleration": self.get_base_acceleration_deg(sid),
+                "effective_acceleration": self.get_effective_acceleration_deg(sid),
+                "base_relative_step": self.get_base_relative_target_deg(sid),
+                "effective_relative_step": self.get_effective_relative_target_deg(sid),
+                "base_torque": base_torque,
+                "effective_torque": effective_torque,
+            })
+        return rows
+
+    def print_effective_limits(self, motor_limits: Optional[Dict[str, float]] = None) -> None:
+        print(f"[robot_controller] arm speed percent: {self.get_effective_arm_speed_percent():.1f}%")
+        print(f"[robot_controller] torque scaling: {'enabled' if bool(getattr(val, 'REAL_ROBOT_APPLY_SPEED_PERCENT_TO_TORQUE', True)) else 'disabled'}")
+        print("[robot_controller] gripper unscaled: true")
+        for row in self.effective_limits_rows(motor_limits=motor_limits):
+            print(f"motor {row['motor_id']} {row['name']}:")
+            print(f"  base velocity: {row['base_velocity']:.6g}")
+            print(f"  effective velocity: {row['effective_velocity']:.6g} (base*{row['speed_factor']:.2f})")
+            print(f"  base acceleration: {row['base_acceleration']:.6g}")
+            print(f"  effective acceleration: {row['effective_acceleration']:.6g} (base*{row['speed_factor']:.2f})")
+            print(f"  base relative target step: {row['base_relative_step']:.6g}")
+            print(f"  effective relative target step: {row['effective_relative_step']:.6g} (base*{row['speed_factor']:.2f})")
+            print(f"  base torque/current: {row['base_torque']:.6g}")
+            print(f"  effective torque/current: {row['effective_torque']:.6g} (base*{row['torque_factor']:.2f})")
+
+    def validate_effective_limits(self, tol: float = 1e-9) -> None:
+        pct = self.get_effective_arm_speed_percent() / 100.0
+        rows = {int(r["motor_id"]): r for r in self.effective_limits_rows()}
+        checks = [
+            ("motor 1 velocity", rows[1]["effective_velocity"], rows[1]["base_velocity"] * pct),
+            ("motor 2 acceleration", rows[2]["effective_acceleration"], rows[2]["base_acceleration"] * pct),
+            ("motor 7 relative target step", rows[7]["effective_relative_step"], rows[7]["base_relative_step"] * pct),
+            ("motor 8 gripper velocity", rows[8]["effective_velocity"], rows[8]["base_velocity"]),
+            ("motor 8 gripper acceleration", rows[8]["effective_acceleration"], rows[8]["base_acceleration"]),
+            ("motor 8 torque/current", rows[8]["effective_torque"], rows[8]["base_torque"]),
+        ]
+        if bool(getattr(val, "REAL_ROBOT_APPLY_SPEED_PERCENT_TO_TORQUE", True)):
+            checks.append(("motor 1 torque/current", rows[1]["effective_torque"], rows[1]["base_torque"] * pct))
+        else:
+            checks.append(("motor 1 torque/current", rows[1]["effective_torque"], rows[1]["base_torque"]))
+        for label, actual, expected in checks:
+            if not math.isfinite(float(actual)) or abs(float(actual) - float(expected)) > tol * max(1.0, abs(float(expected))):
+                raise AssertionError(f"{label}: actual={actual}, expected={expected}")
 
     def _supported_action_keys(self) -> set[str] | None:
         if self.robot is None:
@@ -1442,3 +1504,28 @@ def apply_joint_direction_conventions(jvals: Iterable[float]):
 
     offsets_rad = [math.radians(float(x)) for x in offsets_deg]
     return [a + b for a, b in zip(j, offsets_rad)]
+
+
+def _print_effective_limits_cli() -> int:
+    controller = SOArmHardwareController()
+    controller.print_effective_limits()
+    controller.validate_effective_limits()
+    print("[robot_controller] effective-limit self-test passed")
+    return 0
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    import sys
+
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args == ["--print-effective-limits"]:
+        return _print_effective_limits_cli()
+    if args:
+        print("usage: python3 robot_controller.py --print-effective-limits")
+        return 2
+    print("usage: python3 robot_controller.py --print-effective-limits")
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

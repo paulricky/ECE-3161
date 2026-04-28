@@ -28,6 +28,20 @@ _JOINT_NAMES = (
 )
 
 
+def _effective_arm_velocity_deg() -> float:
+    base = float(getattr(val, "REAL_ROBOT_MAX_VELOCITY_DEG", 20.0))
+    try:
+        pct = float(getattr(val, "REAL_ROBOT_ARM_SPEED_PERCENT", 100.0))
+    except Exception:
+        pct = 100.0
+    try:
+        min_pct = float(getattr(val, "REAL_ROBOT_MIN_ARM_SPEED_PERCENT", 1.0))
+    except Exception:
+        min_pct = 1.0
+    pct = max(min_pct, min(100.0, pct)) / 100.0
+    return float(base * pct)
+
+
 class PickPlaceState(Enum):
     IDLE = "idle"
     HOMING = "homing"
@@ -105,7 +119,7 @@ class PickPlaceConfig:
             picking_policy=str(getattr(val, "PICKPLACE_PICKING_POLICY", "highest_confidence")),
             home_joints_rad=list(getattr(val, "PICKPLACE_HOME_JOINTS_RAD", [0.0] * 7)),
             home_gripper_open01=float(getattr(val, "PICKPLACE_HOME_GRIPPER_OPEN01", 1.0)),
-            max_velocity_deg=float(getattr(val, "REAL_ROBOT_MAX_VELOCITY_DEG", 20.0)),
+            max_velocity_deg=_effective_arm_velocity_deg(),
         )
 
 

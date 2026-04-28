@@ -110,6 +110,14 @@ IK_DLS_MAX_STEP_RAD = 0.20
 # measure and retune once the physical link lengths are known.
 IK_TOOL_A_M = 0.025
 IK_TOOL_B_M = 0.025
+# Backward-compatible kinematic aliases used by legacy fallback paths.
+IK_BASE_HEIGHT_M = 0.06
+IK_SHOULDER_Z_M = IK_BASE_HEIGHT_M
+IK_LINK1_M = 0.115
+IK_LINK2_M = 0.115
+IK_WRIST_TO_YAW_M = 0.0
+IK_TOOL_M = IK_TOOL_A_M + IK_TOOL_B_M
+IK_ELBOW_PREFERRED_WORLD_M = None
 
 # Smooth target pose a bit (0..1)
 POSE_SMOOTH_ALPHA = 0.75
@@ -120,20 +128,8 @@ CLOSED_TIPS_OFF = 0.090
 # Replace with your own file path
 URDF_PATH = "/Users/ricky/PycharmProjects/ECE3161/SO-ARM100"
 
-# Real robot control
-REAL_ROBOT_ENABLE_TORQUE_LIMIT = True
-REAL_ROBOT_HZ = 20.0
-REAL_ROBOT_MAX_VELOCITY_DEG = 1000000.0
-REAL_ROBOT_MAX_ACCELERATION_DEG = 1000000.0
-# Gripper has its own velocity/accel cap so it can snap open/closed without
-# constraining the arm's motion limits. Units are percent/sec since the
-# gripper command is 0..100.
-REAL_ROBOT_GRIPPER_MAX_VELOCITY_DEG = 1000000.0
-REAL_ROBOT_GRIPPER_MAX_ACCELERATION_DEG = 1000000.0
-REAL_ROBOT_TORQUE_LIMIT_PERCENT = 100.0
-REAL_ROBOT_MAX_RELATIVE_TARGET_DEG = 360.0
-REAL_ROBOT_ACTION_DEADBAND_DEG = 0.0
-
+# Real robot control. Motion, torque, and speed-percent limits are defined in
+# the final runtime sections below so there is only one effective override path.
 ENABLE_REAL_ROBOT = True
 REAL_ROBOT_PORT = ""
 REAL_ROBOT_ID = "my_awesome_follower_arm"
@@ -163,6 +159,9 @@ REAL_ROBOT_MOTOR_NAMES = [
 REAL_ROBOT_MOTOR_IDS = [1, 2, 3, 4, 5, 6, 7, 8]
 REAL_ROBOT_MOTOR_MODEL = "sts3215"
 REAL_ROBOT_MOTOR_MODELS = ["sts3215"] * len(REAL_ROBOT_MOTOR_NAMES)
+REAL_ROBOT_MOTOR_MODEL_NUMBER = 777
+REAL_ROBOT_MOTOR_MODEL_NUMBERS = [REAL_ROBOT_MOTOR_MODEL_NUMBER] * len(REAL_ROBOT_MOTOR_NAMES)
+REAL_ROBOT_BAUDRATE = 1000000
 
 # Fine-tuning offsets applied in software after the main calibration is loaded.
 # Order: shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_yaw, wrist_roll, wrist_pitch
@@ -171,6 +170,7 @@ REAL_ROBOT_JOINT_OFFSETS_DEG = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
 # Project-local calibration file produced by robot_calibrate.py
 ROBOT_JOINT_CALIBRATION_FILE = "calibration_data/robot_joint_calibration.json"
+ROBOT_MODEL_CALIBRATION_FILE = "calibration_data/robot_model_calibration.json"
 
 # Optional: if you want the custom calibration script to also mirror the same JSON into
 # a LeRobot cache path for an installed follower driver, set this to that full path.
@@ -270,13 +270,12 @@ PICKPLACE_SCAN_DETECTION_REQUIRED_FRAMES = 2
 PICKPLACE_PICKING_POLICY = "highest_confidence"
 
 # ---- Direct Feetech calibration diagnostics/read behavior ----
-# Startup chain verification is intentionally disabled so calibration does not
-# appear frozen in a long serial timeout scan. Reads are checked during capture.
-FEETECH_STARTUP_CHAIN_VERIFY = False
-
-# Enable full baud scanning during capture/identify diagnostics. This is slower,
-# but it proves whether IDs 1, 7, or 8 are actually at a non-1Mbps baudrate.
-FEETECH_CAPTURE_FULL_BAUD_SCAN = False
+FEETECH_MODEL_NUMBER_ADDR = 3
+FEETECH_ID_REGISTER_ADDR = 5
+FEETECH_TORQUE_ENABLE_ADDR = 40
+FEETECH_GOAL_POSITION_ADDR = 42
+FEETECH_PRESENT_POSITION_ADDR = 56
+FEETECH_PRESENT_POSITION_LEN = 2
 
 # Baudrates to try when FEETECH_CAPTURE_FULL_BAUD_SCAN is enabled.
 REAL_ROBOT_SCAN_BAUDRATES = [
@@ -289,33 +288,6 @@ REAL_ROBOT_SCAN_BAUDRATES = [
     38400,
     19200,
 ]
-
-# STS3215 Present_Position is normally 56. The extra addresses are diagnostic
-# fallbacks in case one servo/table variant is different.
-FEETECH_PRESENT_POSITION_ADDR_CANDIDATES = [
-    56,
-    58,
-    60,
-    48,
-    46,
-    44,
-    42,
-    40,
-    38,
-    36,
-    34,
-    32,
-    30,
-    28,
-]
-FEETECH_CAPTURE_POSITION_ADDR_CANDIDATES = FEETECH_PRESENT_POSITION_ADDR_CANDIDATES
-
-# Slightly longer reads help with long 8-motor daisy chains.
-FEETECH_DIRECT_PACKET_TIMEOUT_S = 0.30
-FEETECH_CAPTURE_READ_RETRIES = 6
-FEETECH_CAPTURE_INTER_RETRY_S = 0.03
-FEETECH_LIVE_TABLE_PERIOD_S = 0.50
-
 
 # ---- No-freeze identify/calibration defaults ----
 # Keep these defaults quick. Turn the full scans on only for intentional slow diagnostics.
@@ -330,6 +302,7 @@ FEETECH_CAPTURE_INTER_RETRY_S = 0.015
 FEETECH_CAPTURE_POSITION_ADDR_CANDIDATES = [56]
 FEETECH_PRESENT_POSITION_ADDR_CANDIDATES = [56]
 FEETECH_DIRECT_PACKET_TIMEOUT_S = 0.18
+FEETECH_LIVE_TABLE_MAX_SECONDS = 0.0
 
 
 # ---- No-freeze motor setup defaults ----
@@ -470,13 +443,14 @@ HAND_WRIST_MAX_PITCH_RAD = WRIST_PITCH_MAX
 HAND_WRIST_MAX_YAW_RAD = WRIST_YAW_MAX
 HAND_DEPTH_FROM_SIZE_ENABLED = True
 HAND_DEPTH_SIZE_SOURCE = "auto"
-HAND_DEPTH_SMOOTHING_ALPHA = 0.20
 HAND_DEPTH_MIN_NORM = 0.0
 HAND_DEPTH_MAX_NORM = 1.0
 HAND_SIZE_NEAR_PIXELS = None
 HAND_SIZE_FAR_PIXELS = None
 HAND_SIZE_NEAR_NORM = 0.32
 HAND_SIZE_FAR_NORM = 0.12
+HAND_SIZE_NEAR = HAND_SIZE_NEAR_NORM
+HAND_SIZE_FAR = HAND_SIZE_FAR_NORM
 HAND_SIZE_DEPTH_INVERT = False
 HAND_ARUCO_SIZE_DEPTH_ENABLED = True
 HAND_ARUCO_MARKER_SIZE_M = 0.04
@@ -592,10 +566,7 @@ HAND_DEPTH_CALIBRATION_POSES = ["near", "center", "far"]
 
 # MediaPipe model_complexity=0 is much faster and is usually stable enough for
 # real-time robot teleop. Increase to 1 only if landmark quality is too low.
-HANDTRACKING_MODEL_COMPLEXITY = 0
 HANDTRACKING_MAX_NUM_HANDS = 2
-HANDTRACKING_MIN_DETECTION_CONFIDENCE = 0.6
-HANDTRACKING_MIN_TRACKING_CONFIDENCE = 0.6
 
 # Full 7-DOF IK is expensive; solve it at a controlled rate and reuse the last
 # solution between solves so the camera preview does not freeze.
@@ -748,6 +719,8 @@ REAL_ROBOT_TORQUE_LIMIT_GROUPS = {
         "percent": 100.0,
     },
 }
+REAL_ROBOT_TORQUE_LIMIT_HIGH_LOAD_PERCENT = REAL_ROBOT_TORQUE_LIMIT_GROUPS["high_load"]["percent"]
+REAL_ROBOT_TORQUE_LIMIT_LOW_LOAD_PERCENT = REAL_ROBOT_TORQUE_LIMIT_GROUPS["low_load"]["percent"]
 
 # Feetech/ST3215 runtime torque/current-limit register.
 # Common STS/SMS current/torque limit scale is 0..1000.
@@ -772,45 +745,10 @@ REAL_ROBOT_PID_DEADBAND_DEG = 5
 REAL_ROBOT_PID_INTEGRAL_LIMIT_DEG_S = 8.0
 REAL_ROBOT_PID_RESET_ON_TARGET_JUMP_DEG = 8.0
 REAL_ROBOT_PID_VERBOSE = False
-
-# ---------------------------------------------------------------------------
-# Final requested no-software-limit motor overrides
-# ---------------------------------------------------------------------------
-# These final assignments intentionally override earlier duplicates in this
-# file. Torque/current is commanded to the Feetech register maximum, while
-# software velocity/acceleration/rate step caps are set high enough to be
-# effectively inactive. Physical/electrical protections remain external to
-# this config.
-REAL_ROBOT_ENABLE_TORQUE_LIMIT = True
-REAL_ROBOT_MAX_VELOCITY_DEG = 1000000.0
-REAL_ROBOT_MAX_ACCELERATION_DEG = 1000000.0
-REAL_ROBOT_GRIPPER_MAX_VELOCITY_DEG = 1000000.0
-REAL_ROBOT_GRIPPER_MAX_ACCELERATION_DEG = 1000000.0
-REAL_ROBOT_MAX_RELATIVE_TARGET_DEG = 360.0
-REAL_ROBOT_ACTION_DEADBAND_DEG = 0.0
-REAL_ROBOT_TORQUE_LIMIT_PERCENT = 100.0
-REAL_ROBOT_SAFE_INITIAL_TORQUE_PERCENT = 100.0
-REAL_ROBOT_TORQUE_LIMIT_BY_MOTOR_ID = {
-    1: 100.0,  # shoulder_pan
-    2: 100.0,  # shoulder_lift
-    3: 100.0,  # elbow_flex
-    4: 100.0,  # wrist_flex
-    5: 100.0,  # wrist_yaw
-    6: 100.0,  # wrist_roll
-    7: 100.0,  # wrist_pitch
-    8: 100.0,  # gripper
-}
-REAL_ROBOT_TORQUE_LIMIT_GROUPS = {
-    "high_load": {
-        "motor_ids": [1, 2, 3, 4],
-        "percent": 100.0,
-    },
-    "low_load": {
-        "motor_ids": [5, 6, 7, 8],
-        "percent": 100.0,
-    },
-}
-FEETECH_TORQUE_LIMIT_RAW_MAX = 1000
+REAL_ROBOT_ENABLE_OUTER_PID = REAL_ROBOT_PID_ENABLED
+REAL_ROBOT_PID_DERIVATIVE_FILTER_ALPHA = 0.25
+REAL_ROBOT_PID_APPLY_TO_GRIPPER = False
+REAL_ROBOT_FEEDBACK_CACHE_S = 0.10
 
 # ---------------------------------------------------------------------------
 # Final max-responsiveness / low-latency command overrides
@@ -1012,18 +950,6 @@ ROBOT_MIRROR_OPTIONAL_POSES = [
     "mirror_far_down_right",
 ]
 
-# Global arm-only speed scale. The gripper is intentionally excluded and stays
-# on its configured gripper velocity/acceleration/torque limits.
-REAL_ROBOT_ARM_SPEED_PERCENT = 100.0
-REAL_ROBOT_MIN_ARM_SPEED_PERCENT = 1.0
-REAL_ROBOT_APPLY_SPEED_PERCENT_TO_TORQUE = True
-REAL_ROBOT_SPEED_PERCENT_VERBOSE = True
-REAL_ROBOT_APPLY_SPEED_PERCENT_TO_RATES = False
-REAL_ROBOT_BASE_COMMAND_MAX_HZ = ROBOT_COMMAND_MAX_HZ
-REAL_ROBOT_BASE_HZ = REAL_ROBOT_HZ
-HAND_IK_BASE_HZ = HAND_IK_HZ
-IK_MAX_SOLVE_BASE_HZ = IK_MAX_SOLVE_HZ
-
 HAND_VIRTUAL_WRIST_ENABLED = True
 HAND_VIRTUAL_WRIST_USE_WORLD_LANDMARKS = True
 HAND_VIRTUAL_WRIST_ORIENTATION_SMOOTHING = 0.45
@@ -1036,7 +962,11 @@ HAND_VIRTUAL_WRIST_MAX_YAW_RAD = WRIST_YAW_MAX
 # Final speed-percent defaults must remain after all max-responsiveness
 # overrides. Set REAL_ROBOT_ARM_SPEED_PERCENT below 100 only when you
 # intentionally want motors 1-7 slowed; motor 8 gripper is never scaled.
-REAL_ROBOT_ARM_SPEED_PERCENT = 75.0
+REAL_ROBOT_BASE_COMMAND_MAX_HZ = ROBOT_COMMAND_MAX_HZ
+REAL_ROBOT_BASE_HZ = REAL_ROBOT_HZ
+HAND_IK_BASE_HZ = HAND_IK_HZ
+IK_MAX_SOLVE_BASE_HZ = IK_MAX_SOLVE_HZ
+REAL_ROBOT_ARM_SPEED_PERCENT = 45.0
 REAL_ROBOT_MIN_ARM_SPEED_PERCENT = 1.0
 REAL_ROBOT_APPLY_SPEED_PERCENT_TO_TORQUE = True
 REAL_ROBOT_APPLY_SPEED_PERCENT_TO_RATES = False
