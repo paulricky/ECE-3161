@@ -11,6 +11,7 @@ import values as val
 from camera_utils import (
     CameraOpenError,
     open_handtracking_camera,
+    open_specific_handtracking_camera,
     print_camera_failure_help,
     probe_camera_indices,
 )
@@ -123,15 +124,48 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _list_cameras() -> int:
-    print("[main] Probing camera indices 0..4. Robot will not be connected.")
-    probes = probe_camera_indices(range(5), read_retries=8)
+    required = max(2, int(getattr(val, "MAIN_CAMERA_STABILITY_FRAMES", 10)))
+    print(f"[main] Probing camera indices 0..4 for {required} stable frames. Robot will not be connected.")
+    probes = probe_camera_indices(range(5), read_retries=required)
     for p in probes:
         shape = "" if p.frame_shape is None else f" frame_shape={p.frame_shape}"
         print(
             f"  index={p.index} backend={p.backend_name} props={'yes' if p.used_props else 'no'} "
-            f"opened={p.opened} read_ok={p.read_ok}{shape}"
+            f"opened={p.opened} stable_read={'yes' if p.read_ok else 'no'}{shape}"
         )
     return 0
+
+
+def _initialize_hand_tracker():
+    from handtracking import HandTracker
+
+    tracker = HandTracker()
+    if bool(getattr(val, "HANDTRACKING_INIT_MEDIAPIPE_BEFORE_CAMERA", True)):
+        try:
+            ok = bool(tracker.warmup_mediapipe())
+            if ok:
+                print("[main] MediaPipe hand tracker initialized before camera validation")
+            else:
+                print("[main] MediaPipe hand tracker warmup unavailable; continuing with existing no-hand fallback")
+        except Exception as exc:
+            print(f"[main] MediaPipe warmup skipped: {exc}")
+    return tracker
+
+
+def _stop_robot_sender(robot: Optional[SOArmHardwareController], real_robot_enabled: bool) -> None:
+    if not real_robot_enabled or robot is None:
+        return
+    try:
+        robot.stop_async_sender()
+    except Exception:
+        pass
+
+
+def _start_robot_sender(robot: Optional[SOArmHardwareController], real_robot_enabled: bool) -> None:
+    if not real_robot_enabled or robot is None:
+        return
+    if bool(getattr(val, "REAL_ROBOT_ASYNC_COMMAND_SENDER", True)):
+        robot.start_async_sender()
 
 
 def main() -> int:
@@ -142,28 +176,31 @@ def main() -> int:
     if not _ensure_robot_calibration():
         return 1
 
-    try:
-        camera = open_handtracking_camera()
-    except CameraOpenError as exc:
-        print_camera_failure_help(exc)
-        return 1 if bool(getattr(val, "MAIN_CAMERA_FAIL_FATAL", True)) else 0
-
-    cap = camera.cap
-    pending_first_frame = camera.frame
     tracker = None
+    cap = None
     robot = None
     pick_runtime = None
     real_robot_enabled = bool(getattr(val, "ENABLE_REAL_ROBOT", False))
     exit_code = 0
 
     try:
-        from handtracking import HandTracker
-
-        tracker = HandTracker()
+        tracker = _initialize_hand_tracker()
     except Exception as exc:
-        print(f"[main] Failed to initialize hand tracker after camera startup: {exc}")
-        cap.release()
+        print(f"[main] Failed to initialize hand tracker before camera startup: {exc}")
         return 1
+
+    try:
+        camera = open_handtracking_camera()
+    except CameraOpenError as exc:
+        print_camera_failure_help(exc)
+        try:
+            tracker.close()
+        except Exception:
+            pass
+        return 1 if bool(getattr(val, "MAIN_CAMERA_FAIL_FATAL", True)) else 0
+
+    cap = camera.cap
+    pending_first_frame = camera.frame
 
     robot = SOArmHardwareController()
 
@@ -171,9 +208,7 @@ def main() -> int:
         try:
             robot.connect()
             print("[main] Real robot connected")
-            if bool(getattr(val, "REAL_ROBOT_ASYNC_COMMAND_SENDER", True)):
-                robot.start_async_sender()
-                print("[main] Robot command sender running asynchronously")
+            _start_robot_sender(robot, real_robot_enabled)
         except Exception as exc:
             print(f"[main] Failed to connect robot: {exc}")
             try:
@@ -201,6 +236,10 @@ def main() -> int:
     camera_failures = 0
     camera_failure_limit = max(1, int(getattr(val, "MAIN_CAMERA_READ_RETRIES", 30)))
     camera_retry_delay = max(0.0, float(getattr(val, "MAIN_CAMERA_READ_RETRY_DELAY_S", 0.05)))
+    reopen_attempts = 0
+    max_reopen_attempts = max(0, int(getattr(val, "MAIN_CAMERA_MAX_REOPEN_ATTEMPTS", 2)))
+    reopen_on_live_failure = bool(getattr(val, "MAIN_CAMERA_REOPEN_ON_LIVE_FAILURE", True))
+    camera_sender_paused = False
 
     try:
         while True:
@@ -216,15 +255,38 @@ def main() -> int:
                 camera_failures += 1
                 if camera_failures == 1:
                     print("[main] hand-tracking camera read failed; retrying")
+                    _stop_robot_sender(robot, real_robot_enabled)
+                    camera_sender_paused = True
                 if camera_failures >= camera_failure_limit:
                     print("[main] Could not read from hand-tracking camera.")
                     print(f"[main] Consecutive failed reads: {camera_failures}")
                     print("[main] Close other apps using the camera or change HANDTRACKING_CAMERA_INDEX in values.py.")
+                    if reopen_on_live_failure and reopen_attempts < max_reopen_attempts:
+                        reopen_attempts += 1
+                        print(f"[main] Attempting to reopen hand-tracking camera ({reopen_attempts}/{max_reopen_attempts})")
+                        _stop_robot_sender(robot, real_robot_enabled)
+                        try:
+                            cap.release()
+                        except Exception:
+                            pass
+                        try:
+                            camera = open_specific_handtracking_camera(camera.index, camera.backend_name, camera.used_props)
+                            cap = camera.cap
+                            pending_first_frame = camera.frame
+                            camera_failures = 0
+                            _start_robot_sender(robot, real_robot_enabled)
+                            camera_sender_paused = False
+                            continue
+                        except CameraOpenError as exc:
+                            print_camera_failure_help(exc)
                     exit_code = 1 if bool(getattr(val, "MAIN_CAMERA_FAIL_FATAL", True)) else 0
                     break
                 if camera_retry_delay > 0.0:
                     time.sleep(camera_retry_delay)
                 continue
+            if camera_sender_paused:
+                _start_robot_sender(robot, real_robot_enabled)
+                camera_sender_paused = False
             camera_failures = 0
 
             frame = cv2.flip(frame, 1)
@@ -296,7 +358,8 @@ def main() -> int:
         except Exception:
             pass
         try:
-            cap.release()
+            if cap is not None:
+                cap.release()
         except Exception:
             pass
         cv2.destroyAllWindows()

@@ -784,6 +784,13 @@ class HandTracker:
             self._ik_worker.start()
         self.last_gesture_events = {"snap": False, "clap": False, "per_hand": {}}
 
+    def warmup_mediapipe(self) -> bool:
+        try:
+            return _get_hands() is not None
+        except Exception as exc:
+            log_event(f"MediaPipe warmup skipped: {exc}")
+            return False
+
     def update_robot_feedback(self, joints_rad):
         """Optional hook used by main/pick-place code to seed IK with measured joints.
 
