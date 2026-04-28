@@ -958,7 +958,7 @@ HAND_WORKSPACE_CAPTURE_POSES = [
 
 # Global arm-only speed scale. The gripper is intentionally excluded and stays
 # on its configured gripper velocity/acceleration/torque limits.
-REAL_ROBOT_ARM_SPEED_PERCENT = 90.0
+REAL_ROBOT_ARM_SPEED_PERCENT = 35.0
 REAL_ROBOT_MIN_ARM_SPEED_PERCENT = 1.0
 REAL_ROBOT_APPLY_SPEED_PERCENT_TO_TORQUE = True
 REAL_ROBOT_SPEED_PERCENT_VERBOSE = True
