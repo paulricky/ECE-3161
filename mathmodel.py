@@ -592,6 +592,18 @@ def fk_pose(joints, geom=None) -> dict:
     return {"position": d["p"], "rotation": d["R"], "rpy": _matrix_to_rpy(d["R"]), "link_points": d["link_points"], "T": d["T"]}
 
 
+def forward_kinematics_from_joints(joints_rad, geom=None):
+    """Compatibility FK wrapper used by calibration/audit tooling.
+
+    Returns end-effector xyz and rpy for the seven arm joints. Motor IDs are
+    handled outside mathmodel.py; this function only uses the arm joint order.
+    """
+    pose = fk_pose(joints_rad, geom=geom)
+    xyz = np.asarray(pose.get("position"), dtype=np.float64).reshape(3)
+    rpy = np.asarray(pose.get("rpy"), dtype=np.float64).reshape(3)
+    return xyz, rpy
+
+
 def _analytic_geometric_jacobian(joints, geom=None, var_names: Optional[Sequence[str]] = None) -> np.ndarray:
     if geom is None:
         geom = _ee_geom()

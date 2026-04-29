@@ -1,0 +1,915 @@
+{
+  "verdict": "BAD",
+  "critical": [],
+  "warnings": [
+    "left/right are not mostly opposite (cos=0.36); redo one or both poses.",
+    "down/up are not mostly opposite (cos=0.85); redo one or both poses.",
+    "far/near are not mostly opposite (cos=-0.03); redo one or both poses.",
+    "Pose left has strong off-axis coupling; redo if hand mapping feels skewed.",
+    "Pose near has strong off-axis coupling; redo if hand mapping feels skewed.",
+    "Optional pose up_left residual 0.395 m exceeds clamp by more than 2x; redo it or fix base extrema first.",
+    "Optional pose up_right residual 0.335 m exceeds clamp by more than 2x; redo it or fix base extrema first.",
+    "Optional pose down_left residual 0.248 m exceeds clamp by more than 2x; redo it or fix base extrema first.",
+    "Optional pose down_right residual 0.232 m exceeds clamp by more than 2x; redo it or fix base extrema first.",
+    "Optional pose near_left residual 0.124 m exceeds clamp by more than 2x; redo it or fix base extrema first.",
+    "Optional pose near_right residual 0.122 m exceeds clamp by more than 2x; redo it or fix base extrema first.",
+    "Optional pose far_left residual 0.197 m exceeds clamp by more than 2x; redo it or fix base extrema first.",
+    "Optional pose far_right residual 0.228 m exceeds clamp by more than 2x; redo it or fix base extrema first.",
+    "Optional pose near_up residual 0.224 m exceeds clamp by more than 2x; redo it or fix base extrema first.",
+    "Optional pose near_down residual 0.418 m exceeds clamp by more than 2x; redo it or fix base extrema first.",
+    "Optional pose far_up residual 0.340 m exceeds clamp by more than 2x; redo it or fix base extrema first.",
+    "Optional pose far_down residual 0.558 m exceeds clamp by more than 2x; redo it or fix base extrema first.",
+    "Optional pose near_up_left residual 0.380 m exceeds clamp by more than 2x; redo it or fix base extrema first.",
+    "Optional pose near_up_right residual 0.388 m exceeds clamp by more than 2x; redo it or fix base extrema first.",
+    "Optional pose far_down_left residual 0.529 m exceeds clamp by more than 2x; redo it or fix base extrema first.",
+    "Optional pose far_down_right residual 0.547 m exceeds clamp by more than 2x; redo it or fix base extrema first.",
+    "Legacy HAND_TARGET/WORKSPACE bounds would clip 48 recorded pose coordinates; runtime should use calibrated workspace bounds."
+  ],
+  "redo_poses": {
+    "left": [
+      "Pose left has strong off-axis coupling; redo if hand mapping feels skewed."
+    ],
+    "near": [
+      "Pose near has strong off-axis coupling; redo if hand mapping feels skewed."
+    ],
+    "up_left": [
+      "Optional pose up_left residual 0.395 m exceeds clamp by more than 2x; redo it or fix base extrema first."
+    ],
+    "up_right": [
+      "Optional pose up_right residual 0.335 m exceeds clamp by more than 2x; redo it or fix base extrema first."
+    ],
+    "down_left": [
+      "Optional pose down_left residual 0.248 m exceeds clamp by more than 2x; redo it or fix base extrema first."
+    ],
+    "down_right": [
+      "Optional pose down_right residual 0.232 m exceeds clamp by more than 2x; redo it or fix base extrema first."
+    ],
+    "near_left": [
+      "Optional pose near_left residual 0.124 m exceeds clamp by more than 2x; redo it or fix base extrema first."
+    ],
+    "near_right": [
+      "Optional pose near_right residual 0.122 m exceeds clamp by more than 2x; redo it or fix base extrema first."
+    ],
+    "far_left": [
+      "Optional pose far_left residual 0.197 m exceeds clamp by more than 2x; redo it or fix base extrema first."
+    ],
+    "far_right": [
+      "Optional pose far_right residual 0.228 m exceeds clamp by more than 2x; redo it or fix base extrema first."
+    ],
+    "near_up": [
+      "Optional pose near_up residual 0.224 m exceeds clamp by more than 2x; redo it or fix base extrema first."
+    ],
+    "near_down": [
+      "Optional pose near_down residual 0.418 m exceeds clamp by more than 2x; redo it or fix base extrema first."
+    ],
+    "far_up": [
+      "Optional pose far_up residual 0.340 m exceeds clamp by more than 2x; redo it or fix base extrema first."
+    ],
+    "far_down": [
+      "Optional pose far_down residual 0.558 m exceeds clamp by more than 2x; redo it or fix base extrema first."
+    ],
+    "near_up_left": [
+      "Optional pose near_up_left residual 0.380 m exceeds clamp by more than 2x; redo it or fix base extrema first."
+    ],
+    "near_up_right": [
+      "Optional pose near_up_right residual 0.388 m exceeds clamp by more than 2x; redo it or fix base extrema first."
+    ],
+    "far_down_left": [
+      "Optional pose far_down_left residual 0.529 m exceeds clamp by more than 2x; redo it or fix base extrema first."
+    ],
+    "far_down_right": [
+      "Optional pose far_down_right residual 0.547 m exceeds clamp by more than 2x; redo it or fix base extrema first."
+    ]
+  },
+  "sections": {
+    "file_presence_schema": {
+      "path": "/Users/ricky/PycharmProjects/ECE3161/calibration_data/robot_mirror_workspace_calibration.json",
+      "exists": true,
+      "loaded": true,
+      "load_error": null,
+      "calibration_type": "robot_mirror_workspace_extrema",
+      "required_present": [
+        "center",
+        "left",
+        "right",
+        "up",
+        "down",
+        "near",
+        "far"
+      ],
+      "required_missing": [],
+      "optional_present": [
+        "up_left",
+        "up_right",
+        "down_left",
+        "down_right",
+        "near_left",
+        "near_right",
+        "far_left",
+        "far_right",
+        "near_up",
+        "near_down",
+        "far_up",
+        "far_down",
+        "near_up_left",
+        "near_up_right",
+        "far_down_left",
+        "far_down_right"
+      ]
+    },
+    "workspace_direction_quality": {
+      "poses": {
+        "center": {
+          "delta_xyz_m": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "delta_norm_m": 0.0
+        },
+        "left": {
+          "delta_xyz_m": [
+            -0.1632746052800002,
+            -0.03409053567448096,
+            0.026773359508019873
+          ],
+          "delta_norm_m": 0.1689306784786547
+        },
+        "right": {
+          "delta_xyz_m": [
+            -0.11522465075207713,
+            0.18313507647552024,
+            0.02736384982926672
+          ],
+          "delta_norm_m": 0.21809162444741306
+        },
+        "up": {
+          "delta_xyz_m": [
+            -0.30315172354064457,
+            0.012862123550173604,
+            0.3051621834014333
+          ],
+          "delta_norm_m": 0.4303374953292048
+        },
+        "down": {
+          "delta_xyz_m": [
+            -0.10976081761978684,
+            0.07998935741124048,
+            0.4614642800808797
+          ],
+          "delta_norm_m": 0.48103535854882007
+        },
+        "near": {
+          "delta_xyz_m": [
+            0.048429020850692714,
+            0.0646440735435303,
+            0.31379762379880216
+          ],
+          "delta_norm_m": 0.3240265035558554
+        },
+        "far": {
+          "delta_xyz_m": [
+            -0.25179629918612806,
+            0.09829597360707071,
+            0.010230706395100639
+          ],
+          "delta_norm_m": 0.2704961036032401
+        }
+      },
+      "opposites": {
+        "horizontal": {
+          "negative_pose": "left",
+          "positive_pose": "right",
+          "cosine": 0.3610709656733949
+        },
+        "vertical": {
+          "negative_pose": "down",
+          "positive_pose": "up",
+          "cosine": 0.8459810289761753
+        },
+        "depth": {
+          "negative_pose": "far",
+          "positive_pose": "near",
+          "cosine": -0.03000213946555004
+        }
+      },
+      "coupling": {
+        "left": {
+          "vertical": 0.6821373908451775,
+          "depth": 0.549343491981554
+        },
+        "right": {
+          "vertical": 0.10170697506526499,
+          "depth": 0.34741152569862066
+        },
+        "down": {
+          "horizontal": 0.11562598888333085,
+          "depth": 0.5069533575693308
+        },
+        "up": {
+          "horizontal": 0.12108014926275412,
+          "depth": 0.006459379491247156
+        },
+        "far": {
+          "horizontal": 0.1538677847924532,
+          "vertical": 0.5812904469701081
+        },
+        "near": {
+          "horizontal": 0.22964344595012476,
+          "vertical": 0.7519227802520078
+        }
+      }
+    },
+    "optional_residual_quality": {
+      "poses": {
+        "up_left": {
+          "residual_xyz_m": [
+            0.3536206535570528,
+            0.15970392998386873,
+            0.07524943274247747
+          ],
+          "residual_norm_m": 0.3952409252626482,
+          "exceeds_configured_clamp": true
+        },
+        "up_right": {
+          "residual_xyz_m": [
+            0.2968787306913115,
+            -0.13761415079270536,
+            0.07021224194169495
+          ],
+          "residual_norm_m": 0.33467057557210017,
+          "exceeds_configured_clamp": true
+        },
+        "down_left": {
+          "residual_xyz_m": [
+            0.16974258795730274,
+            -0.144505299853214,
+            -0.10954755720687237
+          ],
+          "residual_norm_m": 0.24838477236357087,
+          "exceeds_configured_clamp": true
+        },
+        "down_right": {
+          "residual_xyz_m": [
+            0.19861235967348884,
+            -0.05677817791527398,
+            -0.10495673873584421
+          ],
+          "residual_norm_m": 0.23170357767741537,
+          "exceeds_configured_clamp": true
+        },
+        "near_left": {
+          "residual_xyz_m": [
+            0.10331283161857643,
+            -0.06285571345641426,
+            0.02692405795700345
+          ],
+          "residual_norm_m": 0.12389223861096087,
+          "exceeds_configured_clamp": true
+        },
+        "near_right": {
+          "residual_xyz_m": [
+            0.07259306384363101,
+            -0.0952683760240469,
+            0.02499130607356312
+          ],
+          "residual_norm_m": 0.12235351146463756,
+          "exceeds_configured_clamp": true
+        },
+        "far_left": {
+          "residual_xyz_m": [
+            0.18969230138720322,
+            -0.027715563284541986,
+            -0.04545291858414553
+          ],
+          "residual_norm_m": 0.19702103811920685,
+          "exceeds_configured_clamp": true
+        },
+        "far_right": {
+          "residual_xyz_m": [
+            0.17542438172825914,
+            -0.13621685497586888,
+            -0.04952478905721833
+          ],
+          "residual_norm_m": 0.22755537790924837,
+          "exceeds_configured_clamp": true
+        },
+        "near_up": {
+          "residual_xyz_m": [
+            0.06903855187948922,
+            0.019235089172249024,
+            -0.21195658103756998
+          ],
+          "residual_norm_m": 0.22374517323557455,
+          "exceeds_configured_clamp": true
+        },
+        "near_down": {
+          "residual_xyz_m": [
+            0.09731183406897478,
+            -0.12697070751326595,
+            -0.38565619375610205
+          ],
+          "residual_norm_m": 0.4175186862868908,
+          "exceeds_configured_clamp": true
+        },
+        "far_up": {
+          "residual_xyz_m": [
+            0.23493626422057112,
+            -0.0006477755409231636,
+            -0.24550114088157093
+          ],
+          "residual_norm_m": 0.33980329314652374,
+          "exceeds_configured_clamp": true
+        },
+        "far_down": {
+          "residual_xyz_m": [
+            0.17265265641078753,
+            -0.09819408262301108,
+            -0.5214069648275519
+          ],
+          "residual_norm_m": 0.5579572031962273,
+          "exceeds_configured_clamp": true
+        },
+        "near_up_left": {
+          "residual_xyz_m": [
+            0.2958683343015911,
+            0.026071800681751932,
+            -0.23764569562237603
+          ],
+          "residual_norm_m": 0.3803857077770274,
+          "exceeds_configured_clamp": true
+        },
+        "near_up_right": {
+          "residual_xyz_m": [
+            0.2616160471579402,
+            -0.15684323239551645,
+            -0.24027119276039144
+          ],
+          "residual_norm_m": 0.38829499320660926,
+          "exceeds_configured_clamp": true
+        },
+        "far_down_left": {
+          "residual_xyz_m": [
+            0.4379346910531956,
+            -0.254508459317892,
+            -0.15112228623670587
+          ],
+          "residual_norm_m": 0.5285823444740032,
+          "exceeds_configured_clamp": true
+        },
+        "far_down_right": {
+          "residual_xyz_m": [
+            0.4975573567332424,
+            -0.18263606890767795,
+            -0.1346674856818881
+          ],
+          "residual_norm_m": 0.5468588379145962,
+          "exceeds_configured_clamp": true
+        }
+      },
+      "summary": {
+        "mean_residual_m": 0.32899801601357753,
+        "median_residual_m": 0.33723693435931196,
+        "max_residual_m": 0.5579572031962273,
+        "configured_residual_max_m": 0.03
+      }
+    },
+    "runtime_clamp_quality": {
+      "legacy_bounds": {
+        "x": [
+          -0.12,
+          0.12
+        ],
+        "y": [
+          0.1,
+          0.22
+        ],
+        "z": [
+          0.0,
+          0.22
+        ]
+      },
+      "legacy_bounds_would_clip": [
+        {
+          "pose": "center",
+          "axis": "y",
+          "value": -0.06928833682935906,
+          "legacy_min": 0.1,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "center",
+          "axis": "z",
+          "value": -0.12643959466667878,
+          "legacy_min": 0.0,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "left",
+          "axis": "y",
+          "value": -0.10337887250384002,
+          "legacy_min": 0.1,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "left",
+          "axis": "z",
+          "value": -0.09966623515865891,
+          "legacy_min": 0.0,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "right",
+          "axis": "z",
+          "value": -0.09907574483741206,
+          "legacy_min": 0.0,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "up",
+          "axis": "x",
+          "value": -0.18699512831545223,
+          "legacy_min": -0.12,
+          "legacy_max": 0.12
+        },
+        {
+          "pose": "up",
+          "axis": "y",
+          "value": -0.056426213279185455,
+          "legacy_min": 0.1,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "down",
+          "axis": "y",
+          "value": 0.01070102058188142,
+          "legacy_min": 0.1,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "down",
+          "axis": "z",
+          "value": 0.33502468541420094,
+          "legacy_min": 0.0,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "near",
+          "axis": "x",
+          "value": 0.16458561607588504,
+          "legacy_min": -0.12,
+          "legacy_max": 0.12
+        },
+        {
+          "pose": "near",
+          "axis": "y",
+          "value": -0.004644263285828752,
+          "legacy_min": 0.1,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "far",
+          "axis": "x",
+          "value": -0.13563970396093575,
+          "legacy_min": -0.12,
+          "legacy_max": 0.12
+        },
+        {
+          "pose": "far",
+          "axis": "y",
+          "value": 0.029007636777711655,
+          "legacy_min": 0.1,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "far",
+          "axis": "z",
+          "value": -0.11620888827157815,
+          "legacy_min": 0.0,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "up_left",
+          "axis": "y",
+          "value": 0.06918718103020233,
+          "legacy_min": 0.1,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "up_left",
+          "axis": "z",
+          "value": 0.28074538098525187,
+          "legacy_min": 0.0,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "up_right",
+          "axis": "y",
+          "value": -0.010905287596370584,
+          "legacy_min": 0.1,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "up_right",
+          "axis": "z",
+          "value": 0.2762986805057162,
+          "legacy_min": 0.0,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "down_left",
+          "axis": "y",
+          "value": -0.16789481494581354,
+          "legacy_min": 0.1,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "down_left",
+          "axis": "z",
+          "value": 0.2522504877153484,
+          "legacy_min": 0.0,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "down_right",
+          "axis": "z",
+          "value": 0.25743179650762343,
+          "legacy_min": 0.0,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "near_left",
+          "axis": "y",
+          "value": -0.10159051241672398,
+          "legacy_min": 0.1,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "near_left",
+          "axis": "z",
+          "value": 0.2410554465971467,
+          "legacy_min": 0.0,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "near_right",
+          "axis": "x",
+          "value": 0.12195402916743892,
+          "legacy_min": -0.12,
+          "legacy_max": 0.12
+        },
+        {
+          "pose": "near_right",
+          "axis": "y",
+          "value": 0.08322243716564458,
+          "legacy_min": 0.1,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "near_right",
+          "axis": "z",
+          "value": 0.23971318503495323,
+          "legacy_min": 0.0,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "far_left",
+          "axis": "y",
+          "value": -0.0327984621813113,
+          "legacy_min": 0.1,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "far_left",
+          "axis": "z",
+          "value": -0.1348884473477038,
+          "legacy_min": 0.0,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "far_right",
+          "axis": "y",
+          "value": 0.07592585827736299,
+          "legacy_min": 0.1,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "far_right",
+          "axis": "z",
+          "value": -0.13836982749952975,
+          "legacy_min": 0.0,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "near_up",
+          "axis": "y",
+          "value": 0.02745294943659387,
+          "legacy_min": 0.1,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "near_up",
+          "axis": "z",
+          "value": 0.28056363149598673,
+          "legacy_min": 0.0,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "near_down",
+          "axis": "x",
+          "value": 0.15213663252507298,
+          "legacy_min": -0.12,
+          "legacy_max": 0.12
+        },
+        {
+          "pose": "near_down",
+          "axis": "y",
+          "value": -0.05162561338785421,
+          "legacy_min": 0.1,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "near_down",
+          "axis": "z",
+          "value": 0.26316611545690105,
+          "legacy_min": 0.0,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "far_up",
+          "axis": "x",
+          "value": -0.20385516328100917,
+          "legacy_min": -0.12,
+          "legacy_max": 0.12
+        },
+        {
+          "pose": "far_up",
+          "axis": "y",
+          "value": 0.04122198478696209,
+          "legacy_min": 0.1,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "far_up",
+          "axis": "z",
+          "value": -0.05654784575171577,
+          "legacy_min": 0.0,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "far_down",
+          "axis": "y",
+          "value": 0.010802911565941061,
+          "legacy_min": 0.1,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "far_down",
+          "axis": "z",
+          "value": -0.17615157301825027,
+          "legacy_min": 0.0,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "near_up_left",
+          "axis": "y",
+          "value": 0.00019912527161581456,
+          "legacy_min": 0.1,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "near_up_left",
+          "axis": "z",
+          "value": 0.2816478764192005,
+          "legacy_min": 0.0,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "near_up_right",
+          "axis": "y",
+          "value": 0.034509704344348635,
+          "legacy_min": 0.1,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "near_up_right",
+          "axis": "z",
+          "value": 0.2796128696024319,
+          "legacy_min": 0.0,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "far_down_left",
+          "axis": "y",
+          "value": -0.1796020008034208,
+          "legacy_min": 0.1,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "far_down_left",
+          "axis": "z",
+          "value": 0.22090646508061557,
+          "legacy_min": 0.0,
+          "legacy_max": 0.22
+        },
+        {
+          "pose": "far_down_right",
+          "axis": "x",
+          "value": 0.13693218440044272,
+          "legacy_min": -0.12,
+          "legacy_max": 0.12
+        },
+        {
+          "pose": "far_down_right",
+          "axis": "z",
+          "value": 0.2379517559566802,
+          "legacy_min": 0.0,
+          "legacy_max": 0.22
+        }
+      ],
+      "workspace_bounds_clamp_enabled": true,
+      "workspace_bounds_margin_m": 0.02
+    },
+    "anchor_reproduction": {
+      "center": {
+        "centered_hvd": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "recorded_xyz_m": [
+          0.11615659522519232,
+          -0.06928833682935906,
+          -0.12643959466667878
+        ],
+        "base_xyz_m": [
+          0.11615659522519232,
+          -0.06928833682935906,
+          -0.12643959466667878
+        ],
+        "final_xyz_m": [
+          0.11615659522519232,
+          -0.06928833682935906,
+          -0.12643959466667878
+        ],
+        "base_error_m": 0.0,
+        "final_error_m": 0.0,
+        "target_clamped": false
+      },
+      "left": {
+        "centered_hvd": [
+          -1.0,
+          0.0,
+          0.0
+        ],
+        "recorded_xyz_m": [
+          -0.04711801005480788,
+          -0.10337887250384002,
+          -0.09966623515865891
+        ],
+        "base_xyz_m": [
+          -0.04711801005480788,
+          -0.10337887250384002,
+          -0.09966623515865891
+        ],
+        "final_xyz_m": [
+          -0.04711801005480788,
+          -0.10337887250384002,
+          -0.09966623515865891
+        ],
+        "base_error_m": 0.0,
+        "final_error_m": 0.0,
+        "target_clamped": false
+      },
+      "right": {
+        "centered_hvd": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "recorded_xyz_m": [
+          0.0009319444731151899,
+          0.11384673964616117,
+          -0.09907574483741206
+        ],
+        "base_xyz_m": [
+          0.0009319444731151899,
+          0.11384673964616118,
+          -0.09907574483741206
+        ],
+        "final_xyz_m": [
+          0.0009319444731151899,
+          0.11384673964616118,
+          -0.09907574483741206
+        ],
+        "base_error_m": 1.3877787807814457e-17,
+        "final_error_m": 1.3877787807814457e-17,
+        "target_clamped": false
+      },
+      "up": {
+        "centered_hvd": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "recorded_xyz_m": [
+          -0.18699512831545223,
+          -0.056426213279185455,
+          0.17872258873475455
+        ],
+        "base_xyz_m": [
+          -0.18699512831545223,
+          -0.056426213279185455,
+          0.17872258873475452
+        ],
+        "final_xyz_m": [
+          -0.18699512831545223,
+          -0.056426213279185455,
+          0.17872258873475452
+        ],
+        "base_error_m": 2.7755575615628914e-17,
+        "final_error_m": 2.7755575615628914e-17,
+        "target_clamped": false
+      },
+      "down": {
+        "centered_hvd": [
+          0.0,
+          -1.0,
+          0.0
+        ],
+        "recorded_xyz_m": [
+          0.0063957776054054845,
+          0.01070102058188142,
+          0.33502468541420094
+        ],
+        "base_xyz_m": [
+          0.006395777605405481,
+          0.010701020581881424,
+          0.33502468541420094
+        ],
+        "final_xyz_m": [
+          0.006395777605405481,
+          0.010701020581881424,
+          0.33502468541420094
+        ],
+        "base_error_m": 4.9065389333867974e-18,
+        "final_error_m": 4.9065389333867974e-18,
+        "target_clamped": false
+      },
+      "near": {
+        "centered_hvd": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "recorded_xyz_m": [
+          0.16458561607588504,
+          -0.004644263285828752,
+          0.18735802913212335
+        ],
+        "base_xyz_m": [
+          0.16458561607588504,
+          -0.004644263285828759,
+          0.18735802913212338
+        ],
+        "final_xyz_m": [
+          0.16458561607588504,
+          -0.004644263285828759,
+          0.18735802913212338
+        ],
+        "base_error_m": 2.8609792490763984e-17,
+        "final_error_m": 2.8609792490763984e-17,
+        "target_clamped": false
+      },
+      "far": {
+        "centered_hvd": [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        "recorded_xyz_m": [
+          -0.13563970396093575,
+          0.029007636777711655,
+          -0.11620888827157815
+        ],
+        "base_xyz_m": [
+          -0.13563970396093572,
+          0.02900763677771165,
+          -0.11620888827157815
+        ],
+        "final_xyz_m": [
+          -0.13563970396093572,
+          0.02900763677771165,
+          -0.11620888827157815
+        ],
+        "base_error_m": 2.8609792490763984e-17,
+        "final_error_m": 2.8609792490763984e-17,
+        "target_clamped": false
+      }
+    }
+  },
+  "inputs": {
+    "robot_file": "/Users/ricky/PycharmProjects/ECE3161/calibration_data/robot_mirror_workspace_calibration.json",
+    "legacy_schema": true
+  }
+}

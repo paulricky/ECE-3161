@@ -30,6 +30,12 @@ HAND_WORKSPACE_JSON_PATH = Path(__file__).resolve().parent / str(
 ROBOT_MIRROR_WORKSPACE_JSON_PATH = Path(__file__).resolve().parent / str(
     getattr(val, "ROBOT_MIRROR_WORKSPACE_CALIBRATION_FILE", "calibration_data/robot_mirror_workspace_calibration.json")
 )
+ROBOT_WORKSPACE_JSON_PATH = Path(__file__).resolve().parent / str(
+    getattr(val, "ROBOT_WORKSPACE_CALIBRATION_FILE", "calibration_data/robot_workspace_extrema_calibration.json")
+)
+ROBOT_WORKSPACE_LEGACY_JSON_PATH = Path(__file__).resolve().parent / str(
+    getattr(val, "ROBOT_WORKSPACE_LEGACY_MIRROR_CALIBRATION_FILE", "calibration_data/robot_mirror_workspace_calibration.json")
+)
 
 FEETECH_MODEL_NUMBER_ADDR = int(getattr(val, "FEETECH_MODEL_NUMBER_ADDR", 3))
 FEETECH_ID_REGISTER_ADDR = int(getattr(val, "FEETECH_ID_REGISTER_ADDR", 5))
@@ -506,15 +512,20 @@ def get_hand_workspace_status() -> HandWorkspaceStatus:
 
 
 def get_robot_mirror_workspace_status() -> RobotMirrorWorkspaceStatus:
-    path = ROBOT_MIRROR_WORKSPACE_JSON_PATH
-    try:
-        if not path.exists():
-            return RobotMirrorWorkspaceStatus(False, str(path))
-        payload = json.loads(path.read_text())
-        ok = isinstance(payload, dict) and payload.get("calibration_type") == "robot_mirror_workspace_extrema"
-        return RobotMirrorWorkspaceStatus(bool(ok), str(path))
-    except Exception:
-        return RobotMirrorWorkspaceStatus(False, str(path))
+    for path, types in (
+        (ROBOT_WORKSPACE_JSON_PATH, {"robot_workspace_extrema"}),
+        (ROBOT_WORKSPACE_LEGACY_JSON_PATH, {"robot_mirror_workspace_extrema"}),
+    ):
+        try:
+            if not path.exists():
+                continue
+            payload = json.loads(path.read_text())
+            ok = isinstance(payload, dict) and payload.get("calibration_type") in types
+            if ok:
+                return RobotMirrorWorkspaceStatus(True, str(path))
+        except Exception:
+            continue
+    return RobotMirrorWorkspaceStatus(False, str(ROBOT_WORKSPACE_JSON_PATH))
 
 
 def _feetech_checksum(packet_tail: Sequence[int]) -> int:
@@ -1330,34 +1341,38 @@ def run_setup_and_calibration() -> int:
     return run_calibration_only()
 
 
-MIRROR_REQUIRED_POSES = [str(x) for x in getattr(val, "ROBOT_MIRROR_REQUIRED_POSES", [
+WORKSPACE_REQUIRED_POSES = [str(x) for x in getattr(val, "ROBOT_WORKSPACE_REQUIRED_POSES", [
     "center",
-    "mirror_left",
-    "mirror_right",
-    "mirror_up",
-    "mirror_down",
-    "mirror_near",
-    "mirror_far",
+    "left",
+    "right",
+    "up",
+    "down",
+    "near",
+    "far",
 ])]
 
-MIRROR_OPTIONAL_POSES = [str(x) for x in getattr(val, "ROBOT_MIRROR_OPTIONAL_POSES", [
-    "mirror_up_left",
-    "mirror_up_right",
-    "mirror_down_left",
-    "mirror_down_right",
-    "mirror_near_left",
-    "mirror_near_right",
-    "mirror_far_left",
-    "mirror_far_right",
-    "mirror_near_up",
-    "mirror_near_down",
-    "mirror_far_up",
-    "mirror_far_down",
-    "mirror_near_up_left",
-    "mirror_near_up_right",
-    "mirror_far_down_left",
-    "mirror_far_down_right",
+WORKSPACE_OPTIONAL_POSES = [str(x) for x in getattr(val, "ROBOT_WORKSPACE_OPTIONAL_POSES", [
+    "up_left",
+    "up_right",
+    "down_left",
+    "down_right",
+    "near_left",
+    "near_right",
+    "far_left",
+    "far_right",
+    "near_up",
+    "near_down",
+    "far_up",
+    "far_down",
+    "near_up_left",
+    "near_up_right",
+    "far_down_left",
+    "far_down_right",
 ])]
+
+# Backward-compatible local names used by older helper functions.
+MIRROR_REQUIRED_POSES = WORKSPACE_REQUIRED_POSES
+MIRROR_OPTIONAL_POSES = WORKSPACE_OPTIONAL_POSES
 
 
 MIRROR_CALIBRATION_MOTOR_GUIDE = {
@@ -1410,14 +1425,14 @@ def _motor_label(motor_id: int) -> str:
 
 
 def _print_mirror_motor_reference() -> None:
-    print("[mirror] Motor number reference:")
+    print("[workspace] Motor number reference:")
     for motor_id in sorted(MIRROR_CALIBRATION_MOTOR_GUIDE):
         item = MIRROR_CALIBRATION_MOTOR_GUIDE[motor_id]
         print(f"  Motor {motor_id} / {item['name']}: {item['role']}.")
 
 
 def _print_robot_pose_recording_guidance() -> None:
-    print("[mirror] Robot pose recording guidance:")
+    print("[workspace] Robot pose recording guidance:")
     print("  * Move the gripper tip/end effector, not just one joint.")
     print("  * The pose should look like a clean workspace extreme from center.")
     print("  * Keep the gripper roughly forward-facing and usable.")
@@ -1431,19 +1446,19 @@ def _print_robot_pose_recording_guidance() -> None:
 
 def _mirror_pose_main_motors(name: str) -> str:
     name = str(name)
-    if name in {"mirror_left", "mirror_right"}:
+    if name in {"left", "right", "mirror_left", "mirror_right"}:
         return f"{_motor_label(1)}"
-    if name in {"mirror_up", "mirror_down"}:
+    if name in {"up", "down", "mirror_up", "mirror_down"}:
         return f"{_motor_label(2)} and {_motor_label(3)}"
-    if name in {"mirror_near", "mirror_far"}:
+    if name in {"near", "far", "mirror_near", "mirror_far"}:
         return f"{_motor_label(3)} with {_motor_label(2)} as needed"
-    if name in {"mirror_up_left", "mirror_up_right", "mirror_down_left", "mirror_down_right"}:
+    if name in {"up_left", "up_right", "down_left", "down_right", "mirror_up_left", "mirror_up_right", "mirror_down_left", "mirror_down_right"}:
         return f"{_motor_label(1)} for left/right; Motors 2-3 for up/down"
-    if name in {"mirror_near_left", "mirror_near_right", "mirror_far_left", "mirror_far_right"}:
+    if name in {"near_left", "near_right", "far_left", "far_right", "mirror_near_left", "mirror_near_right", "mirror_far_left", "mirror_far_right"}:
         return f"{_motor_label(1)} for left/right; {_motor_label(3)} with Motor 2 as needed for depth"
-    if name in {"mirror_near_up", "mirror_near_down", "mirror_far_up", "mirror_far_down"}:
+    if name in {"near_up", "near_down", "far_up", "far_down", "mirror_near_up", "mirror_near_down", "mirror_far_up", "mirror_far_down"}:
         return "Motors 2-3 for vertical/depth; keep Motor 1 near center"
-    if name in {"mirror_near_up_left", "mirror_near_up_right", "mirror_far_down_left", "mirror_far_down_right"}:
+    if name in {"near_up_left", "near_up_right", "far_down_left", "far_down_right", "mirror_near_up_left", "mirror_near_up_right", "mirror_far_down_left", "mirror_far_down_right"}:
         return "Motor 1 for left/right; Motors 2-3 for up/down/near/far"
     return "Motor 1 for left/right; Motors 2-3 for height/reach; Motors 4-7 neutral"
 
@@ -1452,8 +1467,15 @@ def _section_lines(title: str, items: list[str]) -> list[str]:
     return [title, *[f"  * {item}" for item in items]]
 
 
+def _legacy_mirror_pose_name(name: str) -> str:
+    name = str(name)
+    if name == "center" or name.startswith("mirror_"):
+        return name
+    return "mirror_" + name
+
+
 def get_robot_mirror_pose_instruction(pose_name: str) -> list[str]:
-    name = str(pose_name)
+    name = _legacy_mirror_pose_name(str(pose_name))
     required = {
         "center": [
             *_section_lines("Robot should look like:", [
@@ -1808,14 +1830,18 @@ def _mirror_pose_instruction_lines(name: str) -> list[str]:
     return get_robot_mirror_pose_instruction(name)
 
 
+def get_workspace_pose_instruction(pose_name: str) -> list[str]:
+    return get_robot_mirror_pose_instruction(pose_name)
+
+
 def _mirror_pose_instruction(name: str) -> str:
     return " ".join(_mirror_pose_instruction_lines(name))
 
 
 def _print_mirror_pose_instruction(name: str, index: int, total: int, optional: bool) -> None:
     print("")
-    print(f"[mirror] Pose {index}/{total}: {name}")
-    print("[mirror] General placement rules:")
+    print(f"[workspace] Pose {index}/{total}: {name}")
+    print("[workspace] General placement rules:")
     print("  Move the END EFFECTOR / gripper tip, not just one joint.")
     print("  Keep the pose within safe mechanical limits.")
     print("  Keep the gripper forward-facing and usable when possible.")
@@ -1823,8 +1849,8 @@ def _print_mirror_pose_instruction(name: str, index: int, total: int, optional: 
     print("  This recorded pose defines what hand motion should mirror during runtime.")
     print("  Do not worry whether the physical axis is called x/y/z.")
     print("  Place the end effector in the intuitive mirror direction.")
-    print(f"[mirror] Main motors for this pose: {_mirror_pose_main_motors(name)}.")
-    print("[mirror] Motor guide:")
+    print(f"[workspace] Main motors for this pose: {_mirror_pose_main_motors(name)}.")
+    print("[workspace] Motor guide:")
     print("  Motor 1 / shoulder_pan: base left/right sweep.")
     print("  Motor 2 / shoulder_lift: main arm up/down lift.")
     print("  Motor 3 / elbow_flex: reach bend/extension.")
@@ -1832,7 +1858,7 @@ def _print_mirror_pose_instruction(name: str, index: int, total: int, optional: 
     print("  Motor 8 / gripper: ignored for workspace; keep normal/open.")
     if optional:
         print("  Optional poses improve nonlinear accuracy. Skip only if this pose is unsafe or unreachable.")
-    print("[mirror] Pose-specific instruction:")
+    print("[workspace] Pose-specific instruction:")
     for line in _mirror_pose_instruction_lines(name):
         print(f"  {line}")
 
@@ -1884,7 +1910,7 @@ def _capture_current_motor_ticks(session: DirectCalibrationSession) -> dict[str,
     for name, sid in zip(session.motor_names, session.motor_ids, strict=True):
         pos, baud, _addr, ok, _tries = _read_position_for_session(session, int(sid), attempts=max(1, READ_RETRIES), full_baud_scan=False)
         if pos is None or not ok:
-            print(f"[mirror] Could not read {name}/ID{int(sid)}.")
+            print(f"[workspace] Could not read {name}/ID{int(sid)}.")
             return None
         session.set_baud_for_id(int(sid), int(baud))
         ticks[str(name)] = int(pos)
@@ -1902,37 +1928,37 @@ def _fk_from_joint_list(joints_rad: list[float]) -> tuple[list[float], list[floa
             return None
         return xyz.astype(float).tolist(), rpy.astype(float).tolist()
     except Exception as exc:
-        print(f"[mirror] FK failed: {exc}")
+        print(f"[workspace] FK failed: {exc}")
         return None
 
 
 def _save_mirror_workspace_payload(payload: dict[str, Any], overwrite: bool) -> Path:
-    path = ROBOT_MIRROR_WORKSPACE_JSON_PATH
+    path = ROBOT_WORKSPACE_JSON_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     out_path = path
     if out_path.exists() and not overwrite:
-        reply = input(f"[mirror] Output exists: {out_path}\nOverwrite? [y/N]: ").strip().lower()
+        reply = input(f"[workspace] Output exists: {out_path}\nOverwrite? [y/N]: ").strip().lower()
         if reply not in ("y", "yes"):
             out_path = path.with_name(path.stem + "_candidate" + path.suffix)
-            print(f"[mirror] Writing candidate instead: {out_path}")
+            print(f"[workspace] Writing candidate instead: {out_path}")
     out_path.write_text(json.dumps(payload, indent=2) + "\n")
     return out_path
 
 
 def _print_mirror_pose_summary(poses: dict[str, dict[str, Any]]) -> None:
-    print("[mirror] Captured mirror poses:")
+    print("[workspace] Captured workspace poses:")
     for name, item in poses.items():
         xyz = item.get("fk_xyz_m", [0.0, 0.0, 0.0])
         rpy = item.get("fk_rpy_rad", [0.0, 0.0, 0.0])
         print(
-            f"[mirror] {name}: "
+            f"[workspace] {name}: "
             f"xyz=({float(xyz[0]):+.3f},{float(xyz[1]):+.3f},{float(xyz[2]):+.3f}) "
             f"rpy=({float(rpy[0]):+.3f},{float(rpy[1]):+.3f},{float(rpy[2]):+.3f})"
         )
 
 
 def run_mirror_workspace_calibration() -> int:
-    _print_header("Record robot mirror workspace extrema poses")
+    _print_header("Record robot workspace extrema/boundary poses")
     print("This robot-side workflow does not open a camera and does not use MediaPipe.")
     print("It records motor ticks, calibrated joints, and FK poses only.")
     print("Saved joints are IK seeds only; runtime still uses 7-DOF IK.")
@@ -1940,63 +1966,63 @@ def run_mirror_workspace_calibration() -> int:
     _print_robot_pose_recording_guidance()
     joint_cal = _load_joint_calibration_payload()
     if not isinstance(joint_cal, dict):
-        print(f"[mirror] Missing robot joint calibration: {PROJECT_JSON_PATH}")
-        print("[mirror] Run joint calibration before recording mirror workspace extrema.")
+        print(f"[workspace] Missing robot joint calibration: {PROJECT_JSON_PATH}")
+        print("[workspace] Run joint calibration before recording workspace extrema.")
         return 1
     setup_status = get_motor_setup_status()
     if not setup_status.configured:
-        print("[mirror] Motor-ID setup was not detected. Run setup first.")
+        print("[workspace] Motor-ID setup was not detected. Run setup first.")
         return 1
     try:
         session = connect_session()
     except Exception as exc:
-        print(f"[mirror] Failed to connect to robot through direct bus: {exc}")
+        print(f"[workspace] Failed to connect to robot through direct bus: {exc}")
         return 1
 
-    poses = list(MIRROR_REQUIRED_POSES) + list(MIRROR_OPTIONAL_POSES)
+    poses = list(WORKSPACE_REQUIRED_POSES) + list(WORKSPACE_OPTIONAL_POSES)
     pose_results: dict[str, dict[str, Any]] = {}
     overwrite = "--overwrite" in sys.argv
     try:
         set_torque(session, enabled=False)
-        print("[mirror] Torque is disabled for manual positioning, matching the joint calibration workflow.")
+        print("[workspace] Torque is disabled for manual positioning, matching the joint calibration workflow.")
         for i, pose_name in enumerate(poses, start=1):
             optional = pose_name in MIRROR_OPTIONAL_POSES
             while True:
                 _print_mirror_pose_instruction(pose_name, i, len(poses), optional)
-                print("[mirror] Look at the robot. Does it visually match this description?")
-                print("[mirror] Press SPACE/ENTER to record, or adjust the robot first.")
-                print("[mirror] R=resample, S=skip optional, Q=quit without saving.")
-                reply = input("[mirror] Ready to record? ").strip().lower()
+                print("[workspace] Look at the robot. Does it visually match this description?")
+                print("[workspace] Press SPACE/ENTER to record, or adjust the robot first.")
+                print("[workspace] R=resample, S=skip optional, Q=quit without saving.")
+                reply = input("[workspace] Ready to record? ").strip().lower()
                 if reply in {"q", "quit", "esc", "exit"}:
-                    print("[mirror] Quit without saving.")
+                    print("[workspace] Quit without saving.")
                     return 1
                 if reply == "r":
                     continue
                 if reply == "s":
                     if optional:
-                        print(f"[mirror] skipped optional pose {pose_name}")
+                        print(f"[workspace] skipped optional pose {pose_name}")
                         break
-                    print("[mirror] Required poses cannot be skipped.")
+                    print("[workspace] Required poses cannot be skipped.")
                     continue
                 ticks = _capture_current_motor_ticks(session)
                 if ticks is None:
                     continue
                 joints = _ticks_to_joints_rad(ticks, joint_cal)
                 if joints is None:
-                    print("[mirror] Could not convert motor ticks to joints_rad using robot_joint_calibration.json.")
+                    print("[workspace] Could not convert motor ticks to joints_rad using robot_joint_calibration.json.")
                     continue
                 fk = _fk_from_joint_list(joints)
                 if fk is None:
                     continue
                 fk_xyz, fk_rpy = fk
-                print("[mirror] Read summary:")
+                print("[workspace] Read summary:")
                 print(f"  motor_ticks = {ticks}")
                 print("  joints_rad  = [" + ", ".join(f"{x:+.4f}" for x in joints) + "]")
                 print("  fk_xyz_m    = [" + ", ".join(f"{x:+.4f}" for x in fk_xyz) + "]")
                 print("  fk_rpy_rad  = [" + ", ".join(f"{x:+.4f}" for x in fk_rpy) + "]")
-                accept = input("[mirror] A=accept pose, R=resample, Q=quit without saving: ").strip().lower()
+                accept = input("[workspace] A=accept pose, R=resample, Q=quit without saving: ").strip().lower()
                 if accept in {"q", "quit", "esc", "exit"}:
-                    print("[mirror] Quit without saving.")
+                    print("[workspace] Quit without saving.")
                     return 1
                 if accept == "a":
                     pose_results[pose_name] = {
@@ -2006,15 +2032,15 @@ def run_mirror_workspace_calibration() -> int:
                         "fk_xyz_m": [float(x) for x in fk_xyz],
                         "fk_rpy_rad": [float(x) for x in fk_rpy],
                     }
-                    print(f"[mirror] accepted {pose_name}")
+                    print(f"[workspace] accepted {pose_name}")
                     break
-                print("[mirror] Resampling current pose.")
-        missing = [name for name in MIRROR_REQUIRED_POSES if name not in pose_results]
+                print("[workspace] Resampling current pose.")
+        missing = [name for name in WORKSPACE_REQUIRED_POSES if name not in pose_results]
         if missing:
-            print("[mirror] Missing required poses; not saving: " + ", ".join(missing))
+            print("[workspace] Missing required poses; not saving: " + ", ".join(missing))
             return 1
         payload = {
-            "calibration_type": "robot_mirror_workspace_extrema",
+            "calibration_type": "robot_workspace_extrema",
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "source": "robot_calibrate.py",
             "instruction_version": "visual_pose_guidance_v1",
@@ -2022,27 +2048,27 @@ def run_mirror_workspace_calibration() -> int:
             "motor_names": list(session.motor_names),
             "motor_ids": [int(x) for x in session.motor_ids],
             "poses": pose_results,
-            "required_poses": list(MIRROR_REQUIRED_POSES),
-            "optional_poses": list(MIRROR_OPTIONAL_POSES),
-            "mirror_axes": {
-                "horizontal": {"negative_pose": "mirror_left", "positive_pose": "mirror_right"},
-                "vertical": {"negative_pose": "mirror_down", "positive_pose": "mirror_up"},
-                "depth": {"negative_pose": "mirror_far", "positive_pose": "mirror_near"},
+            "required_poses": list(WORKSPACE_REQUIRED_POSES),
+            "optional_poses": list(WORKSPACE_OPTIONAL_POSES),
+            "workspace_axes": {
+                "horizontal": {"negative_pose": "left", "positive_pose": "right"},
+                "vertical": {"negative_pose": "down", "positive_pose": "up"},
+                "depth": {"negative_pose": "far", "positive_pose": "near"},
             },
             "mapping": {
-                "base_method": "axis_blend",
+                "base_method": "axis_vector",
                 "nonlinear_method": "knn_or_bounded_rbf_residual",
                 "direct_joint_learning_enabled": False,
-                "joint_poses_used_as_ik_seeds": bool(getattr(val, "ROBOT_MIRROR_USE_JOINT_SEED_EXAMPLES", True)),
+                "joint_poses_used_as_ik_seeds": bool(getattr(val, "ROBOT_WORKSPACE_USE_JOINT_SEED_EXAMPLES", True)),
             },
         }
         _print_mirror_pose_summary(pose_results)
-        reply = input("[mirror] Save mirror workspace calibration? [y/N]: ").strip().lower()
+        reply = input("[workspace] Save workspace extrema calibration? [y/N]: ").strip().lower()
         if reply not in {"y", "yes"}:
-            print("[mirror] Not saved.")
+            print("[workspace] Not saved.")
             return 0
         out_path = _save_mirror_workspace_payload(payload, overwrite)
-        print(f"[mirror] Saved calibration: {out_path}")
+        print(f"[workspace] Saved calibration: {out_path}")
         return 0
     finally:
         try:
@@ -2075,11 +2101,11 @@ def run_workflow(mode: str) -> int:
         return run_readonly_scan()
     if mode in {"flash", "flash_one", "flash_one_motor", "set_id", "write_id"}:
         return run_flash_one_motor_id()
-    if mode in {"mirror_workspace", "workspace_extrema", "mirror-workspace", "workspace-extrema"}:
+    if mode in {"mirror_workspace", "workspace_extrema", "mirror-workspace", "workspace-extrema", "workspace_extrema", "workspace-extrema"}:
         return run_mirror_workspace_calibration()
     if mode in {"hand_workspace", "workspace_poses", "hand-workspace", "workspace-poses"}:
         print("[calibrate] robot_calibrate.py no longer opens a camera for workspace calibration.")
-        print("[calibrate] Use mirror_workspace to record robot-side mirror extrema poses.")
+        print("[calibrate] Use workspace_extrema to record robot-side workspace boundary poses.")
         return run_mirror_workspace_calibration()
     print(f"Unknown workflow mode: {mode}")
     return 1
@@ -2097,14 +2123,15 @@ def _interactive_menu_choice() -> str:
     print(f"Joint calibration detected: {'yes' if calib_status.configured else 'no'}")
     if calib_status.source:
         print(f"  source: {calib_status.source}")
-    print(f"Robot mirror workspace calibration detected: {'yes' if mirror_status.configured else 'no'}")
+    print(f"Robot workspace extrema calibration detected: {'yes' if mirror_status.configured else 'no'}")
     if mirror_status.source:
         print(f"  source: {mirror_status.source}")
     print(f"Legacy camera hand workspace calibration detected: {'yes' if hand_ws_status.configured else 'no'}")
     if hand_ws_status.source:
         print(f"  source: {hand_ws_status.source}")
     print("  robot_joint_calibration.json = motor/joint neutral/min/max")
-    print("  robot_mirror_workspace_calibration.json = robot FK mirror extrema for live handtracking")
+    print("  robot_workspace_extrema_calibration.json = robot FK workspace extrema for live handtracking")
+    print("  robot_mirror_workspace_calibration.json = legacy workspace extrema fallback")
     print("  hand_workspace_calibration.json = legacy camera hand-position mapping fallback")
     print("\nChoose an action:")
     print("  1) Full workflow (setup motors, then calibrate joints)")
@@ -2113,7 +2140,7 @@ def _interactive_menu_choice() -> str:
     print("  4) Identify/verify configured motors only")
     print("  5) Read-only scan connected motor IDs")
     print("  6) Flash one connected motor ID")
-    print("  7) Record robot mirror workspace extrema poses")
+    print("  7) Record robot workspace extrema/boundary poses")
     reply = input("Selection [1/2/3/4/5/6/7]: ").strip()
     return {"1": "full", "2": "setup", "3": "calibration", "4": "identify", "5": "scan", "6": "flash", "7": "mirror_workspace"}.get(reply, "full")
 

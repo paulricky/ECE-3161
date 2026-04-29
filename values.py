@@ -899,12 +899,69 @@ HAND_WORKSPACE_CAPTURE_POSES = [
     "far_right",
 ]
 
-# Robot-side mirror workspace calibration. robot_calibrate.py records only robot
-# readback/FK poses; handtracking.py supplies live RGB/MediaPipe hand inputs.
-ROBOT_MIRROR_WORKSPACE_CALIBRATION_FILE = "calibration_data/robot_mirror_workspace_calibration.json"
+# Robot-side workspace extrema calibration. robot_calibrate.py records only
+# robot readback/FK poses; handtracking.py supplies live RGB/MediaPipe hand
+# inputs and IK remains the final joint-command generator.
+ROBOT_WORKSPACE_CALIBRATION_FILE = "calibration_data/robot_workspace_extrema_calibration.json"
+ROBOT_WORKSPACE_LEGACY_MIRROR_CALIBRATION_FILE = "calibration_data/robot_mirror_workspace_calibration.json"
+ROBOT_WORKSPACE_ENABLED = True
+ROBOT_WORKSPACE_REQUIRED_POSES = [
+    "center",
+    "left",
+    "right",
+    "up",
+    "down",
+    "near",
+    "far",
+]
+ROBOT_WORKSPACE_OPTIONAL_POSES = [
+    "up_left",
+    "up_right",
+    "down_left",
+    "down_right",
+    "near_left",
+    "near_right",
+    "far_left",
+    "far_right",
+    "near_up",
+    "near_down",
+    "far_up",
+    "far_down",
+    "near_up_left",
+    "near_up_right",
+    "far_down_left",
+    "far_down_right",
+]
+ROBOT_WORKSPACE_MAPPING_METHOD = "axis_vector_knn_residual"  # axis_vector | axis_vector_knn_residual | axis_vector_rbf_residual
+ROBOT_WORKSPACE_KNN_ENABLED = True
+ROBOT_WORKSPACE_KNN_K = 4
+ROBOT_WORKSPACE_RBF_ENABLED = True
+ROBOT_WORKSPACE_RBF_MIN_SAMPLES = 8
+ROBOT_WORKSPACE_RBF_KERNEL = "thin_plate"  # thin_plate | gaussian | multiquadric
+ROBOT_WORKSPACE_RBF_SMOOTHING = 1e-4
+ROBOT_WORKSPACE_RESIDUAL_MAX_M = 0.030
+ROBOT_WORKSPACE_CLAMP_TO_RECORDED_BOUNDS = True
+ROBOT_WORKSPACE_CLAMP_MARGIN_M = 0.020
+ROBOT_WORKSPACE_PROJECT_TO_CENTER_ON_IK_FAIL = True
+ROBOT_WORKSPACE_PROJECTION_STEPS = 8
+ROBOT_WORKSPACE_USE_JOINT_SEED_EXAMPLES = True
+ROBOT_WORKSPACE_DIRECT_JOINT_LEARNING_ENABLED = False
+
+HAND_WORKSPACE_HORIZONTAL_FLIP = False
+HAND_WORKSPACE_VERTICAL_FLIP = True
+HAND_WORKSPACE_DEPTH_FLIP = False
+HAND_WORKSPACE_CENTER_X_NORM = 0.5
+HAND_WORKSPACE_CENTER_Y_NORM = 0.5
+HAND_WORKSPACE_CENTER_DEPTH_NORM = 0.5
+HAND_WORKSPACE_CLAMP_INPUTS = True
+
+# Backward-compatible mirror names. The old JSON file is still supported by
+# RobotWorkspaceMapper as a legacy input, but new calibration writes the
+# canonical robot_workspace_extrema_calibration.json file.
+ROBOT_MIRROR_WORKSPACE_CALIBRATION_FILE = ROBOT_WORKSPACE_CALIBRATION_FILE
 HAND_MIRROR_POSITION_CALIBRATION_FILE = "calibration_data/hand_mirror_position_calibration.json"
 ROBOT_MIRROR_PAIRED_CALIBRATION_ENABLED = True
-ROBOT_MIRROR_WORKSPACE_ENABLED = True
+ROBOT_MIRROR_WORKSPACE_ENABLED = ROBOT_WORKSPACE_ENABLED
 ROBOT_MIRROR_MAPPING_METHOD = "paired_axis_blend_knn_residual"  # axis_blend | paired_axis_blend | paired_axis_blend_knn_residual | paired_axis_blend_rbf_residual
 ROBOT_MIRROR_FALLBACK_METHOD = "axis_blend"
 ROBOT_MIRROR_DEFAULT_RESIDUAL_METHOD = "knn"

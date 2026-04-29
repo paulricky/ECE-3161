@@ -16,6 +16,7 @@ import values as val
 from depthcalibrator import DepthCalibrator, HandDepthEstimator
 from hand_workspace_mapper import HandWorkspaceMapper
 from robot_mirror_mapper import RobotMirrorWorkspaceMapper
+from robot_workspace_mapper import RobotWorkspaceMapper
 from residual_learning import BoundedResidualCorrector
 
 
@@ -815,10 +816,30 @@ class HandTracker:
             self.workspace_mapper = None
             log_event(f"hand workspace mapper disabled: {exc}")
         try:
+            self.robot_workspace_mapper = RobotWorkspaceMapper()
+        except Exception as exc:
+            self.robot_workspace_mapper = None
+            log_event(f"robot workspace mapper disabled: {exc}")
+        try:
             self.robot_mirror_mapper = RobotMirrorWorkspaceMapper()
         except Exception as exc:
             self.robot_mirror_mapper = None
             log_event(f"robot mirror workspace mapper disabled: {exc}")
+        self._robot_workspace_anchor_warning = ""
+        try:
+            if self.robot_workspace_mapper is not None and bool(getattr(self.robot_workspace_mapper, "loaded", False)):
+                warn_err = float(getattr(val, "ROBOT_MIRROR_ANCHOR_WARN_ERR_M", 0.015))
+                anchor_errors = self.robot_workspace_mapper.evaluate_anchor_errors()
+                bad = [
+                    f"{name}:{float(item.get('final_error_m', 0.0)):.3f}m"
+                    for name, item in anchor_errors.items()
+                    if float(item.get("final_error_m", 0.0)) > warn_err
+                ]
+                if bad:
+                    self._robot_workspace_anchor_warning = "anchor_warning " + ", ".join(bad)
+                    log_event("robot workspace calibration anchor warning: " + ", ".join(bad))
+        except Exception as exc:
+            self._robot_workspace_anchor_warning = f"anchor_check_failed:{exc}"
         self._robot_mirror_anchor_warning = ""
         try:
             if self.robot_mirror_mapper is not None and bool(getattr(self.robot_mirror_mapper, "loaded", False)):
@@ -848,6 +869,7 @@ class HandTracker:
         self._filtered_virtual_wrist_rpy = None
         self._warned_no_hand_calibration = False
         self._warned_no_workspace_calibration = False
+        self._warned_no_robot_workspace_calibration = False
         self._warned_no_robot_mirror_calibration = False
         self._ik_async_enabled = bool(getattr(val, "HAND_IK_ASYNC", True))
         self._ik_lock = threading.RLock()
@@ -1127,7 +1149,7 @@ class HandTracker:
         out["__diagnostics__"] = diag
         return out
 
-    def _queue_async_ik(self, xyz_f, rpy_f, open01, q_seed=None) -> None:
+    def _queue_async_ik(self, xyz_f, rpy_f, open01, q_seed=None, projection_center=None) -> None:
         now = time.time()
         with self._ik_lock:
             # Keep only the newest target.  Old hand positions are overwritten
@@ -1137,6 +1159,7 @@ class HandTracker:
                 "rpy": np.asarray(rpy_f, dtype=np.float64).reshape(3).copy(),
                 "open01": float(open01),
                 "q_seed": dict(q_seed) if isinstance(q_seed, dict) else None,
+                "projection_center": None if projection_center is None else np.asarray(projection_center, dtype=np.float64).reshape(3).copy(),
                 "time": now,
             }
             self._ik_last_request_time = now
@@ -1165,32 +1188,95 @@ class HandTracker:
             last_start = time.time()
             self._ik_busy = True
             try:
-                self._solve_ik_now(req["xyz"], req["rpy"], req["open01"], q_seed=req.get("q_seed"))
+                self._solve_ik_now(
+                    req["xyz"],
+                    req["rpy"],
+                    req["open01"],
+                    q_seed=req.get("q_seed"),
+                    projection_center=req.get("projection_center"),
+                )
             except Exception as exc:
                 log_event(f"IK worker error: {exc}")
             finally:
                 self._ik_busy = False
 
-    def _solve_ik_now(self, xyz_f, rpy_f, open01, q_seed=None):
+    def _solve_ik_now(self, xyz_f, rpy_f, open01, q_seed=None, projection_center=None):
         ik_t0 = time.perf_counter()
         raw_xyz = np.asarray(xyz_f, dtype=np.float64).reshape(3)
         raw_rpy = np.asarray(rpy_f, dtype=np.float64).reshape(3)
         if not np.all(np.isfinite(raw_xyz)) or not np.all(np.isfinite(raw_rpy)):
             return None
+        projection_diag: dict = {"target_projected": False}
         corrected_xyz, corrected_rpy, residual = self.residual_corrector.apply(raw_xyz, raw_rpy)
         if not np.all(np.isfinite(corrected_xyz)) or corrected_rpy is None or not np.all(np.isfinite(corrected_rpy)):
             return None
-        solved = mm.solve_ik_from_target(
-            target_xyz=corrected_xyz,
-            target_rpy=corrected_rpy,
-            gripper_open01=float(open01),
-            lerobot_calibration=self.lerobot_calibration,
-            previous_joints=q_seed if q_seed is not None else self._prev_joints_for_ik(),
-            ik_mode="teleop",
-            strict_reachability=False,
-        )
+
+        previous_for_ik = q_seed if q_seed is not None else self._prev_joints_for_ik()
+
+        def solve_candidate(candidate_xyz):
+            return mm.solve_ik_from_target(
+                target_xyz=candidate_xyz,
+                target_rpy=corrected_rpy,
+                gripper_open01=float(open01),
+                lerobot_calibration=self.lerobot_calibration,
+                previous_joints=previous_for_ik,
+                ik_mode="teleop",
+                strict_reachability=False,
+            )
+
+        solved = solve_candidate(corrected_xyz)
         if not isinstance(solved, dict):
             return None
+        if bool(getattr(val, "ROBOT_WORKSPACE_PROJECT_TO_CENTER_ON_IK_FAIL", True)) and projection_center is not None:
+            diag0 = dict(solved.get("__diagnostics__", {})) if isinstance(solved.get("__diagnostics__", {}), dict) else {}
+            max_err = float(getattr(val, "HAND_IK_REJECT_POSITION_ERR_M", 0.06))
+            needs_projection = (not bool(diag0.get("reachable", True))) and float(diag0.get("position_error_m", 0.0)) > max_err
+            if needs_projection:
+                try:
+                    center = np.asarray(projection_center, dtype=np.float64).reshape(3)
+                except Exception:
+                    center = None
+                if center is not None and np.all(np.isfinite(center)):
+                    steps = max(1, int(getattr(val, "ROBOT_WORKSPACE_PROJECTION_STEPS", 8)))
+                    original = corrected_xyz.copy()
+                    best_projected = None
+                    best_projected_diag = None
+                    best_projected_xyz = None
+                    best_err = float(diag0.get("position_error_m", float("inf")))
+                    for i in range(1, steps + 1):
+                        alpha = i / float(steps)
+                        candidate_xyz = (1.0 - alpha) * original + alpha * center
+                        candidate = solve_candidate(candidate_xyz)
+                        if not isinstance(candidate, dict):
+                            continue
+                        cdiag = dict(candidate.get("__diagnostics__", {})) if isinstance(candidate.get("__diagnostics__", {}), dict) else {}
+                        cerr = float(cdiag.get("position_error_m", float("inf")))
+                        if cerr < best_err:
+                            best_projected = candidate
+                            best_projected_diag = cdiag
+                            best_projected_xyz = candidate_xyz
+                            best_err = cerr
+                        if bool(cdiag.get("reachable", True)) or cerr <= max_err:
+                            solved = candidate
+                            corrected_xyz = candidate_xyz
+                            projection_diag = {
+                                "target_projected": True,
+                                "projection_alpha": float(alpha),
+                                "original_target_xyz_m": original.tolist(),
+                                "final_target_xyz_m": corrected_xyz.tolist(),
+                            }
+                            break
+                    else:
+                        if best_projected is not None and best_projected_diag is not None and best_err < float(diag0.get("position_error_m", float("inf"))):
+                            solved = best_projected
+                            if best_projected_xyz is not None:
+                                corrected_xyz = best_projected_xyz
+                            projection_diag = {
+                                "target_projected": True,
+                                "projection_alpha": None,
+                                "original_target_xyz_m": original.tolist(),
+                                "final_target_xyz_m": corrected_xyz.tolist(),
+                            }
         diag = dict(solved.get("__diagnostics__", {})) if isinstance(solved.get("__diagnostics__", {}), dict) else {}
         perf_ik_ms = (time.perf_counter() - ik_t0) * 1000.0
         diag.update({
@@ -1204,6 +1290,7 @@ class HandTracker:
             "residual_enabled": bool(residual.enabled),
             "residual_source": str(residual.source),
         })
+        diag.update(projection_diag)
         max_err = float(getattr(val, "HAND_IK_REJECT_POSITION_ERR_M", 0.06))
         if isinstance(diag, dict) and (not bool(diag.get("reachable", True))) and float(diag.get("position_error_m", 0.0)) > max_err:
             diag["ik_success"] = False
@@ -1231,16 +1318,16 @@ class HandTracker:
             self._last_ik_signature = {"xyz": out["ee_target_xyz"], "rpy": out["ee_target_rpy"]}
         return out
 
-    def _solve_cartesian_command(self, xyz, rpy, open01, q_seed=None):
+    def _solve_cartesian_command(self, xyz, rpy, open01, q_seed=None, projection_center=None):
         xyz_f, rpy_f = self._smooth_target_pose(xyz, rpy)
         if self._ik_async_enabled:
-            self._queue_async_ik(xyz_f, rpy_f, open01, q_seed=q_seed)
+            self._queue_async_ik(xyz_f, rpy_f, open01, q_seed=q_seed, projection_center=projection_center)
             return self._ik_base_command(open01, xyz_f, rpy_f, pending=True)
 
         cached = self._cached_ik_command_if_fresh(xyz_f, rpy_f, open01)
         if cached is not None:
             return cached
-        solved = self._solve_ik_now(xyz_f, rpy_f, open01, q_seed=q_seed)
+        solved = self._solve_ik_now(xyz_f, rpy_f, open01, q_seed=q_seed, projection_center=projection_center)
         if solved is not None:
             return solved
         return self._ik_base_command(open01, xyz_f, rpy_f, pending=False)
@@ -1310,7 +1397,14 @@ class HandTracker:
                     f"speed={float(getattr(val, 'REAL_ROBOT_ARM_SPEED_PERCENT', 100.0)):.0f}% "
                     "grip=100%"
                 )
-                if "mirror_mapping_source" in diag:
+                if "workspace_mapping_source" in diag:
+                    line0 = (
+                        f"workspace={diag.get('workspace_method', '?')} legacy={bool(diag.get('robot_workspace_legacy_loaded', False))} "
+                        f"clamp={bool(diag.get('target_clamped', False))} proj={bool(diag.get('target_projected', False))} "
+                        f"near={diag.get('nearest_pose', '?')}"
+                    )
+                    cv2.putText(frame, line0, (10, h_img - 114), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 255), 2, cv2.LINE_AA)
+                elif "mirror_mapping_source" in diag:
                     line0 = (
                         f"mirror={diag.get('mirror_method', '?')} paired={bool(diag.get('paired_hand_calibration_loaded', False))} "
                         f"depthPair={diag.get('hand_depth_pairing_source', '?')} clamp={bool(diag.get('mirror_target_clamped', False))} "
@@ -1609,6 +1703,7 @@ class HandTracker:
         mapper_debug = {}
         q_seed = None
         mirror_mapper_used = False
+        workspace_mapper_used = False
         if aruco_pose is not None and bool(getattr(val, "HAND_DEPTH_ENABLE_ARUCO_GLOVE", False)):
             aruco_xyz = _finite_vec3(aruco_pose.get("workspace_xyz"))
             if aruco_xyz is not None:
@@ -1619,6 +1714,32 @@ class HandTracker:
                 self._warned_no_hand_calibration = True
         elif depth_source == "midpoint":
             mapping_source = "midpoint"
+        elif (
+            self.robot_workspace_mapper is not None
+            and bool(getattr(val, "ROBOT_WORKSPACE_ENABLED", True))
+            and bool(getattr(self.robot_workspace_mapper, "loaded", False))
+        ):
+            mapped_xyz, mapper_debug = self.robot_workspace_mapper.map_hand_to_workspace(
+                x_norm_raw,
+                y_norm_raw,
+                mirror_depth_input,
+            )
+            if mapped_xyz is not None:
+                xyz_raw = mapped_xyz
+                workspace_mapper_used = True
+                mapping_source = str(mapper_debug.get("workspace_mapping_source", "robot_workspace_extrema_calibration"))
+                if self._robot_workspace_anchor_warning:
+                    mapper_debug["workspace_anchor_warning"] = self._robot_workspace_anchor_warning
+                q_seed, seed_debug = self.robot_workspace_mapper.choose_ik_seed(
+                    x_norm_raw,
+                    y_norm_raw,
+                    mirror_depth_input,
+                    previous_q=None,
+                )
+                mapper_debug.update(seed_debug)
+            elif not self._warned_no_robot_workspace_calibration:
+                log_event("robot workspace extrema mapping unavailable; using legacy mirror/workspace mapping")
+                self._warned_no_robot_workspace_calibration = True
         elif (
             self.robot_mirror_mapper is not None
             and bool(getattr(val, "ROBOT_MIRROR_WORKSPACE_ENABLED", True))
@@ -1673,9 +1794,9 @@ class HandTracker:
             )
             mapper_debug.update(seed_debug)
 
-        if mirror_mapper_used:
+        if workspace_mapper_used or mirror_mapper_used:
             xyz_final = np.asarray(xyz_raw, dtype=np.float64).reshape(3)
-            clamped = bool(mapper_debug.get("mirror_target_clamped", False))
+            clamped = bool(mapper_debug.get("target_clamped", mapper_debug.get("mirror_target_clamped", False)))
         else:
             xyz_final, clamped = self._clamp_target_xyz(xyz_raw)
         rpy, rpy_source = self._estimate_target_rpy_from_hand(hand_lms, aruco_pose)
@@ -1722,6 +1843,8 @@ class HandTracker:
             "target_xyz_raw_m": xyz_raw.tolist(),
             "target_xyz_final_m": xyz_final.tolist(),
             "mapping_source": mapping_source,
+            "workspace_mapper_used": bool(workspace_mapper_used),
+            "legacy_mirror_mapper_used": bool(mirror_mapper_used),
             "hand_x_norm": float(x_norm),
             "hand_y_norm": float(y_norm),
             "hand_depth_norm": float(depth_norm),
@@ -1756,7 +1879,8 @@ class HandTracker:
 
         try:
             xyz, rpy, target_debug, q_seed = self.build_hand_cartesian_target(hand_lms, frame_w, frame_h, aruco_pose=aruco_pose)
-            cmd = self._solve_cartesian_command(xyz, rpy, gripper_open01, q_seed=q_seed)
+            projection_center = target_debug.get("workspace_center_xyz_m") if isinstance(target_debug, dict) else None
+            cmd = self._solve_cartesian_command(xyz, rpy, gripper_open01, q_seed=q_seed, projection_center=projection_center)
             if cmd is None:
                 raise RuntimeError("IK returned no command")
             diag = dict(cmd.get("__diagnostics__", {})) if isinstance(cmd.get("__diagnostics__", {}), dict) else {}
