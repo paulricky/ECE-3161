@@ -1041,3 +1041,32 @@ REAL_ROBOT_MIN_ARM_SPEED_PERCENT = 1.0
 REAL_ROBOT_APPLY_SPEED_PERCENT_TO_TORQUE = True
 REAL_ROBOT_APPLY_SPEED_PERCENT_TO_RATES = False
 REAL_ROBOT_SPEED_PERCENT_VERBOSE = True
+
+# ---------------------------------------------------------------------------
+# Hand-tracking runtime overrides (place at end-of-file so they win)
+# Diagnostics ON, feedback ON, and force the legacy 4-DOF proportional mapper
+# instead of cartesian IK. Cartesian IK is currently picking a redundant-DOF
+# branch with shoulder_lift ~ -73 deg (arm into the ground) on roughly half of
+# the calibrated mirror-anchor positions and showing IK=pending/fallback every
+# frame. Switching to the proportional path (`_old_landmarks_to_command` in
+# handtracking.py:1782) keeps the arm tracking hand x/y/depth in 3D with
+# pan/lift/elbow/wrist_flex; wrist orientation (yaw/roll/pitch) stays at 0.
+# Re-enable cartesian once the mirror calibration is recomputed against the
+# current chain or the unreachable anchors are dropped.
+DEBUG_DISABLE_EXPENSIVE_OVERLAYS = False
+DEBUG_PERF_OVERLAY = True
+DEBUG_PERF_PRINT_EVERY_S = 1.0
+HAND_CAMERA_AXIS_DEBUG = True
+MAIN_READ_ROBOT_FEEDBACK = True
+MAIN_ROBOT_FEEDBACK_HZ = 5.0
+REAL_ROBOT_VERBOSE_ACTION_LOG = False
+HAND_IK_ASYNC = True
+HAND_USE_CARTESIAN_IK = False
+HAND_CARTESIAN_MAPPING_ENABLED = False
+
+# Joint-direction conventions. The legacy proportional mapper computes
+# shoulder_lift = -theta1 (positive = "arm tilts down" in the FK math frame),
+# but the calibrated motor at this user's robot has the opposite sign — sending
+# positive lift drives the arm into the ground. Flip it so hand-high lifts
+# the arm up. INVERT_ELBOW=True is already set at values.py:74.
+INVERT_SHOULDER_LIFT = True
