@@ -127,6 +127,18 @@ def _get_limit(name: str, default_lo: float, default_hi: float):
     return float(lo), float(hi)
 
 
+def _base_joint_limits():
+    return {
+        "shoulder_pan": _get_limit("BASE_PAN", -math.pi, math.pi),
+        "shoulder_lift": _get_limit("SHOULDER_LIFT", -math.pi, math.pi),
+        "elbow_flex": _get_limit("ELBOW", -math.pi, math.pi),
+        "wrist_flex": _get_limit("WRIST_FLEX", -math.pi, math.pi),
+        "wrist_yaw": _get_limit("WRIST_YAW", -math.pi, math.pi),
+        "wrist_roll": _get_limit("WRIST_ROLL", -math.pi, math.pi),
+        "wrist_pitch": _get_limit("WRIST_PITCH", -math.pi, math.pi),
+    }
+
+
 def _norm_to_range(z: float, lo: float, hi: float) -> float:
     z = _clip(z, 0.0, 1.0)
     return _lerp(lo, hi, z)
@@ -856,6 +868,17 @@ class HandTracker:
         except Exception as exc:
             self._robot_mirror_anchor_warning = f"anchor_check_failed:{exc}"
         self.lerobot_calibration = self._load_lerobot_calibration()
+        self._command_joint_limits = self._build_command_joint_limits()
+        (
+            self._near_camera_motor2_extension_delta_rad,
+            self._near_camera_motor3_extension_delta_rad,
+            self._near_camera_extension_delta_source,
+        ) = self._init_near_camera_extension_deltas()
+        (
+            self._near_camera_upward_motor2_delta_rad,
+            self._near_camera_upward_motor3_delta_rad,
+            self._near_camera_upward_delta_source,
+        ) = self._init_near_camera_upward_deltas()
         self._last_ik_solution = None
         self._filtered_target_xyz = None
         self._filtered_target_rpy = None
@@ -931,6 +954,114 @@ class HandTracker:
         except Exception as exc:
             log_event(f"calibration load skipped: {exc}")
             return None
+
+    def _build_command_joint_limits(self):
+        limits = _base_joint_limits()
+        if isinstance(self.lerobot_calibration, dict):
+            try:
+                merged, _joint_cal = mm._merge_limits(limits, self.lerobot_calibration)
+                clean = {}
+                for name, pair in merged.items():
+                    lo, hi = float(pair[0]), float(pair[1])
+                    if math.isfinite(lo) and math.isfinite(hi):
+                        clean[name] = (min(lo, hi), max(lo, hi))
+                if clean:
+                    limits.update(clean)
+            except Exception as exc:
+                log_event(f"joint limit calibration skipped: {exc}")
+        return limits
+
+    def _clamp_command_joint(self, joint_name: str, value: float) -> float:
+        x = float(value)
+        if not math.isfinite(x):
+            raise ValueError(f"non-finite {joint_name} command")
+        limits = getattr(self, "_command_joint_limits", None)
+        if not isinstance(limits, dict) or joint_name not in limits:
+            limits = _base_joint_limits()
+        lo, hi = limits.get(joint_name, (-math.pi, math.pi))
+        lo, hi = float(lo), float(hi)
+        if hi < lo:
+            lo, hi = hi, lo
+        return _clip(x, lo, hi)
+
+    def _init_near_camera_extension_deltas(self):
+        base2 = float(getattr(val, "HAND_NEAR_CAMERA_MOTOR2_EXTENSION_DELTA_RAD", 0.35))
+        base3 = float(getattr(val, "HAND_NEAR_CAMERA_MOTOR3_EXTENSION_DELTA_RAD", -0.35))
+        if not math.isfinite(base2):
+            base2 = 0.0
+        if not math.isfinite(base3):
+            base3 = 0.0
+        if not bool(getattr(val, "HAND_NEAR_CAMERA_EXTENSION_INFER_SIGNS_FROM_WORKSPACE", True)):
+            return base2, base3, "config"
+
+        min_delta = abs(float(getattr(val, "HAND_NEAR_CAMERA_EXTENSION_MIN_INFER_DELTA_RAD", 0.08)))
+        candidates = (
+            (self.robot_workspace_mapper, "near", "robot_workspace_near_pose"),
+            (self.robot_mirror_mapper, "mirror_near", "robot_mirror_near_pose"),
+        )
+        for mapper, near_name, source in candidates:
+            pose_joints = getattr(mapper, "pose_joints", None)
+            if not isinstance(pose_joints, dict):
+                continue
+            center = pose_joints.get("center")
+            near = pose_joints.get(near_name) or pose_joints.get("near") or pose_joints.get("mirror_near")
+            if not isinstance(center, dict) or not isinstance(near, dict):
+                continue
+            try:
+                raw2 = float(near["shoulder_lift"]) - float(center["shoulder_lift"])
+                raw3 = float(near["elbow_flex"]) - float(center["elbow_flex"])
+            except Exception:
+                continue
+            if not (math.isfinite(raw2) and math.isfinite(raw3)):
+                continue
+            if abs(raw2) < min_delta or abs(raw3) < min_delta:
+                continue
+            sign2 = 1.0 if raw2 > 0.0 else -1.0
+            sign3 = 1.0 if raw3 > 0.0 else -1.0
+            if sign2 == sign3:
+                continue
+            return sign2 * abs(base2), sign3 * abs(base3), source
+        return base2, base3, "config"
+
+    def _init_near_camera_upward_deltas(self):
+        if not bool(getattr(val, "HAND_NEAR_CAMERA_UPWARD_COMPENSATION_ENABLED", True)):
+            return 0.0, 0.0, "disabled"
+        comp_m = abs(float(getattr(val, "HAND_NEAR_CAMERA_UPWARD_COMPENSATION_M", 0.025)))
+        if not math.isfinite(comp_m) or comp_m <= 0.0:
+            return 0.0, 0.0, "disabled"
+        arm_m = (
+            abs(float(getattr(val, "IK_LINK1_M", 0.115)))
+            + abs(float(getattr(val, "IK_LINK2_M", 0.115)))
+        )
+        comp_rad = comp_m / max(arm_m, 1e-6)
+        min_delta = abs(float(getattr(val, "HAND_NEAR_CAMERA_EXTENSION_MIN_INFER_DELTA_RAD", 0.08)))
+        candidates = (
+            (self.robot_workspace_mapper, "up", "robot_workspace_up_pose"),
+            (self.robot_mirror_mapper, "mirror_up", "robot_mirror_up_pose"),
+        )
+        for mapper, up_name, source in candidates:
+            pose_joints = getattr(mapper, "pose_joints", None)
+            if not isinstance(pose_joints, dict):
+                continue
+            center = pose_joints.get("center")
+            up = pose_joints.get(up_name) or pose_joints.get("up") or pose_joints.get("mirror_up")
+            if not isinstance(center, dict) or not isinstance(up, dict):
+                continue
+            try:
+                raw2 = float(up["shoulder_lift"]) - float(center["shoulder_lift"])
+                raw3 = float(up["elbow_flex"]) - float(center["elbow_flex"])
+            except Exception:
+                continue
+            if not (math.isfinite(raw2) and math.isfinite(raw3)):
+                continue
+            use2 = abs(raw2) >= min_delta
+            use3 = abs(raw3) >= min_delta
+            if not (use2 or use3):
+                continue
+            delta2 = (1.0 if raw2 > 0.0 else -1.0) * comp_rad if use2 else 0.0
+            delta3 = (1.0 if raw3 > 0.0 else -1.0) * comp_rad if use3 else 0.0
+            return float(delta2), float(delta3), source
+        return 0.0, 0.0, "unavailable"
 
     def process(self, frame):
         process_t0 = time.perf_counter()
@@ -1152,6 +1283,218 @@ class HandTracker:
             raise ValueError("non-finite direct wrist-roll command")
         return float(command), float(mapped), float(blend)
 
+    def estimate_palm_pitch_rad(self, hand_lms):
+        lm = hand_lms.landmark
+        wrist = lm[0]
+        index_mcp = lm[5]
+        middle_mcp = lm[9]
+        pinky_mcp = lm[17]
+        fx = float(middle_mcp.x) - float(wrist.x)
+        fy = float(middle_mcp.y) - float(wrist.y)
+        fz = float(middle_mcp.z) - float(wrist.z)
+        lx = float(pinky_mcp.x) - float(index_mcp.x)
+        ly = float(pinky_mcp.y) - float(index_mcp.y)
+        lz = float(pinky_mcp.z) - float(index_mcp.z)
+        if not all(math.isfinite(x) for x in (fx, fy, fz, lx, ly, lz)):
+            raise ValueError("non-finite palm pitch landmarks")
+        forward_n = math.sqrt(fx * fx + fy * fy + fz * fz)
+        lateral_n = math.sqrt(lx * lx + ly * ly + lz * lz)
+        if forward_n < 1e-7 or lateral_n < 1e-7:
+            raise ValueError("degenerate palm pitch landmarks")
+        image_forward_n = math.sqrt(fx * fx + fy * fy)
+        pitch = math.atan2(-fz, max(image_forward_n, 1e-7))
+        if not math.isfinite(pitch):
+            raise ValueError("non-finite palm pitch")
+        return float(_clip(pitch, -0.5 * math.pi, 0.5 * math.pi))
+
+    def _map_direct_wrist_roll_from_pitch(self, pitch_rad, current_wrist_roll=0.0):
+        pitch = float(pitch_rad)
+        if not math.isfinite(pitch):
+            raise ValueError("non-finite palm pitch")
+        neutral = float(getattr(val, "HAND_DIRECT_WRIST_ROLL_PITCH_NEUTRAL_RAD", 0.0))
+        in_min = float(getattr(val, "HAND_DIRECT_WRIST_ROLL_PITCH_INPUT_MIN_RAD", -0.75))
+        in_max = float(getattr(val, "HAND_DIRECT_WRIST_ROLL_PITCH_INPUT_MAX_RAD", 0.75))
+        out_min = float(getattr(val, "HAND_DIRECT_WRIST_ROLL_PITCH_OUTPUT_MIN_RAD", -0.65))
+        out_max = float(getattr(val, "HAND_DIRECT_WRIST_ROLL_PITCH_OUTPUT_MAX_RAD", 0.65))
+        if not all(math.isfinite(x) for x in (neutral, in_min, in_max, out_min, out_max)):
+            raise ValueError("non-finite palm pitch wrist-roll config")
+        if in_max < in_min:
+            in_min, in_max = in_max, in_min
+            out_min, out_max = out_max, out_min
+        pitch_centered = pitch - neutral
+        denom = in_max - in_min
+        t = 0.5 if abs(denom) < 1e-9 else (pitch_centered - in_min) / denom
+        if bool(getattr(val, "HAND_DIRECT_WRIST_ROLL_FROM_PITCH_CLAMP", True)):
+            t = _clip(t, 0.0, 1.0)
+        mapped = _lerp(out_min, out_max, t)
+        deadband = abs(float(getattr(val, "HAND_DIRECT_WRIST_ROLL_PITCH_DEADBAND_RAD", 0.04)))
+        if abs(pitch_centered) < deadband:
+            mapped = 0.0
+        blend = _clip(float(getattr(val, "HAND_DIRECT_WRIST_ROLL_FROM_PITCH_BLEND", 1.0)), 0.0, 1.0)
+        current = float(current_wrist_roll)
+        if not math.isfinite(current):
+            current = 0.0
+        command = (1.0 - blend) * current + blend * float(mapped)
+        if bool(getattr(val, "HAND_DIRECT_WRIST_ROLL_FROM_PITCH_CLAMP", True)):
+            command = self._clamp_command_joint("wrist_roll", command)
+        if not math.isfinite(float(command)):
+            raise ValueError("non-finite palm pitch wrist-roll command")
+        return float(command), float(mapped), float(blend), float(pitch_centered)
+
+    def apply_direct_wrist_roll_from_pitch(self, command_dict, hand_lms, diagnostics):
+        if not isinstance(command_dict, dict):
+            return command_dict
+        diag = diagnostics if isinstance(diagnostics, dict) else {}
+        enabled = bool(getattr(val, "HAND_DIRECT_WRIST_ROLL_FROM_PITCH_ENABLED", True))
+        diag["direct_wrist_roll_from_pitch_enabled"] = bool(enabled)
+        diag["direct_wrist_roll_from_pitch_applied"] = False
+        diag["direct_wrist_roll_from_pitch_command_rad"] = None
+        diag["direct_wrist_roll_from_pitch_skip_reason"] = ""
+        if not enabled:
+            diag["direct_wrist_roll_from_pitch_skip_reason"] = "disabled"
+            command_dict["__diagnostics__"] = diag
+            return command_dict
+        if "wrist_roll" not in command_dict:
+            diag["direct_wrist_roll_from_pitch_skip_reason"] = "missing_wrist_roll"
+            command_dict["__diagnostics__"] = diag
+            return command_dict
+        try:
+            existing_pitch = _finite_float(diag.get("palm_pitch_rad"), None)
+            pitch = existing_pitch if existing_pitch is not None else self.estimate_palm_pitch_rad(hand_lms)
+            previous = float(command_dict.get("wrist_roll", 0.0))
+            command, mapped, blend, pitch_centered = self._map_direct_wrist_roll_from_pitch(pitch, previous)
+        except Exception as exc:
+            diag["palm_pitch_rad"] = diag.get("palm_pitch_rad", None)
+            diag["direct_wrist_roll_from_pitch_skip_reason"] = str(exc)
+            command_dict["__diagnostics__"] = diag
+            return command_dict
+        command_dict["wrist_roll"] = float(command)
+        diag["palm_pitch_rad"] = float(pitch)
+        diag["direct_wrist_roll_from_pitch_applied"] = True
+        diag["direct_wrist_roll_from_pitch_previous_rad"] = float(previous)
+        diag["direct_wrist_roll_from_pitch_mapped_rad"] = float(mapped)
+        diag["direct_wrist_roll_from_pitch_command_rad"] = float(command)
+        diag["direct_wrist_roll_from_pitch_delta_rad"] = float(command - previous)
+        diag["direct_wrist_roll_from_pitch_blend"] = float(blend)
+        diag["direct_wrist_roll_from_pitch_centered_rad"] = float(pitch_centered)
+        diag["wrist_roll_command_rad"] = float(command)
+        command_dict["__diagnostics__"] = diag
+        return command_dict
+
+    def _near_camera_extension_weight(self, depth_norm: float) -> float:
+        depth = float(depth_norm)
+        start = float(getattr(val, "HAND_NEAR_CAMERA_EXTENSION_START", 0.60))
+        full = float(getattr(val, "HAND_NEAR_CAMERA_EXTENSION_FULL", 0.95))
+        gamma = float(getattr(val, "HAND_NEAR_CAMERA_EXTENSION_CURVE_GAMMA", 0.75))
+        if not all(math.isfinite(x) for x in (depth, start, full, gamma)):
+            raise ValueError("non-finite near-camera extension config")
+        if full <= start:
+            raise ValueError("invalid near-camera extension range")
+        if gamma <= 0.0:
+            gamma = 1.0
+        near_weight = _clip((depth - start) / (full - start), 0.0, 1.0)
+        return float(near_weight ** gamma)
+
+    def _depth_norm_for_near_camera_extension(self, diagnostics):
+        if not isinstance(diagnostics, dict):
+            return None
+        for key in ("depth_norm", "camera_depth_norm", "hand_depth_norm"):
+            depth = _finite_float(diagnostics.get(key), None)
+            if depth is not None:
+                return _clip(depth, 0.0, 1.0)
+        return None
+
+    def apply_near_camera_extension_assist(self, command_dict, diagnostics):
+        if not isinstance(command_dict, dict):
+            return command_dict
+        diag = diagnostics if isinstance(diagnostics, dict) else {}
+        enabled = bool(getattr(val, "HAND_NEAR_CAMERA_EXTENSION_ASSIST_ENABLED", True))
+        diag["near_camera_extension_enabled"] = bool(enabled)
+        diag["near_camera_extension_applied"] = False
+        diag["near_camera_extension_weight"] = 0.0
+        diag["near_camera_motor2_delta_rad"] = 0.0
+        diag["near_camera_motor3_delta_rad"] = 0.0
+        diag["near_camera_extension_delta_source"] = getattr(self, "_near_camera_extension_delta_source", "config")
+        diag["near_camera_extension_preserve_horizontal"] = bool(getattr(val, "HAND_NEAR_CAMERA_EXTENSION_PRESERVE_HORIZONTAL", True))
+        diag["near_camera_extension_skip_reason"] = ""
+        for key, diag_key in (
+            ("shoulder_lift", "motor2_command_rad"),
+            ("elbow_flex", "motor3_command_rad"),
+            ("wrist_roll", "wrist_roll_command_rad"),
+        ):
+            current = _finite_float(command_dict.get(key), None)
+            if current is not None:
+                diag[diag_key] = float(current)
+        depth_norm = self._depth_norm_for_near_camera_extension(diag)
+        if depth_norm is not None:
+            diag["depth_norm"] = float(depth_norm)
+        if not enabled:
+            diag["near_camera_extension_skip_reason"] = "disabled"
+            command_dict["__diagnostics__"] = diag
+            return command_dict
+        if depth_norm is None:
+            diag["near_camera_extension_skip_reason"] = "missing_depth_norm"
+            command_dict["__diagnostics__"] = diag
+            return command_dict
+        try:
+            near_weight = self._near_camera_extension_weight(depth_norm)
+        except Exception as exc:
+            diag["near_camera_extension_skip_reason"] = str(exc)
+            command_dict["__diagnostics__"] = diag
+            return command_dict
+        diag["near_camera_extension_weight"] = float(near_weight)
+        if near_weight <= 0.0:
+            diag["near_camera_extension_skip_reason"] = "not_near_camera"
+            command_dict["__diagnostics__"] = diag
+            return command_dict
+        if "shoulder_lift" not in command_dict or "elbow_flex" not in command_dict:
+            diag["near_camera_extension_skip_reason"] = "missing_motor2_or_motor3"
+            command_dict["__diagnostics__"] = diag
+            return command_dict
+        try:
+            shoulder_lift = float(command_dict["shoulder_lift"])
+            elbow_flex = float(command_dict["elbow_flex"])
+        except Exception:
+            diag["near_camera_extension_skip_reason"] = "non_finite_motor2_or_motor3"
+            command_dict["__diagnostics__"] = diag
+            return command_dict
+        if not (math.isfinite(shoulder_lift) and math.isfinite(elbow_flex)):
+            diag["near_camera_extension_skip_reason"] = "non_finite_motor2_or_motor3"
+            command_dict["__diagnostics__"] = diag
+            return command_dict
+
+        blend = _clip(float(getattr(val, "HAND_NEAR_CAMERA_EXTENSION_BLEND", 1.0)), 0.0, 1.0)
+        ext2 = near_weight * blend * float(getattr(self, "_near_camera_motor2_extension_delta_rad", 0.0))
+        ext3 = near_weight * blend * float(getattr(self, "_near_camera_motor3_extension_delta_rad", 0.0))
+        up2 = near_weight * blend * float(getattr(self, "_near_camera_upward_motor2_delta_rad", 0.0))
+        up3 = near_weight * blend * float(getattr(self, "_near_camera_upward_motor3_delta_rad", 0.0))
+        target2 = shoulder_lift + ext2 + up2
+        target3 = elbow_flex + ext3 + up3
+        if bool(getattr(val, "HAND_NEAR_CAMERA_EXTENSION_CLAMP_TO_LIMITS", True)):
+            target2 = self._clamp_command_joint("shoulder_lift", target2)
+            target3 = self._clamp_command_joint("elbow_flex", target3)
+        if not (math.isfinite(target2) and math.isfinite(target3)):
+            diag["near_camera_extension_skip_reason"] = "non_finite_extension_command"
+            command_dict["__diagnostics__"] = diag
+            return command_dict
+
+        command_dict["shoulder_lift"] = float(target2)
+        command_dict["elbow_flex"] = float(target3)
+        diag["near_camera_extension_applied"] = True
+        diag["near_camera_motor2_delta_rad"] = float(target2 - shoulder_lift)
+        diag["near_camera_motor3_delta_rad"] = float(target3 - elbow_flex)
+        diag["near_camera_motor2_extension_delta_rad"] = float(ext2)
+        diag["near_camera_motor3_extension_delta_rad"] = float(ext3)
+        diag["near_camera_upward_motor2_delta_rad"] = float(up2)
+        diag["near_camera_upward_motor3_delta_rad"] = float(up3)
+        diag["near_camera_upward_delta_source"] = getattr(self, "_near_camera_upward_delta_source", "unavailable")
+        diag["motor2_command_rad"] = float(target2)
+        diag["motor3_command_rad"] = float(target3)
+        if _finite_float(command_dict.get("wrist_roll"), None) is not None:
+            diag["wrist_roll_command_rad"] = float(command_dict["wrist_roll"])
+        command_dict["__diagnostics__"] = diag
+        return command_dict
+
     def apply_direct_wrist_roll_override(self, command_dict, hand_lms, diagnostics, palm_roll_rad=None):
         if not isinstance(command_dict, dict):
             return command_dict
@@ -1216,7 +1559,12 @@ class HandTracker:
                     diag["simple_palm_roll_enabled"] = False
                     diag["simple_palm_roll_skip_reason"] = str(exc)
         command_dict["__diagnostics__"] = diag
-        return self.apply_direct_wrist_roll_override(command_dict, hand_lms, diag, palm_roll_rad=palm_roll)
+        if not bool(getattr(val, "HAND_DIRECT_WRIST_ROLL_FROM_PITCH_ENABLED", True)):
+            command_dict = self.apply_direct_wrist_roll_override(command_dict, hand_lms, diag, palm_roll_rad=palm_roll)
+            diag = command_dict.get("__diagnostics__", diag) if isinstance(command_dict, dict) else diag
+        command_dict = self.apply_direct_wrist_roll_from_pitch(command_dict, hand_lms, diag)
+        diag = command_dict.get("__diagnostics__", diag) if isinstance(command_dict, dict) else diag
+        return self.apply_near_camera_extension_assist(command_dict, diag)
 
     def _shape_centered_extension_axis(self, centered: float, gamma: float) -> float:
         if not math.isfinite(float(gamma)) or float(gamma) <= 0.0:
@@ -1592,6 +1940,17 @@ class HandTracker:
                     overlay_y = max(22, overlay_y - 24)
                 if (
                     bool(getattr(val, "HAND_DIRECT_WRIST_ROLL_DEBUG", True))
+                    and bool(diag.get("direct_wrist_roll_from_pitch_applied", False))
+                    and "direct_wrist_roll_from_pitch_command_rad" in diag
+                ):
+                    roll6_pitch_line = (
+                        f"M6 pitch={float(diag.get('palm_pitch_rad', 0.0)):+.2f}rad -> "
+                        f"wroll={float(diag.get('direct_wrist_roll_from_pitch_command_rad', 0.0)):+.2f}rad"
+                    )
+                    cv2.putText(frame, roll6_pitch_line, (10, overlay_y), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 255), 2, cv2.LINE_AA)
+                    overlay_y = max(22, overlay_y - 24)
+                if (
+                    bool(getattr(val, "HAND_DIRECT_WRIST_ROLL_DEBUG", True))
                     and bool(diag.get("direct_wrist_roll_applied", False))
                     and "direct_wrist_roll_command_rad" in diag
                 ):
@@ -1600,6 +1959,14 @@ class HandTracker:
                         f"delta={float(diag.get('direct_wrist_roll_delta_rad', 0.0)):+.2f}"
                     )
                     cv2.putText(frame, roll6_line, (10, overlay_y), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 255), 2, cv2.LINE_AA)
+                    overlay_y = max(22, overlay_y - 24)
+                if bool(diag.get("near_camera_extension_applied", False)):
+                    near_line = (
+                        f"near w={float(diag.get('near_camera_extension_weight', 0.0)):.2f} "
+                        f"M2d={float(diag.get('near_camera_motor2_delta_rad', 0.0)):+.2f} "
+                        f"M3d={float(diag.get('near_camera_motor3_delta_rad', 0.0)):+.2f}"
+                    )
+                    cv2.putText(frame, near_line, (10, overlay_y), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 255), 2, cv2.LINE_AA)
                 if "workspace_mapping_source" in diag:
                     line0 = (
                         f"workspace={diag.get('workspace_method', '?')} legacy={bool(diag.get('robot_workspace_legacy_loaded', False))} "
@@ -2024,6 +2391,7 @@ class HandTracker:
             "camera_x_norm": float(x_norm_raw),
             "camera_y_norm": float(y_norm_raw),
             "camera_depth_norm": float(depth_norm),
+            "depth_norm": float(depth_norm),
             "depth_m": float(depth_debug.get("depth_m", 0.0)),
             "depth_confidence": float(depth_debug.get("confidence", 0.0)),
             "depth_candidates": dict(depth_debug.get("raw_candidates", {})) if isinstance(depth_debug.get("raw_candidates", {}), dict) else {},
@@ -2219,6 +2587,7 @@ class HandTracker:
             "__diagnostics__": {
                 "hand_size_metric": float(size_metric),
                 "hand_depth_norm": float(reach_norm),
+                "depth_norm": float(reach_norm),
                 "hand_depth_norm_raw": float(reach_norm_raw),
                 "hand_depth_centered_raw": float(depth_centered_raw),
                 "hand_depth_centered_shaped": float(depth_centered_shaped),

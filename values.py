@@ -1061,9 +1061,10 @@ ROBOT_WORKSPACE_VERTICAL_ENDPOINT_BOOST_ENABLED = True
 ROBOT_WORKSPACE_DEPTH_ENDPOINT_BOOST_ENABLED = True
 ROBOT_WORKSPACE_EXTENSION_SHAPING_CLAMP = True
 
-# Optional O(1) post-IK wrist-roll drive for motor 6.  This uses the already
-# measured image-plane palm roll and does not trigger extra IK solves.
-HAND_DIRECT_WRIST_ROLL_ENABLED = True
+# Legacy O(1) post-IK wrist-roll drive for motor 6 from palm roll.  Keep the
+# config for compatibility, but leave it off because motor 6 is now driven by
+# palm pitch below; motor 7 still uses the simple palm-roll behavior above.
+HAND_DIRECT_WRIST_ROLL_ENABLED = False
 HAND_DIRECT_WRIST_ROLL_SOURCE = "palm_roll"
 HAND_DIRECT_WRIST_ROLL_OUTPUT_LEFT_RAD = -0.45
 HAND_DIRECT_WRIST_ROLL_OUTPUT_RIGHT_RAD = 0.45
@@ -1071,6 +1072,38 @@ HAND_DIRECT_WRIST_ROLL_BLEND = 1.0
 HAND_DIRECT_WRIST_ROLL_CLAMP = True
 HAND_DIRECT_WRIST_ROLL_DEADBAND_RAD = 0.03
 HAND_DIRECT_WRIST_ROLL_DEBUG = True
+
+# Direct motor-6 wrist roll from palm pitch. O(1), post-IK, no extra solve.
+HAND_DIRECT_WRIST_ROLL_FROM_PITCH_ENABLED = True
+HAND_DIRECT_WRIST_ROLL_PITCH_NEUTRAL_RAD = 0.0
+HAND_DIRECT_WRIST_ROLL_PITCH_DEADBAND_RAD = 0.04
+HAND_DIRECT_WRIST_ROLL_PITCH_INPUT_MIN_RAD = -0.75
+HAND_DIRECT_WRIST_ROLL_PITCH_INPUT_MAX_RAD = 0.75
+HAND_DIRECT_WRIST_ROLL_PITCH_OUTPUT_MIN_RAD = -0.65
+HAND_DIRECT_WRIST_ROLL_PITCH_OUTPUT_MAX_RAD = 0.65
+HAND_DIRECT_WRIST_ROLL_FROM_PITCH_BLEND = 1.0
+HAND_DIRECT_WRIST_ROLL_FROM_PITCH_CLAMP = True
+
+# Near-camera outward extension assist. Does not affect left/right.
+HAND_NEAR_CAMERA_EXTENSION_ASSIST_ENABLED = True
+HAND_NEAR_CAMERA_EXTENSION_START = 0.60
+HAND_NEAR_CAMERA_EXTENSION_FULL = 0.95
+HAND_NEAR_CAMERA_EXTENSION_CURVE_GAMMA = 0.75
+
+# Motor 2/3 extension feedforward relative to calibrated neutral.
+# These should move shoulder_lift and elbow_flex away from neutral in opposite
+# directions. If either joint moves inward/down on your build, flip only that
+# joint's sign; the assist never changes shoulder_pan or horizontal mapping.
+HAND_NEAR_CAMERA_MOTOR2_EXTENSION_DELTA_RAD = 0.35
+HAND_NEAR_CAMERA_MOTOR3_EXTENSION_DELTA_RAD = -0.35
+HAND_NEAR_CAMERA_EXTENSION_BLEND = 1.0
+HAND_NEAR_CAMERA_EXTENSION_CLAMP_TO_LIMITS = True
+HAND_NEAR_CAMERA_EXTENSION_PRESERVE_HORIZONTAL = True
+HAND_NEAR_CAMERA_EXTENSION_INFER_SIGNS_FROM_WORKSPACE = True
+HAND_NEAR_CAMERA_EXTENSION_MIN_INFER_DELTA_RAD = 0.08
+
+HAND_NEAR_CAMERA_UPWARD_COMPENSATION_ENABLED = True
+HAND_NEAR_CAMERA_UPWARD_COMPENSATION_M = 0.025
 
 # Prevent robot workspace examples from pinning motor 6 during teleop when a
 # previous solution already exists.  The previous wrist roll is a better seed
@@ -1142,7 +1175,7 @@ REAL_ROBOT_ARM_SPEED_PERCENT = 100.0
 # a gentler feel and yields to obstacles, while still allowing fast motion
 # under low load. Lift (motor 2) needs higher torque than the rest to fight
 # gravity; bump it up if you see it stall on lifts.
-REAL_ROBOT_TORQUE_LIMIT_PERCENT = 30.0
+REAL_ROBOT_TORQUE_LIMIT_PERCENT = 70.0
 REAL_ROBOT_TORQUE_LIMIT_BY_MOTOR_ID = {
     1: 30.0,   # shoulder_pan
     2: 45.0,   # shoulder_lift  (gravity load; keep higher to avoid stalls)
