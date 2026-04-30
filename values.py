@@ -1063,10 +1063,3 @@ REAL_ROBOT_VERBOSE_ACTION_LOG = False
 HAND_IK_ASYNC = True
 HAND_USE_CARTESIAN_IK = False
 HAND_CARTESIAN_MAPPING_ENABLED = False
-
-# Joint-direction conventions. The legacy proportional mapper computes
-# shoulder_lift = -theta1 (positive = "arm tilts down" in the FK math frame),
-# but the calibrated motor at this user's robot has the opposite sign — sending
-# positive lift drives the arm into the ground. Flip it so hand-high lifts
-# the arm up. INVERT_ELBOW=True is already set at values.py:74.
-INVERT_SHOULDER_LIFT = True

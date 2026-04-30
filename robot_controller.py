@@ -750,6 +750,7 @@ class SOArmHardwareController:
 
     def disconnect(self):
         self.stop_async_sender()
+        self.release_torque()
         if self.robot is not None and self.connected:
             try:
                 self.robot.disconnect()
@@ -757,6 +758,34 @@ class SOArmHardwareController:
                 print(f"[robot_controller] disconnect warning: {e}")
         self.connected = False
         self.robot = None
+
+    def release_torque(self) -> None:
+        """Disable torque on every motor so the arm goes limp.
+
+        Without this, Feetech servos hold their last commanded position after
+        the script exits, and a stalled motor keeps drawing current. Try the
+        direct-bus path first (fastest), then the LeRobot bus write call.
+        """
+        if self.robot is None:
+            return
+        bus = getattr(self.robot, "bus", None)
+        if bus is None:
+            return
+        try:
+            if hasattr(bus, "enable_torque"):
+                bus.enable_torque(False)
+                print("[robot_controller] torque disabled (direct bus)")
+                return
+        except Exception as exc:
+            print(f"[robot_controller] direct torque-disable failed: {exc}")
+        try:
+            if hasattr(bus, "write"):
+                bus.write("Torque_Enable", 0)
+                print("[robot_controller] torque disabled (lerobot bus)")
+                return
+        except Exception as exc:
+            print(f"[robot_controller] lerobot torque-disable failed: {exc}")
+        print("[robot_controller] WARNING: could not disable torque on shutdown")
 
     def _motor_limit_percent_by_name(self) -> Dict[str, float]:
         motor_names = self._configured_motor_names()
