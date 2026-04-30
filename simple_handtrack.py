@@ -33,13 +33,14 @@ except ImportError as exc:
 
 
 # ---------------------------------------------------------------------------
-# Workspace box. The end effector tip will move within this XYZ region (in the
-# robot base frame, meters). Verified all 27 corners+center reach with FK
-# round-trip < 5 mm using the chain lengths below.
+# Workspace box. The end effector tip moves within this XYZ region in the
+# robot base frame (meters). Convention matches mathmodel.py FK: math 0 has
+# the arm extended along +x, so +x = forward, +y = sideways (atan2(y,x)
+# drives shoulder_pan), +z = up.
 # ---------------------------------------------------------------------------
-EE_X_MIN, EE_X_MAX = -0.10, 0.10   # left ↔ right
-EE_Y_MIN, EE_Y_MAX = 0.13, 0.20    # forward depth (mapped from palm size)
-EE_Z_MIN, EE_Z_MAX = 0.04, 0.18    # down ↔ up
+EE_X_MIN, EE_X_MAX = 0.17, 0.22    # forward depth (mapped from palm size)
+EE_Y_MIN, EE_Y_MAX = -0.10, 0.10   # left ↔ right
+EE_Z_MIN, EE_Z_MAX = -0.04, 0.18   # down ↔ up (Z below shoulder = lift > 70 deg)
 
 # Kinematic chain (must match mathmodel.py / values.py defaults).
 L1 = 0.115        # upper arm
@@ -50,8 +51,8 @@ BASE_Z = 0.06     # shoulder height above base
 # Palm-size → depth gain. The wrist-to-middle-MCP distance in normalized image
 # coords ranges roughly 0.10 (hand far / small) to 0.30 (hand near / large).
 # Tune by reading the on-screen palm value at your two extremes.
-PALM_NEAR = 0.30  # hand all the way in: maps to EE_Y_MIN (closest to base)
-PALM_FAR = 0.10   # hand all the way out: maps to EE_Y_MAX (farthest)
+PALM_NEAR = 0.40  # hand all the way in: maps to EE_X_MAX (forward toward user)
+PALM_FAR = 0.08   # hand all the way out: maps to EE_X_MIN (pulled back)
 
 # Smoothing on the EE target (0..1, where 1.0 = no smoothing, replace).
 SMOOTHING_ALPHA = 0.35
@@ -61,21 +62,51 @@ SMOOTHING_ALPHA = 0.35
 JOINT_SIGN_PAN = 1.0
 JOINT_SIGN_LIFT = 1.0
 JOINT_SIGN_ELBOW = 1.0
-JOINT_SIGN_WRIST_FLEX = 1.0
+JOINT_SIGN_WRIST_FLEX = -1.0
 
 # Math-frame angles at the calibrated NEUTRAL pose.
-# Calibration treats the arm's folded/stowed pose as motor command (0,0,0,0).
-# But the IK math is naturally written in "horizontal extended = 0" frame, so
-# we subtract these offsets before sending to the motor.
-#
-# Defaults below correspond to: upper arm vertical UP, forearm folded back
-# 180 deg so it points DOWN parallel to the upper arm, gripper inline with
-# forearm (also pointing down). If your folded pose is different, change
-# these constants and re-run.
+# These come from `calibration_data/robot_joint_calibration.json`'s
+# `neutral_math_rad` field, which simple_calibrate.py computes from the
+# (reference_ticks, neutral_ticks) pair: at the user-chosen neutral, every
+# joint is at command 0; the math angle there is whatever puts the user's
+# preferred pose into the IK's "extended forward = 0" frame. Values below
+# are the fallback if no calibration JSON has been produced yet.
 NEUTRAL_PAN_RAD = 0.0
-NEUTRAL_LIFT_RAD = -math.pi / 2.0    # upper arm pointing up (math: -lift = up)
-NEUTRAL_ELBOW_RAD = math.pi          # forearm folded back fully
-NEUTRAL_WRIST_FLEX_RAD = 0.0         # gripper continues forearm direction
+NEUTRAL_LIFT_RAD = 0.0
+NEUTRAL_ELBOW_RAD = 0.0
+NEUTRAL_WRIST_FLEX_RAD = 0.0
+
+
+def _load_neutral_offsets_from_calibration() -> None:
+    """Override the NEUTRAL_*_RAD module globals from the calibration JSON."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    global NEUTRAL_PAN_RAD, NEUTRAL_LIFT_RAD, NEUTRAL_ELBOW_RAD, NEUTRAL_WRIST_FLEX_RAD
+    path = _Path(__file__).resolve().parent / "calibration_data" / "robot_joint_calibration.json"
+    if not path.exists():
+        return
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = _json.load(f)
+    except Exception:
+        return
+    names = data.get("motor_names")
+    rads = data.get("neutral_math_rad")
+    if not isinstance(names, list) or not isinstance(rads, list) or len(names) != len(rads):
+        return
+    table = {str(n): float(v) for n, v in zip(names, rads)}
+    if "shoulder_pan" in table:
+        NEUTRAL_PAN_RAD = table["shoulder_pan"]
+    if "shoulder_lift" in table:
+        NEUTRAL_LIFT_RAD = table["shoulder_lift"]
+    if "elbow_flex" in table:
+        NEUTRAL_ELBOW_RAD = table["elbow_flex"]
+    if "wrist_flex" in table:
+        NEUTRAL_WRIST_FLEX_RAD = table["wrist_flex"]
+
+
+_load_neutral_offsets_from_calibration()
 
 
 def _lerp(a: float, b: float, t: float) -> float:
@@ -123,13 +154,22 @@ def _ik_math(target_x: float, target_y: float, target_z: float) -> Optional[dict
     t2 = math.acos(cos_t2)
     alpha = math.atan2(zc, xc)
     beta = math.atan2(L2 * math.sin(t2), L1 + L2 * math.cos(t2))
-    t1 = alpha - beta
+
+    # Pick the elbow branch where upper arm goes UP-and-back and forearm
+    # reaches forward-and-down to the wrist (rather than upper arm tilting
+    # forward-down with forearm bent up over the elbow). From a "vertical-up
+    # folded" neutral this branch only needs a small shoulder_lift rotation
+    # instead of slewing >100 deg through horizontal-forward.
+    t1 = alpha + beta
+    lift = -t1
+    elbow = t2
+    wrist_flex = -(lift + elbow)
 
     return {
         "shoulder_pan": pan,
-        "shoulder_lift": -t1,
-        "elbow_flex": -t2,
-        "wrist_flex": -(-t1 + -t2),  # so total Ry rotation = 0 (tool horizontal)
+        "shoulder_lift": lift,
+        "elbow_flex": elbow,
+        "wrist_flex": wrist_flex,
     }
 
 
@@ -174,6 +214,7 @@ class HandReading:
     cy: float           # palm center Y in normalized image coords [0,1]
     palm: float         # palm size (wrist→middle MCP distance, normalized)
     open01: float       # gripper openness [0,1] from finger extension
+    roll: float         # angle of index_mcp -> pinky_mcp line in image plane (rad)
     landmarks: object   # raw MediaPipe landmarks list (for debug overlay)
 
 
@@ -188,6 +229,7 @@ class SimpleHandTracker:
         )
         self._smoothed_xyz: Optional[np.ndarray] = None
         self._smoothed_open: float = 1.0
+        self._smoothed_roll: Optional[float] = None
 
     def close(self) -> None:
         try:
@@ -205,23 +247,36 @@ class SimpleHandTracker:
         wrist = lms[0]
         middle_mcp = lms[9]
         middle_tip = lms[12]
+        index_mcp = lms[5]
+        pinky_mcp = lms[17]
         cx = 0.5 * (wrist.x + middle_mcp.x)
         cy = 0.5 * (wrist.y + middle_mcp.y)
         palm = math.hypot(middle_mcp.x - wrist.x, middle_mcp.y - wrist.y)
         finger = math.hypot(middle_tip.x - middle_mcp.x, middle_tip.y - middle_mcp.y)
         ratio = finger / max(palm, 1e-6)
         open01 = _clip01((ratio - 0.3) / 0.7)
-        return HandReading(cx=cx, cy=cy, palm=palm, open01=open01, landmarks=lms)
+        # Hand roll: angle of the index_mcp -> pinky_mcp line in image plane.
+        # Palm flat toward camera with hand upright -> ~0 (line horizontal).
+        # Roll the wrist clockwise/CCW -> line tilts, angle moves.
+        roll = math.atan2(pinky_mcp.y - index_mcp.y, pinky_mcp.x - index_mcp.x)
+        return HandReading(cx=cx, cy=cy, palm=palm, open01=open01, roll=roll, landmarks=lms)
 
     def hand_to_xyz(self, hand: HandReading) -> np.ndarray:
-        x = _lerp(EE_X_MIN, EE_X_MAX, _clip01(hand.cx))
-        z = _lerp(EE_Z_MIN, EE_Z_MAX, _clip01(1.0 - hand.cy))
         depth_norm = _clip01((hand.palm - PALM_FAR) / max(PALM_NEAR - PALM_FAR, 1e-6))
-        y = _lerp(EE_Y_MAX, EE_Y_MIN, depth_norm)
+        # Hand near (palm large) -> arm reaches forward toward user (large x);
+        # hand far (palm small) -> arm pulls back (small x). Mirrors the user's
+        # hand depth so pushing the hand forward extends the arm forward.
+        x = _lerp(EE_X_MIN, EE_X_MAX, depth_norm)
+        # Hand cx (0 = left side of mirrored frame, 1 = right) -> EE_Y_MIN..EE_Y_MAX
+        y = _lerp(EE_Y_MIN, EE_Y_MAX, _clip01(hand.cx))
+        # Hand cy (0 = top of frame) -> low z, (1 = bottom) -> high z.
+        # Inverted from the natural mapping because the user's setup reads
+        # "hand up = arm reaches lower" / "hand down = arm reaches higher".
+        z = _lerp(EE_Z_MIN, EE_Z_MAX, _clip01(hand.cy))
         return np.array([x, y, z], dtype=np.float64)
 
     def process(self, frame: np.ndarray) -> Optional[dict]:
-        """Returns dict with target_xyz, joints, gripper_open01, or None."""
+        """Returns dict with target_xyz, joints, gripper_open01, hand, or None."""
         hand = self._read_hand(frame)
         if hand is None:
             self._draw_idle(frame)
@@ -234,6 +289,10 @@ class SimpleHandTracker:
             a = SMOOTHING_ALPHA
             self._smoothed_xyz = (1.0 - a) * self._smoothed_xyz + a * target
         self._smoothed_open = (1.0 - SMOOTHING_ALPHA) * self._smoothed_open + SMOOTHING_ALPHA * hand.open01
+        if self._smoothed_roll is None:
+            self._smoothed_roll = float(hand.roll)
+        else:
+            self._smoothed_roll = (1.0 - SMOOTHING_ALPHA) * self._smoothed_roll + SMOOTHING_ALPHA * float(hand.roll)
 
         xyz = self._smoothed_xyz
         joints = simple_ik(float(xyz[0]), float(xyz[1]), float(xyz[2]))
@@ -241,6 +300,10 @@ class SimpleHandTracker:
         if joints is None:
             return None
         return {
+            "hand_cx": float(hand.cx),
+            "hand_cy": float(hand.cy),
+            "hand_palm": float(hand.palm),
+            "hand_roll": float(self._smoothed_roll),
             "target_xyz": xyz.copy(),
             "joints": joints,
             "gripper_open01": float(self._smoothed_open),

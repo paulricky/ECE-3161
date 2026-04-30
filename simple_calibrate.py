@@ -128,42 +128,54 @@ def _verify_motors(bus: _DirectFeetechBus) -> bool:
     return True
 
 
-def _capture_neutral(bus: _DirectFeetechBus) -> dict[str, int]:
-    print()
-    print("[2/3] NEUTRAL pose")
-    print("  Disabling torque so you can move the arm by hand.")
+def _capture_pose(bus: _DirectFeetechBus, label: str, instructions: list[str]) -> dict[str, int]:
     bus.enable_torque(False)
     time.sleep(0.3)
     print()
-    print("  Move the arm into its FOLDED / STOWED pose. This is what motor")
-    print("  command (0,0,0,0,...) will correspond to. Default folded shape:")
+    for line in instructions:
+        print("    " + line)
     print()
-    print("    - shoulder_pan:    centered (no twist)")
-    print("    - shoulder_lift:   upper arm pointing straight UP (vertical)")
-    print("    - elbow_flex:      forearm folded back 180 deg, parallel to upper arm")
-    print("                       (so forearm points DOWN alongside the upper arm)")
-    print("    - wrist_flex:      gripper in line with forearm (also pointing down)")
-    print("    - wrist_yaw:       no twist about the forearm axis")
-    print("    - wrist_roll:      gripper jaw plane vertical (or your preferred default)")
-    print("    - wrist_pitch:     no extra tilt at the gripper")
-    print("    - gripper:         jaws fully open")
-    print()
-    print("  If your folded pose differs from this default, edit NEUTRAL_*_RAD")
-    print("  at the top of simple_handtrack.py to match.")
-    print()
-    input("  Hold the arm in that pose, then press ENTER to record... ")
+    input(f"  Hold the arm in the {label} pose, then press ENTER to record... ")
     positions = _read_all(bus)
     if any(v is None for v in positions.values()):
         print("  read failed; check connections and try again")
         sys.exit(1)
-    print("  Recorded neutral positions:")
+    print(f"  Recorded {label} positions:")
     _print_positions(positions)
     return {name: int(v) for name, v in positions.items()}
 
 
+def _capture_reference(bus: _DirectFeetechBus) -> dict[str, int]:
+    print()
+    print("[2/4] REFERENCE pose (math zero)")
+    print("  This pose is the IK math's natural origin: every joint at 0 rad.")
+    print("  Hold the arm so it's fully extended forward, every link in line:")
+    return _capture_pose(bus, "REFERENCE", [
+        "- shoulder_pan:    arm pointing straight forward (centered)",
+        "- shoulder_lift:   upper arm horizontal forward",
+        "- elbow_flex:      forearm extended in line with upper arm (no bend)",
+        "- wrist_flex:      gripper extended in line with forearm",
+        "- wrist_yaw/roll/pitch: no twist or tilt at the wrist",
+        "- gripper:         jaws fully open",
+    ])
+
+
+def _capture_neutral(bus: _DirectFeetechBus) -> dict[str, int]:
+    print()
+    print("[3/4] NEUTRAL pose (your preferred folded position)")
+    print("  This is what motor command (0,0,0,...) will correspond to. Hold the")
+    print("  arm in whatever folded pose you want to use as the resting state.")
+    return _capture_pose(bus, "NEUTRAL", [
+        "Move every joint into your preferred FOLDED pose (the one in your photo).",
+        "The script will record the motor ticks at this pose and use it as the",
+        "math-frame offset. You don't need to match any specific shape - just hold",
+        "the pose you want the arm to return to as 'home'.",
+    ])
+
+
 def _capture_ranges(bus: _DirectFeetechBus, neutral: dict[str, int]) -> dict[str, tuple[int, int]]:
     print()
-    print("[3/3] JOINT RANGES")
+    print("[4/4] JOINT RANGES")
     print("  For each joint, move it through its full travel (one extreme to the")
     print("  other and back). Min/max are recorded continuously while you move.")
     print("  Press ENTER when finished with the joint to advance.")
@@ -215,12 +227,28 @@ def _capture_ranges(bus: _DirectFeetechBus, neutral: dict[str, int]) -> dict[str
     return ranges
 
 
-def _build_calibration_payload(neutral: dict[str, int], ranges: dict[str, tuple[int, int]]) -> dict:
+def _build_calibration_payload(
+    neutral: dict[str, int],
+    reference: dict[str, int],
+    ranges: dict[str, tuple[int, int]],
+) -> dict:
     neutral_list = [neutral[n] for n in MOTOR_NAMES]
+    reference_list = [reference[n] for n in MOTOR_NAMES]
     min_list = [ranges[n][0] for n in MOTOR_NAMES]
     max_list = [ranges[n][1] for n in MOTOR_NAMES]
     homing_offset = [-x for x in neutral_list]
     drive_mode = [0] * len(MOTOR_NAMES)
+    # The IK math frame's zero is "fully extended forward". The user's
+    # preferred neutral is some other (folded) pose. Compute the math-frame
+    # angle that the neutral pose corresponds to: math_at_neutral_rad =
+    # (neutral_ticks - reference_ticks) * 2pi / 4096 (per joint).
+    # simple_handtrack.py reads this and subtracts it from the IK output before
+    # sending to the motor, so motor command 0 lands the arm at neutral.
+    ticks_per_rad = 4096.0 / (2.0 * 3.141592653589793)
+    neutral_math_rad = [
+        (float(neutral[name]) - float(reference[name])) / ticks_per_rad
+        for name in MOTOR_NAMES
+    ]
     return {
         "created_at_unix": time.time(),
         "source": "simple_calibrate.py",
@@ -228,6 +256,8 @@ def _build_calibration_payload(neutral: dict[str, int], ranges: dict[str, tuple[
         "motor_ids": MOTOR_IDS,
         "motor_baudrates": [BAUDRATE] * len(MOTOR_IDS),
         "neutral_pos": neutral_list,
+        "reference_pos": reference_list,
+        "neutral_math_rad": neutral_math_rad,
         "min_pos": min_list,
         "max_pos": max_list,
         "homing_offset": homing_offset,
@@ -263,6 +293,7 @@ def main() -> int:
     try:
         if not _verify_motors(bus):
             return 1
+        reference = _capture_reference(bus)
         neutral = _capture_neutral(bus)
         ranges = _capture_ranges(bus, neutral)
     finally:
@@ -275,14 +306,19 @@ def main() -> int:
         except Exception:
             pass
 
-    payload = _build_calibration_payload(neutral, ranges)
+    payload = _build_calibration_payload(neutral, reference, ranges)
+    import math as _math
     print()
     print("Calibration summary:")
     for name, mid in zip(MOTOR_NAMES, MOTOR_IDS, strict=True):
-        n = payload["neutral_pos"][MOTOR_NAMES.index(name)]
-        lo = payload["min_pos"][MOTOR_NAMES.index(name)]
-        hi = payload["max_pos"][MOTOR_NAMES.index(name)]
-        print(f"  motor {mid} {name:14s}: neutral={n:4d} min={lo:4d} max={hi:4d}")
+        idx = MOTOR_NAMES.index(name)
+        n = payload["neutral_pos"][idx]
+        r = payload["reference_pos"][idx]
+        lo = payload["min_pos"][idx]
+        hi = payload["max_pos"][idx]
+        offset_rad = payload["neutral_math_rad"][idx]
+        offset_deg = _math.degrees(offset_rad)
+        print(f"  motor {mid} {name:14s}: neutral={n:4d} ref={r:4d} min={lo:4d} max={hi:4d} math_at_neutral={offset_deg:+.0f} deg")
     print()
     reply = input(f"Write to {CALIB_FILE}? [Y/n]: ").strip().lower()
     if reply in ("", "y", "yes"):

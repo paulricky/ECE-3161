@@ -1063,3 +1063,43 @@ REAL_ROBOT_VERBOSE_ACTION_LOG = False
 HAND_IK_ASYNC = True
 HAND_USE_CARTESIAN_IK = False
 HAND_CARTESIAN_MAPPING_ENABLED = False
+
+# Joint command limits used by robot_controller._joint_command_to_action.
+# The earlier defaults (ELBOW_MIN=-0.5, SHOULDER_LIFT_MAX=+2.0) were tuned for
+# the cartesian IK + extended-arm neutral. With the simple_handtrack pipeline
+# and a folded neutral, the IK output sits in the +1.4..+2.1 lift range and
+# -0.7..-1.3 elbow range, so the old caps were clamping every command and
+# pinning the joints. Widen to the motor's mechanical range; the calibrated
+# min_pos/max_pos in robot_joint_calibration.json is the real hard stop.
+import math as _m
+BASE_PAN_MIN = -_m.pi
+BASE_PAN_MAX = _m.pi
+SHOULDER_LIFT_MIN = -_m.pi
+SHOULDER_LIFT_MAX = _m.pi
+ELBOW_MIN = -_m.pi
+ELBOW_MAX = _m.pi
+WRIST_FLEX_MIN = -_m.pi
+WRIST_FLEX_MAX = _m.pi
+
+# Speed/accel are governed entirely by the torque limit below — speed-percent
+# scaling and software velocity/accel ramps did not produce a usable feel.
+# Keep torque scaling off so the limit reads cleanly from the percent values.
+REAL_ROBOT_APPLY_SPEED_PERCENT_TO_TORQUE = False
+REAL_ROBOT_ARM_SPEED_PERCENT = 100.0
+
+# Hand-tracking debug: lean on a global torque cap instead of software
+# velocity/accel limits. Lower torque -> motors physically can't slam, gives
+# a gentler feel and yields to obstacles, while still allowing fast motion
+# under low load. Lift (motor 2) needs higher torque than the rest to fight
+# gravity; bump it up if you see it stall on lifts.
+REAL_ROBOT_TORQUE_LIMIT_PERCENT = 30.0
+REAL_ROBOT_TORQUE_LIMIT_BY_MOTOR_ID = {
+    1: 30.0,   # shoulder_pan
+    2: 45.0,   # shoulder_lift  (gravity load; keep higher to avoid stalls)
+    3: 30.0,   # elbow_flex
+    4: 30.0,   # wrist_flex
+    5: 30.0,   # wrist_yaw
+    6: 30.0,   # wrist_roll
+    7: 30.0,   # wrist_pitch
+    8: 30.0,   # gripper
+}
