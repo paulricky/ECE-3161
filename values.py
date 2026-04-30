@@ -511,6 +511,9 @@ CAMERA_CAPTURE_WIDTH = 640
 CAMERA_CAPTURE_HEIGHT = 480
 CAMERA_CAPTURE_FPS = 30
 CAMERA_FORCE_MJPEG = False
+HANDTRACKING_CAMERA_USE_NATIVE_VIEW = True
+HANDTRACKING_CAMERA_FORCE_RESOLUTION = False
+HANDTRACKING_CAMERA_PRINT_FRAME_SHAPE = True
 CAMERA_FLUSH_STALE_FRAMES = True
 CAMERA_FLUSH_COUNT = 3
 HANDTRACKING_PROCESS_EVERY_N_FRAMES = 1
@@ -1029,6 +1032,25 @@ HAND_VIRTUAL_WRIST_MAX_ROLL_RAD = WRIST_ROLL_MAX
 HAND_VIRTUAL_WRIST_MAX_PITCH_RAD = WRIST_PITCH_MAX
 HAND_VIRTUAL_WRIST_MAX_YAW_RAD = WRIST_YAW_MAX
 
+# Simple hand-roll override copied from simple_main.py's useful 5-DOF behavior.
+# Motor 7 is exposed as wrist_pitch in JointCommand, but physically behaves like
+# a roll axis on this build.
+HAND_SIMPLE_PALM_ROLL_ENABLED = True
+HAND_SIMPLE_PALM_ROLL_TARGET_JOINT = "wrist_pitch"
+HAND_SIMPLE_PALM_ROLL_LEFT_RAD = -0.6
+HAND_SIMPLE_PALM_ROLL_RIGHT_RAD = 0.6
+HAND_SIMPLE_PALM_ROLL_OUTPUT_LEFT_RAD = -1.5
+HAND_SIMPLE_PALM_ROLL_OUTPUT_RIGHT_RAD = 1.5
+HAND_SIMPLE_PALM_ROLL_SMOOTHING = 0.60
+HAND_SIMPLE_PALM_ROLL_CLAMP = True
+HAND_SIMPLE_PALM_ROLL_DEBUG = True
+
+# Backward-compatible aliases for the names used in simple_main.py.
+HAND_ROLL_LEFT_NORM = HAND_SIMPLE_PALM_ROLL_LEFT_RAD
+HAND_ROLL_RIGHT_NORM = HAND_SIMPLE_PALM_ROLL_RIGHT_RAD
+M7_AT_HAND_ROLL_LEFT = HAND_SIMPLE_PALM_ROLL_OUTPUT_LEFT_RAD
+M7_AT_HAND_ROLL_RIGHT = HAND_SIMPLE_PALM_ROLL_OUTPUT_RIGHT_RAD
+
 # Final speed-percent defaults must remain after all max-responsiveness
 # overrides. Set REAL_ROBOT_ARM_SPEED_PERCENT below 100 only when you
 # intentionally want motors 1-7 slowed; motor 8 gripper is never scaled.
@@ -1050,7 +1072,8 @@ REAL_ROBOT_SPEED_PERCENT_VERBOSE = True
 # the calibrated mirror-anchor positions and showing IK=pending/fallback every
 # frame. Switching to the proportional path (`_old_landmarks_to_command` in
 # handtracking.py:1782) keeps the arm tracking hand x/y/depth in 3D with
-# pan/lift/elbow/wrist_flex; wrist orientation (yaw/roll/pitch) stays at 0.
+# pan/lift/elbow/wrist_flex; optional simple palm roll can still drive motor 7
+# through the wrist_pitch JointCommand field.
 # Re-enable cartesian once the mirror calibration is recomputed against the
 # current chain or the unreachable anchors are dropped.
 DEBUG_DISABLE_EXPENSIVE_OVERLAYS = False
@@ -1101,5 +1124,5 @@ REAL_ROBOT_TORQUE_LIMIT_BY_MOTOR_ID = {
     5: 30.0,   # wrist_yaw
     6: 30.0,   # wrist_roll
     7: 30.0,   # wrist_pitch
-    8: 30.0,   # gripper
+    8: 100.0,   # gripper
 }

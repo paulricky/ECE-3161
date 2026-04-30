@@ -867,6 +867,7 @@ class HandTracker:
         self._last_cartesian_target_xyz = None
         self._last_cartesian_target_rpy = None
         self._filtered_virtual_wrist_rpy = None
+        self._simple_palm_roll_smoothed = None
         self._warned_no_hand_calibration = False
         self._warned_no_workspace_calibration = False
         self._warned_no_robot_workspace_calibration = False
@@ -1065,6 +1066,90 @@ class HandTracker:
         gripper_open01 = 0.0 if is_closed else float(open01)
         self._last_open01 = _lerp(self._last_open01, gripper_open01, self._open_alpha)
         return self._last_open01
+
+    def estimate_simple_palm_roll(self, hand_lms):
+        lm = hand_lms.landmark
+        index_mcp = lm[5]
+        pinky_mcp = lm[17]
+        dx = float(pinky_mcp.x) - float(index_mcp.x)
+        dy = float(pinky_mcp.y) - float(index_mcp.y)
+        if not math.isfinite(dx) or not math.isfinite(dy):
+            raise ValueError("non-finite palm roll landmarks")
+        roll = math.atan2(dy, dx)
+        alpha = _clip(float(getattr(val, "HAND_SIMPLE_PALM_ROLL_SMOOTHING", 0.60)), 0.0, 1.0)
+        if self._simple_palm_roll_smoothed is None:
+            smoothed = float(roll)
+        else:
+            delta = _wrap_angle(float(roll) - float(self._simple_palm_roll_smoothed))
+            smoothed = _wrap_angle(float(self._simple_palm_roll_smoothed) + alpha * delta)
+        self._simple_palm_roll_smoothed = float(smoothed)
+        return float(smoothed)
+
+    def _simple_palm_roll_target_joint(self) -> str:
+        target = str(getattr(val, "HAND_SIMPLE_PALM_ROLL_TARGET_JOINT", "wrist_pitch")).strip().lower()
+        if target not in {"wrist_yaw", "wrist_roll", "wrist_pitch"}:
+            target = "wrist_pitch"
+        return target
+
+    def map_simple_palm_roll_to_joint(self, roll_rad):
+        roll = float(roll_rad)
+        if not math.isfinite(roll):
+            raise ValueError("non-finite palm roll")
+        left = float(getattr(val, "HAND_SIMPLE_PALM_ROLL_LEFT_RAD", -0.6))
+        right = float(getattr(val, "HAND_SIMPLE_PALM_ROLL_RIGHT_RAD", 0.6))
+        out_left = float(getattr(val, "HAND_SIMPLE_PALM_ROLL_OUTPUT_LEFT_RAD", -1.5))
+        out_right = float(getattr(val, "HAND_SIMPLE_PALM_ROLL_OUTPUT_RIGHT_RAD", 1.5))
+        if not all(math.isfinite(x) for x in (left, right, out_left, out_right)):
+            raise ValueError("non-finite palm roll config")
+        denom = right - left
+        t = 0.5 if abs(denom) < 1e-9 else (roll - left) / denom
+        if bool(getattr(val, "HAND_SIMPLE_PALM_ROLL_CLAMP", True)):
+            t = _clip(t, 0.0, 1.0)
+        command = _lerp(out_left, out_right, t)
+        if bool(getattr(val, "HAND_SIMPLE_PALM_ROLL_CLAMP", True)):
+            lo, hi = min(out_left, out_right), max(out_left, out_right)
+            command = _clip(command, lo, hi)
+        limit_name = {
+            "wrist_yaw": "WRIST_YAW",
+            "wrist_roll": "WRIST_ROLL",
+            "wrist_pitch": "WRIST_PITCH",
+        }[self._simple_palm_roll_target_joint()]
+        lo, hi = _get_limit(limit_name, -math.pi, math.pi)
+        command = _clip(command, lo, hi)
+        if not math.isfinite(float(command)):
+            raise ValueError("non-finite palm roll command")
+        return float(command)
+
+    def apply_simple_palm_roll_override(self, command_dict, hand_lms, diagnostics):
+        if not isinstance(command_dict, dict):
+            return command_dict
+        diag = diagnostics if isinstance(diagnostics, dict) else {}
+        enabled = bool(getattr(val, "HAND_SIMPLE_PALM_ROLL_ENABLED", True))
+        target_joint = self._simple_palm_roll_target_joint()
+        diag["simple_palm_roll_enabled"] = bool(enabled)
+        diag["simple_palm_roll_joint"] = target_joint
+        diag["simple_palm_roll_target_joint"] = target_joint
+        if not enabled:
+            command_dict["__diagnostics__"] = diag
+            return command_dict
+        if target_joint not in command_dict:
+            diag["simple_palm_roll_enabled"] = False
+            diag["simple_palm_roll_skip_reason"] = "missing_target_joint"
+            command_dict["__diagnostics__"] = diag
+            return command_dict
+        try:
+            roll = self.estimate_simple_palm_roll(hand_lms)
+            joint_command = self.map_simple_palm_roll_to_joint(roll)
+        except Exception as exc:
+            diag["simple_palm_roll_enabled"] = False
+            diag["simple_palm_roll_skip_reason"] = str(exc)
+            command_dict["__diagnostics__"] = diag
+            return command_dict
+        command_dict[target_joint] = float(joint_command)
+        diag["simple_palm_roll_rad"] = float(roll)
+        diag["simple_palm_roll_command_rad"] = float(joint_command)
+        command_dict["__diagnostics__"] = diag
+        return command_dict
 
     def _smooth_target_pose(self, xyz, rpy):
         xyz = np.asarray(xyz, dtype=np.float64).reshape(3)
@@ -1367,7 +1452,7 @@ class HandTracker:
         )
         cv2.putText(
             frame,
-            f"wflex={out['wrist_flex']:.2f} wyaw={out['wrist_yaw']:.2f} wroll={out['wrist_roll']:.2f} grip={out['gripper_open01']:.2f}",
+            f"wflex={out['wrist_flex']:.2f} wyaw={out['wrist_yaw']:.2f} wroll={out['wrist_roll']:.2f} wpitch={out['wrist_pitch']:.2f} grip={out['gripper_open01']:.2f}",
             (10, h_img - 15),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,
@@ -1397,6 +1482,17 @@ class HandTracker:
                     f"speed={float(getattr(val, 'REAL_ROBOT_ARM_SPEED_PERCENT', 100.0)):.0f}% "
                     "grip=100%"
                 )
+                if (
+                    bool(getattr(val, "HAND_SIMPLE_PALM_ROLL_DEBUG", True))
+                    and bool(diag.get("simple_palm_roll_enabled", False))
+                    and "simple_palm_roll_command_rad" in diag
+                ):
+                    palm_line = (
+                        f"simple roll={float(diag.get('simple_palm_roll_rad', 0.0)):+.2f}rad -> "
+                        f"{diag.get('simple_palm_roll_target_joint', diag.get('simple_palm_roll_joint', '?'))}="
+                        f"{float(diag.get('simple_palm_roll_command_rad', 0.0)):+.2f}rad"
+                    )
+                    cv2.putText(frame, palm_line, (10, max(22, h_img - 138)), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 255), 2, cv2.LINE_AA)
                 if "workspace_mapping_source" in diag:
                     line0 = (
                         f"workspace={diag.get('workspace_method', '?')} legacy={bool(diag.get('robot_workspace_legacy_loaded', False))} "
@@ -1889,6 +1985,7 @@ class HandTracker:
             diag["hand_cartesian_fallback_active"] = False
             diag["ik_success"] = not bool(diag.get("ik_async_pending", False)) and bool(diag.get("reachable", True))
             cmd["__diagnostics__"] = diag
+            cmd = self.apply_simple_palm_roll_override(cmd, hand_lms, diag)
             return cmd
         except Exception as exc:
             log_event(f"Cartesian hand mapping fallback: {exc}")
@@ -1901,7 +1998,9 @@ class HandTracker:
                 diag["failure_reason"] = str(exc)
                 out["__diagnostics__"] = diag
                 return out
-            return self._ik_base_command(gripper_open01, pending=False)
+            out = self._ik_base_command(gripper_open01, pending=False)
+            diag = dict(out.get("__diagnostics__", {})) if isinstance(out.get("__diagnostics__", {}), dict) else {}
+            return self.apply_simple_palm_roll_override(out, hand_lms, diag)
 
     def _old_landmarks_to_command(self, hand_lms, label: str):
         lm = hand_lms.landmark
@@ -1993,7 +2092,7 @@ class HandTracker:
         # arm extended), so "math zero" already coincides with motor zero for
         # shoulder_lift. No -pi/2 offset is needed. wrist_flex carries the
         # keep-gripper-horizontal correction theta2-theta1.
-        return {
+        out = {
             "shoulder_pan": float(shoulder_pan),
             "shoulder_lift": float(-theta1),
             "elbow_flex": float(theta2),
@@ -2008,3 +2107,5 @@ class HandTracker:
                 "hand_depth_autocalibrated": bool(depth_autocal),
             },
         }
+        diag = dict(out.get("__diagnostics__", {}))
+        return self.apply_simple_palm_roll_override(out, hand_lms, diag)

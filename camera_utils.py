@@ -19,6 +19,7 @@ class CameraOpenResult:
     backend_name: str
     backend: Optional[int]
     used_props: bool
+    camera_mode: str = ""
 
 
 @dataclass
@@ -29,6 +30,7 @@ class CameraProbeResult:
     read_ok: bool
     frame_shape: Optional[tuple[int, ...]]
     used_props: bool
+    camera_mode: str = ""
     message: str = ""
 
 
@@ -89,10 +91,38 @@ def _open_capture(index: int, backend: Optional[int]) -> cv2.VideoCapture:
     return cv2.VideoCapture(int(index), int(backend))
 
 
+def _camera_resolution_for_log() -> str:
+    width = int(getattr(val, "CAMERA_CAPTURE_WIDTH", getattr(val, "MAIN_CAMERA_FRAME_WIDTH", 640)))
+    height = int(getattr(val, "CAMERA_CAPTURE_HEIGHT", getattr(val, "MAIN_CAMERA_FRAME_HEIGHT", 480)))
+    fps = int(getattr(val, "CAMERA_CAPTURE_FPS", getattr(val, "MAIN_CAMERA_FPS", 30)))
+    return f"{width}x{height}@{fps}"
+
+
+def _use_native_handtracking_view() -> bool:
+    return (
+        bool(getattr(val, "HANDTRACKING_CAMERA_USE_NATIVE_VIEW", False))
+        or not bool(getattr(val, "HANDTRACKING_CAMERA_FORCE_RESOLUTION", True))
+    )
+
+
+def _camera_prop_mode_label(use_props: bool) -> str:
+    if not use_props:
+        return "unconfigured"
+    if _use_native_handtracking_view():
+        return "native_view"
+    return f"forced_resolution:{_camera_resolution_for_log()}"
+
+
 def _apply_camera_props(cap: cv2.VideoCapture) -> None:
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, int(getattr(val, "MAIN_CAMERA_BUFFERSIZE", 1)))
+    if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
+        try:
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, int(getattr(val, "MAIN_CAMERA_BUFFERSIZE", 1)))
+        except Exception:
+            pass
     if bool(getattr(val, "CAMERA_FORCE_MJPEG", False)):
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    if _use_native_handtracking_view():
+        return
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(getattr(val, "CAMERA_CAPTURE_WIDTH", getattr(val, "MAIN_CAMERA_FRAME_WIDTH", 640))))
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(getattr(val, "CAMERA_CAPTURE_HEIGHT", getattr(val, "MAIN_CAMERA_FRAME_HEIGHT", 480))))
     cap.set(cv2.CAP_PROP_FPS, int(getattr(val, "CAMERA_CAPTURE_FPS", getattr(val, "MAIN_CAMERA_FPS", 30))))
@@ -239,6 +269,7 @@ def _try_camera(index: int, backend_name: str, backend: Optional[int], use_props
     opened = bool(cap.isOpened())
     if opened and use_props:
         _apply_camera_props(cap)
+    camera_mode = _camera_prop_mode_label(use_props)
 
     frame = validate_live_camera_stream(cap) if opened else None
     read_ok = frame is not None
@@ -250,6 +281,7 @@ def _try_camera(index: int, backend_name: str, backend: Optional[int], use_props
         read_ok=read_ok,
         frame_shape=shape,
         used_props=bool(use_props),
+        camera_mode=camera_mode,
     )
     if read_ok:
         return CameraOpenResult(
@@ -259,6 +291,7 @@ def _try_camera(index: int, backend_name: str, backend: Optional[int], use_props
             backend_name=backend_name,
             backend=backend,
             used_props=bool(use_props),
+            camera_mode=camera_mode,
         ), probe
     try:
         cap.release()
@@ -270,11 +303,22 @@ def _try_camera(index: int, backend_name: str, backend: Optional[int], use_props
 def _print_probe(prefix: str, probe: CameraProbeResult) -> None:
     if not bool(getattr(val, "MAIN_CAMERA_VERBOSE_PROBE", True)):
         return
-    shape = "" if probe.frame_shape is None else f" frame_shape={probe.frame_shape}"
+    print_shape = bool(getattr(val, "HANDTRACKING_CAMERA_PRINT_FRAME_SHAPE", True))
+    shape = "" if probe.frame_shape is None or not print_shape else f" frame_shape={probe.frame_shape}"
     print(
         f"{prefix} index={probe.index} backend={probe.backend_name} "
         f"props={'yes' if probe.used_props else 'no'} opened={probe.opened} "
-        f"read_ok={probe.read_ok}{shape}"
+        f"read_ok={probe.read_ok} mode={probe.camera_mode}{shape}"
+    )
+
+
+def _selected_camera_message(prefix: str, result: CameraOpenResult) -> str:
+    shape = ""
+    if bool(getattr(val, "HANDTRACKING_CAMERA_PRINT_FRAME_SHAPE", True)) and hasattr(result.frame, "shape"):
+        shape = f" frame_shape={result.frame.shape}"
+    return (
+        f"{prefix} stable hand-tracking camera index={result.index} backend={result.backend_name} "
+        f"props={'yes' if result.used_props else 'no'} mode={result.camera_mode}{shape}"
     )
 
 
@@ -292,7 +336,7 @@ def open_handtracking_camera(candidate_indices: Optional[Iterable[int]] = None) 
                 attempts.append(probe)
                 _print_probe("[camera]", probe)
                 if result is not None:
-                    print(f"[camera] selected stable hand-tracking camera index={result.index} backend={result.backend_name} props=yes frame_shape={result.frame.shape}")
+                    print(_selected_camera_message("[camera] selected", result))
                     return result
 
             if retry_without_props:
@@ -301,7 +345,7 @@ def open_handtracking_camera(candidate_indices: Optional[Iterable[int]] = None) 
                     attempts.append(probe)
                     _print_probe("[camera]", probe)
                     if result is not None:
-                        print(f"[camera] selected stable hand-tracking camera index={result.index} backend={result.backend_name} props=no frame_shape={result.frame.shape}")
+                        print(_selected_camera_message("[camera] selected", result))
                         return result
 
     fallback = open_previous_style_handtracking_camera(attempts, index=indices[0] if indices else None)
@@ -322,9 +366,7 @@ def open_specific_handtracking_camera(index: int, backend_name: str, used_props:
     if result is None:
         raise CameraOpenError("Could not reopen hand-tracking camera.", [probe])
     print(
-        f"[camera] reopened stable hand-tracking camera index={result.index} "
-        f"backend={result.backend_name} props={'yes' if result.used_props else 'no'} "
-        f"frame_shape={result.frame.shape}"
+        _selected_camera_message("[camera] reopened", result)
     )
     return result
 
@@ -336,13 +378,11 @@ def open_previous_style_handtracking_camera(attempts: Optional[list[CameraProbeR
     opened = bool(cap.isOpened())
     if opened:
         try:
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, int(getattr(val, "MAIN_CAMERA_BUFFERSIZE", 1)))
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(getattr(val, "CAMERA_CAPTURE_WIDTH", getattr(val, "MAIN_CAMERA_FRAME_WIDTH", 640))))
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(getattr(val, "CAMERA_CAPTURE_HEIGHT", getattr(val, "MAIN_CAMERA_FRAME_HEIGHT", 480))))
-            cap.set(cv2.CAP_PROP_FPS, int(getattr(val, "CAMERA_CAPTURE_FPS", getattr(val, "MAIN_CAMERA_FPS", 30))))
+            _apply_camera_props(cap)
         except Exception:
             pass
     frame = validate_live_camera_stream(cap) if opened else None
+    camera_mode = _camera_prop_mode_label(True)
     probe = CameraProbeResult(
         index=index,
         backend_name="default",
@@ -350,13 +390,15 @@ def open_previous_style_handtracking_camera(attempts: Optional[list[CameraProbeR
         read_ok=frame is not None,
         frame_shape=tuple(frame.shape) if frame is not None and hasattr(frame, "shape") else None,
         used_props=True,
+        camera_mode=camera_mode,
     )
     if attempts is not None:
         attempts.append(probe)
     _print_probe("[camera]", probe)
     if frame is not None:
-        print(f"[camera] selected stable hand-tracking camera index={index} backend=default props=yes frame_shape={frame.shape}")
-        return CameraOpenResult(cap=cap, frame=frame, index=index, backend_name="default", backend=None, used_props=True)
+        result = CameraOpenResult(cap=cap, frame=frame, index=index, backend_name="default", backend=None, used_props=True, camera_mode=camera_mode)
+        print(_selected_camera_message("[camera] selected", result))
+        return result
     try:
         cap.release()
     except Exception:

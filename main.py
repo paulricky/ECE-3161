@@ -101,12 +101,14 @@ def _command_from_hand_data(hand_data: dict) -> JointCommand:
     )
 
 
-def _draw_main_hud(frame, pick_runtime: PickAndPlaceRuntime, snap_event: bool) -> None:
+def _draw_main_hud(frame, pick_runtime: PickAndPlaceRuntime, snap_event: bool, camera_info: str = "") -> None:
     key = str(getattr(val, "PICKPLACE_TRIGGER_KEY", "p"))[:1] or "p"
     lines = [
         f"ESC: quit   {key}: pick/place   c: cancel pick/place",
         f"snap trigger: {'YES' if snap_event else 'no'}   pick/place: {'ACTIVE' if pick_runtime.active else 'idle'}",
     ]
+    if camera_info:
+        lines.append(camera_info)
     if pick_runtime.initialized and not pick_runtime.available:
         lines.append(f"pick/place unavailable: {pick_runtime.last_error}")
     for i, line in enumerate(lines):
@@ -169,7 +171,7 @@ def _draw_perf_overlay(frame, perf: PerfStats) -> None:
         f"age {perf.frame_age_ms:.0f}ms hand {perf.hand_ms:.1f}ms IK {perf.ik_ms:.1f}ms serial {perf.robot_enqueue_ms:.1f}ms total {perf.total_ms:.1f}ms",
     ]
     for i, line in enumerate(lines):
-        y = 82 + i * 22
+        y = 106 + i * 22
         cv2.putText(frame, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 0, 0), 3, cv2.LINE_AA)
         cv2.putText(frame, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (40, 255, 40), 1, cv2.LINE_AA)
 
@@ -181,7 +183,43 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Probe camera indices 0..4 and exit without connecting the robot.",
     )
+    camera_group = parser.add_mutually_exclusive_group()
+    camera_group.add_argument(
+        "--native-camera-view",
+        action="store_true",
+        help="Use the camera's native/default view instead of requesting width/height/FPS.",
+    )
+    camera_group.add_argument(
+        "--force-camera-resolution",
+        action="store_true",
+        help="Request CAMERA_CAPTURE_WIDTH/HEIGHT/FPS from values.py for this run.",
+    )
     return parser.parse_args()
+
+
+def _apply_camera_cli_overrides(args: argparse.Namespace) -> None:
+    if bool(getattr(args, "native_camera_view", False)):
+        setattr(val, "HANDTRACKING_CAMERA_USE_NATIVE_VIEW", True)
+        setattr(val, "HANDTRACKING_CAMERA_FORCE_RESOLUTION", False)
+        print("[main] camera override: native/default camera view")
+    elif bool(getattr(args, "force_camera_resolution", False)):
+        setattr(val, "HANDTRACKING_CAMERA_USE_NATIVE_VIEW", False)
+        setattr(val, "HANDTRACKING_CAMERA_FORCE_RESOLUTION", True)
+        print(
+            "[main] camera override: forced resolution "
+            f"{int(getattr(val, 'CAMERA_CAPTURE_WIDTH', getattr(val, 'MAIN_CAMERA_FRAME_WIDTH', 640)))}x"
+            f"{int(getattr(val, 'CAMERA_CAPTURE_HEIGHT', getattr(val, 'MAIN_CAMERA_FRAME_HEIGHT', 480)))} "
+            f"@ {int(getattr(val, 'CAMERA_CAPTURE_FPS', getattr(val, 'MAIN_CAMERA_FPS', 30)))} fps"
+        )
+
+
+def _camera_overlay_info(camera) -> str:
+    camera_info = f"camera: {getattr(camera, 'camera_mode', '') or 'unknown'}"
+    frame = getattr(camera, "frame", None)
+    camera_shape = getattr(frame, "shape", None)
+    if camera_shape is not None and bool(getattr(val, "HANDTRACKING_CAMERA_PRINT_FRAME_SHAPE", True)):
+        camera_info += f" frame_shape={tuple(camera_shape)}"
+    return camera_info
 
 
 def _list_cameras() -> int:
@@ -189,10 +227,10 @@ def _list_cameras() -> int:
     print(f"[main] Probing camera indices 0..4 for {required} stable frames. Robot will not be connected.")
     probes = probe_camera_indices(range(5), read_retries=required)
     for p in probes:
-        shape = "" if p.frame_shape is None else f" frame_shape={p.frame_shape}"
+        shape = "" if p.frame_shape is None or not bool(getattr(val, "HANDTRACKING_CAMERA_PRINT_FRAME_SHAPE", True)) else f" frame_shape={p.frame_shape}"
         print(
             f"  index={p.index} backend={p.backend_name} props={'yes' if p.used_props else 'no'} "
-            f"opened={p.opened} stable_read={'yes' if p.read_ok else 'no'}{shape}"
+            f"mode={getattr(p, 'camera_mode', '')} opened={p.opened} stable_read={'yes' if p.read_ok else 'no'}{shape}"
         )
     return 0
 
@@ -231,6 +269,7 @@ def _start_robot_sender(robot: Optional[SOArmHardwareController], real_robot_ena
 
 def main() -> int:
     args = _parse_args()
+    _apply_camera_cli_overrides(args)
     if args.list_cameras:
         return _list_cameras()
 
@@ -262,6 +301,7 @@ def main() -> int:
 
     cap = camera.cap
     pending_first_frame = camera.frame
+    camera_info = _camera_overlay_info(camera)
     latest_camera = None
     if bool(getattr(val, "CAMERA_THREADED_CAPTURE", True)):
         latest_camera = LatestFrameCamera(cap, initial_frame=pending_first_frame)
@@ -381,6 +421,7 @@ def main() -> int:
                             camera = open_specific_handtracking_camera(camera.index, camera.backend_name, camera.used_props)
                             cap = camera.cap
                             pending_first_frame = camera.frame
+                            camera_info = _camera_overlay_info(camera)
                             if bool(getattr(val, "CAMERA_THREADED_CAPTURE", True)):
                                 latest_camera = LatestFrameCamera(cap, initial_frame=pending_first_frame)
                                 latest_camera.start()
@@ -465,7 +506,7 @@ def main() -> int:
                     perf.robot_enqueue_ms = float(robot.last_command_diagnostics.get("serial_write_ms", perf.robot_enqueue_ms))
                 perf.robot_commands += 1
 
-            _draw_main_hud(frame, pick_runtime, snap_event)
+            _draw_main_hud(frame, pick_runtime, snap_event, camera_info)
             perf.update_rates(time.time())
             _draw_perf_overlay(frame, perf)
             t_display = time.perf_counter()
