@@ -1120,6 +1120,77 @@ class HandTracker:
             raise ValueError("non-finite palm roll command")
         return float(command)
 
+    def _map_direct_wrist_roll_from_roll(self, roll_rad, current_wrist_roll=0.0):
+        roll = float(roll_rad)
+        if not math.isfinite(roll):
+            raise ValueError("non-finite direct wrist-roll input")
+        left = float(getattr(val, "HAND_SIMPLE_PALM_ROLL_LEFT_RAD", -0.6))
+        right = float(getattr(val, "HAND_SIMPLE_PALM_ROLL_RIGHT_RAD", 0.6))
+        out_left = float(getattr(val, "HAND_DIRECT_WRIST_ROLL_OUTPUT_LEFT_RAD", -0.45))
+        out_right = float(getattr(val, "HAND_DIRECT_WRIST_ROLL_OUTPUT_RIGHT_RAD", 0.45))
+        if not all(math.isfinite(x) for x in (left, right, out_left, out_right)):
+            raise ValueError("non-finite direct wrist-roll config")
+        denom = right - left
+        t = 0.5 if abs(denom) < 1e-9 else (roll - left) / denom
+        if bool(getattr(val, "HAND_DIRECT_WRIST_ROLL_CLAMP", True)):
+            t = _clip(t, 0.0, 1.0)
+        mapped = _lerp(out_left, out_right, t)
+        deadband = abs(float(getattr(val, "HAND_DIRECT_WRIST_ROLL_DEADBAND_RAD", 0.03)))
+        if abs(mapped) < deadband:
+            mapped = 0.0
+        blend = _clip(float(getattr(val, "HAND_DIRECT_WRIST_ROLL_BLEND", 1.0)), 0.0, 1.0)
+        current = float(current_wrist_roll)
+        if not math.isfinite(current):
+            current = 0.0
+        command = (1.0 - blend) * current + blend * float(mapped)
+        if bool(getattr(val, "HAND_DIRECT_WRIST_ROLL_CLAMP", True)):
+            lo, hi = _get_limit("WRIST_ROLL", -math.pi, math.pi)
+            if hi < lo:
+                lo, hi = hi, lo
+            command = _clip(command, lo, hi)
+        if not math.isfinite(float(command)):
+            raise ValueError("non-finite direct wrist-roll command")
+        return float(command), float(mapped), float(blend)
+
+    def apply_direct_wrist_roll_override(self, command_dict, hand_lms, diagnostics, palm_roll_rad=None):
+        if not isinstance(command_dict, dict):
+            return command_dict
+        diag = diagnostics if isinstance(diagnostics, dict) else {}
+        enabled = bool(getattr(val, "HAND_DIRECT_WRIST_ROLL_ENABLED", False))
+        diag["direct_wrist_roll_enabled"] = bool(enabled)
+        diag["direct_wrist_roll_source"] = str(getattr(val, "HAND_DIRECT_WRIST_ROLL_SOURCE", "palm_roll"))
+        diag["direct_wrist_roll_applied"] = False
+        if not enabled:
+            command_dict["__diagnostics__"] = diag
+            return command_dict
+        if "wrist_roll" not in command_dict:
+            diag["direct_wrist_roll_skip_reason"] = "missing_wrist_roll"
+            command_dict["__diagnostics__"] = diag
+            return command_dict
+        source = str(getattr(val, "HAND_DIRECT_WRIST_ROLL_SOURCE", "palm_roll")).strip().lower()
+        if source != "palm_roll":
+            diag["direct_wrist_roll_skip_reason"] = f"unsupported_source:{source}"
+            command_dict["__diagnostics__"] = diag
+            return command_dict
+        try:
+            roll = float(palm_roll_rad) if palm_roll_rad is not None else self.estimate_simple_palm_roll(hand_lms)
+            previous = float(command_dict.get("wrist_roll", 0.0))
+            command, mapped, blend = self._map_direct_wrist_roll_from_roll(roll, previous)
+        except Exception as exc:
+            diag["direct_wrist_roll_skip_reason"] = str(exc)
+            command_dict["__diagnostics__"] = diag
+            return command_dict
+        command_dict["wrist_roll"] = float(command)
+        diag["direct_wrist_roll_applied"] = True
+        diag["direct_wrist_roll_palm_roll_rad"] = float(roll)
+        diag["direct_wrist_roll_previous_rad"] = float(previous)
+        diag["direct_wrist_roll_mapped_rad"] = float(mapped)
+        diag["direct_wrist_roll_command_rad"] = float(command)
+        diag["direct_wrist_roll_delta_rad"] = float(command - previous)
+        diag["direct_wrist_roll_blend"] = float(blend)
+        command_dict["__diagnostics__"] = diag
+        return command_dict
+
     def apply_simple_palm_roll_override(self, command_dict, hand_lms, diagnostics):
         if not isinstance(command_dict, dict):
             return command_dict
@@ -1129,27 +1200,51 @@ class HandTracker:
         diag["simple_palm_roll_enabled"] = bool(enabled)
         diag["simple_palm_roll_joint"] = target_joint
         diag["simple_palm_roll_target_joint"] = target_joint
-        if not enabled:
-            command_dict["__diagnostics__"] = diag
-            return command_dict
-        if target_joint not in command_dict:
-            diag["simple_palm_roll_enabled"] = False
-            diag["simple_palm_roll_skip_reason"] = "missing_target_joint"
-            command_dict["__diagnostics__"] = diag
-            return command_dict
-        try:
-            roll = self.estimate_simple_palm_roll(hand_lms)
-            joint_command = self.map_simple_palm_roll_to_joint(roll)
-        except Exception as exc:
-            diag["simple_palm_roll_enabled"] = False
-            diag["simple_palm_roll_skip_reason"] = str(exc)
-            command_dict["__diagnostics__"] = diag
-            return command_dict
-        command_dict[target_joint] = float(joint_command)
-        diag["simple_palm_roll_rad"] = float(roll)
-        diag["simple_palm_roll_command_rad"] = float(joint_command)
+        palm_roll = None
+        if enabled:
+            if target_joint not in command_dict:
+                diag["simple_palm_roll_enabled"] = False
+                diag["simple_palm_roll_skip_reason"] = "missing_target_joint"
+            else:
+                try:
+                    palm_roll = self.estimate_simple_palm_roll(hand_lms)
+                    joint_command = self.map_simple_palm_roll_to_joint(palm_roll)
+                    command_dict[target_joint] = float(joint_command)
+                    diag["simple_palm_roll_rad"] = float(palm_roll)
+                    diag["simple_palm_roll_command_rad"] = float(joint_command)
+                except Exception as exc:
+                    diag["simple_palm_roll_enabled"] = False
+                    diag["simple_palm_roll_skip_reason"] = str(exc)
         command_dict["__diagnostics__"] = diag
-        return command_dict
+        return self.apply_direct_wrist_roll_override(command_dict, hand_lms, diag, palm_roll_rad=palm_roll)
+
+    def _shape_centered_extension_axis(self, centered: float, gamma: float) -> float:
+        if not math.isfinite(float(gamma)) or float(gamma) <= 0.0:
+            gamma = 1.0
+        c = _clip(float(centered), -1.0, 1.0)
+        shaped = math.copysign(abs(c) ** float(gamma), c)
+        if bool(getattr(val, "ROBOT_WORKSPACE_EXTENSION_SHAPING_CLAMP", True)):
+            shaped = _clip(shaped, -1.0, 1.0)
+        return float(shaped)
+
+    def _shape_norm_for_extension(self, norm01: float, axis: str):
+        raw_norm = _clip(float(norm01), 0.0, 1.0)
+        centered_raw = _clip(2.0 * (raw_norm - 0.5), -1.0, 1.0)
+        axis_l = str(axis).strip().lower()
+        if axis_l == "vertical" and bool(getattr(val, "ROBOT_WORKSPACE_VERTICAL_ENDPOINT_BOOST_ENABLED", True)):
+            centered_shaped = self._shape_centered_extension_axis(
+                centered_raw,
+                float(getattr(val, "ROBOT_WORKSPACE_VERTICAL_RESPONSE_GAMMA", 1.0)),
+            )
+        elif axis_l == "depth" and bool(getattr(val, "ROBOT_WORKSPACE_DEPTH_ENDPOINT_BOOST_ENABLED", True)):
+            centered_shaped = self._shape_centered_extension_axis(
+                centered_raw,
+                float(getattr(val, "ROBOT_WORKSPACE_DEPTH_RESPONSE_GAMMA", 1.0)),
+            )
+        else:
+            centered_shaped = centered_raw
+        shaped_norm = _clip(0.5 + 0.5 * centered_shaped, 0.0, 1.0)
+        return float(shaped_norm), float(centered_raw), float(centered_shaped)
 
     def _smooth_target_pose(self, xyz, rpy):
         xyz = np.asarray(xyz, dtype=np.float64).reshape(3)
@@ -1482,6 +1577,7 @@ class HandTracker:
                     f"speed={float(getattr(val, 'REAL_ROBOT_ARM_SPEED_PERCENT', 100.0)):.0f}% "
                     "grip=100%"
                 )
+                overlay_y = max(22, h_img - 138)
                 if (
                     bool(getattr(val, "HAND_SIMPLE_PALM_ROLL_DEBUG", True))
                     and bool(diag.get("simple_palm_roll_enabled", False))
@@ -1492,7 +1588,18 @@ class HandTracker:
                         f"{diag.get('simple_palm_roll_target_joint', diag.get('simple_palm_roll_joint', '?'))}="
                         f"{float(diag.get('simple_palm_roll_command_rad', 0.0)):+.2f}rad"
                     )
-                    cv2.putText(frame, palm_line, (10, max(22, h_img - 138)), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 255), 2, cv2.LINE_AA)
+                    cv2.putText(frame, palm_line, (10, overlay_y), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 255), 2, cv2.LINE_AA)
+                    overlay_y = max(22, overlay_y - 24)
+                if (
+                    bool(getattr(val, "HAND_DIRECT_WRIST_ROLL_DEBUG", True))
+                    and bool(diag.get("direct_wrist_roll_applied", False))
+                    and "direct_wrist_roll_command_rad" in diag
+                ):
+                    roll6_line = (
+                        f"M6 direct roll={float(diag.get('direct_wrist_roll_command_rad', 0.0)):+.2f}rad "
+                        f"delta={float(diag.get('direct_wrist_roll_delta_rad', 0.0)):+.2f}"
+                    )
+                    cv2.putText(frame, roll6_line, (10, overlay_y), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 255), 2, cv2.LINE_AA)
                 if "workspace_mapping_source" in diag:
                     line0 = (
                         f"workspace={diag.get('workspace_method', '?')} legacy={bool(diag.get('robot_workspace_legacy_loaded', False))} "
@@ -1830,7 +1937,7 @@ class HandTracker:
                     x_norm_raw,
                     y_norm_raw,
                     mirror_depth_input,
-                    previous_q=None,
+                    previous_q=self._prev_joints_for_ik(),
                 )
                 mapper_debug.update(seed_debug)
             elif not self._warned_no_robot_workspace_calibration:
@@ -1856,7 +1963,7 @@ class HandTracker:
                     x_norm_raw,
                     y_norm_raw,
                     mirror_depth_input,
-                    previous_q=None,
+                    previous_q=self._prev_joints_for_ik(),
                 )
                 mapper_debug.update(seed_debug)
             elif not self._warned_no_robot_mirror_calibration:
@@ -1886,7 +1993,7 @@ class HandTracker:
                 x_norm,
                 y_norm,
                 depth_norm,
-                previous_q=None,
+                previous_q=self._prev_joints_for_ik(),
             )
             mapper_debug.update(seed_debug)
 
@@ -2037,12 +2144,20 @@ class HandTracker:
         else:
             reach_norm = _clip((size_metric - size_far) / (size_near - size_far), 0.0, 1.0)
 
+        # Keep horizontal/left-right mapping untouched.  Apply only O(1)
+        # monotonic shaping to depth and vertical controls so hand positions
+        # near their endpoints push closer to the calibrated full extension.
+        reach_norm_raw = float(reach_norm)
+        reach_norm, depth_centered_raw, depth_centered_shaped = self._shape_norm_for_extension(reach_norm_raw, "depth")
+        vertical_norm_raw = _clip(1.0 - hand_cy, 0.0, 1.0)
+        vertical_norm, vertical_centered_raw, vertical_centered_shaped = self._shape_norm_for_extension(vertical_norm_raw, "vertical")
+
         forward = _lerp(float(getattr(val, "WORKSPACE_Y_MAX", 0.22)),
                         float(getattr(val, "WORKSPACE_Y_MIN", 0.10)),
                         reach_norm)
         z_world = _lerp(float(getattr(val, "WORKSPACE_Z_MIN", 0.00)),
                         float(getattr(val, "WORKSPACE_Z_MAX", 0.22)),
-                        _clip(1.0 - hand_cy, 0.0, 1.0))
+                        vertical_norm)
 
         # Closed-form 3-DOF planar IK with a gripper-horizontal constraint, so
         # wrist_flex (motor 4) actively participates instead of sitting at zero.
@@ -2104,6 +2219,19 @@ class HandTracker:
             "__diagnostics__": {
                 "hand_size_metric": float(size_metric),
                 "hand_depth_norm": float(reach_norm),
+                "hand_depth_norm_raw": float(reach_norm_raw),
+                "hand_depth_centered_raw": float(depth_centered_raw),
+                "hand_depth_centered_shaped": float(depth_centered_shaped),
+                "hand_vertical_norm_raw": float(vertical_norm_raw),
+                "hand_vertical_norm": float(vertical_norm),
+                "hand_vertical_centered_raw": float(vertical_centered_raw),
+                "hand_vertical_centered_shaped": float(vertical_centered_shaped),
+                "workspace_h_centered_raw": float(_clip(2.0 * (hand_cx - 0.5), -1.0, 1.0)),
+                "workspace_h_centered_shaped": float(_clip(2.0 * (hand_cx - 0.5), -1.0, 1.0)),
+                "workspace_extension_shaping_enabled": bool(
+                    bool(getattr(val, "ROBOT_WORKSPACE_VERTICAL_ENDPOINT_BOOST_ENABLED", True))
+                    or bool(getattr(val, "ROBOT_WORKSPACE_DEPTH_ENDPOINT_BOOST_ENABLED", True))
+                ),
                 "hand_depth_autocalibrated": bool(depth_autocal),
             },
         }

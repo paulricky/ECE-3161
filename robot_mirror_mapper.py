@@ -358,6 +358,27 @@ class RobotMirrorWorkspaceMapper:
             d = _clip(d, -1.0, 1.0)
         return np.array([h, v, d], dtype=np.float64)
 
+    @staticmethod
+    def _signed_gamma(x: float, gamma: float) -> float:
+        if not math.isfinite(float(gamma)) or float(gamma) <= 0.0:
+            gamma = 1.0
+        x = _clip(float(x), -1.0, 1.0)
+        return math.copysign(abs(x) ** float(gamma), x)
+
+    def _shape_centered_inputs(self, x: np.ndarray) -> np.ndarray:
+        raw = np.asarray(x, dtype=np.float64).reshape(3)
+        shaped = raw.copy()
+        # Horizontal is intentionally identity so left/right behavior is unchanged.
+        shaped[0] = raw[0]
+        if bool(getattr(val, "ROBOT_WORKSPACE_VERTICAL_ENDPOINT_BOOST_ENABLED", True)):
+            shaped[1] = self._signed_gamma(raw[1], float(getattr(val, "ROBOT_WORKSPACE_VERTICAL_RESPONSE_GAMMA", 1.0)))
+        if bool(getattr(val, "ROBOT_WORKSPACE_DEPTH_ENDPOINT_BOOST_ENABLED", True)):
+            shaped[2] = self._signed_gamma(raw[2], float(getattr(val, "ROBOT_WORKSPACE_DEPTH_RESPONSE_GAMMA", 1.0)))
+        if bool(getattr(val, "ROBOT_WORKSPACE_EXTENSION_SHAPING_CLAMP", True)):
+            shaped = np.clip(shaped, -1.0, 1.0)
+            shaped[0] = raw[0]
+        return shaped
+
     def _axis_blend_from_centered(self, x: np.ndarray) -> np.ndarray:
         center = self.pose_xyz["center"]
         h, v, d = [float(a) for a in np.asarray(x, dtype=np.float64).reshape(3)]
@@ -495,7 +516,8 @@ class RobotMirrorWorkspaceMapper:
                 "mirror_mapping_source": f"fallback_no_mirror_calibration:{self.error or 'missing'}",
                 "mirror_method": "none",
             }
-        x = self._centered_inputs(horizontal_norm, vertical_norm, depth_norm)
+        x_raw = self._centered_inputs(horizontal_norm, vertical_norm, depth_norm)
+        x = self._shape_centered_inputs(x_raw)
         base = self._axis_blend_from_centered(x)
         method = str(getattr(val, "ROBOT_MIRROR_MAPPING_METHOD", "paired_axis_blend_knn_residual")).strip().lower()
         residual = np.zeros(3, dtype=np.float64)
@@ -533,6 +555,16 @@ class RobotMirrorWorkspaceMapper:
             "mirror_h_centered": float(x[0]),
             "mirror_v_centered": float(x[1]),
             "mirror_d_centered": float(x[2]),
+            "mirror_h_centered_raw": float(x_raw[0]),
+            "mirror_h_centered_shaped": float(x[0]),
+            "mirror_v_centered_raw": float(x_raw[1]),
+            "mirror_v_centered_shaped": float(x[1]),
+            "mirror_d_centered_raw": float(x_raw[2]),
+            "mirror_d_centered_shaped": float(x[2]),
+            "mirror_extension_shaping_enabled": bool(
+                bool(getattr(val, "ROBOT_WORKSPACE_VERTICAL_ENDPOINT_BOOST_ENABLED", True))
+                or bool(getattr(val, "ROBOT_WORKSPACE_DEPTH_ENDPOINT_BOOST_ENABLED", True))
+            ),
             "mirror_nearest_pose": nearest,
             "target_xyz_base_m": base.tolist(),
             "target_xyz_residual_m": residual.tolist(),
@@ -597,7 +629,7 @@ class RobotMirrorWorkspaceMapper:
             return previous_q, {"ik_seed_source": "previous" if previous_q is not None else "none"}
         if not self.loaded:
             return None, {"ik_seed_source": "none"}
-        x = self._centered_inputs(horizontal_norm, vertical_norm, depth_norm)
+        x = self._shape_centered_inputs(self._centered_inputs(horizontal_norm, vertical_norm, depth_norm))
         if self.samples_x.size == 0:
             return None, {"ik_seed_source": "none"}
         order = np.argsort(np.linalg.norm(self.samples_x - x.reshape(1, 3), axis=1))

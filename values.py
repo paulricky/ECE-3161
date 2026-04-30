@@ -1051,6 +1051,33 @@ HAND_ROLL_RIGHT_NORM = HAND_SIMPLE_PALM_ROLL_RIGHT_RAD
 M7_AT_HAND_ROLL_LEFT = HAND_SIMPLE_PALM_ROLL_OUTPUT_LEFT_RAD
 M7_AT_HAND_ROLL_RIGHT = HAND_SIMPLE_PALM_ROLL_OUTPUT_RIGHT_RAD
 
+
+# Low-cost extension shaping.  Horizontal response is intentionally identity
+# because current left/right tracking is the known-good baseline.
+ROBOT_WORKSPACE_HORIZONTAL_RESPONSE_GAMMA = 1.0
+ROBOT_WORKSPACE_VERTICAL_RESPONSE_GAMMA = 0.85
+ROBOT_WORKSPACE_DEPTH_RESPONSE_GAMMA = 0.85
+ROBOT_WORKSPACE_VERTICAL_ENDPOINT_BOOST_ENABLED = True
+ROBOT_WORKSPACE_DEPTH_ENDPOINT_BOOST_ENABLED = True
+ROBOT_WORKSPACE_EXTENSION_SHAPING_CLAMP = True
+
+# Optional O(1) post-IK wrist-roll drive for motor 6.  This uses the already
+# measured image-plane palm roll and does not trigger extra IK solves.
+HAND_DIRECT_WRIST_ROLL_ENABLED = True
+HAND_DIRECT_WRIST_ROLL_SOURCE = "palm_roll"
+HAND_DIRECT_WRIST_ROLL_OUTPUT_LEFT_RAD = -0.45
+HAND_DIRECT_WRIST_ROLL_OUTPUT_RIGHT_RAD = 0.45
+HAND_DIRECT_WRIST_ROLL_BLEND = 1.0
+HAND_DIRECT_WRIST_ROLL_CLAMP = True
+HAND_DIRECT_WRIST_ROLL_DEADBAND_RAD = 0.03
+HAND_DIRECT_WRIST_ROLL_DEBUG = True
+
+# Prevent robot workspace examples from pinning motor 6 during teleop when a
+# previous solution already exists.  The previous wrist roll is a better seed
+# than a static calibration pose for continuous hand control.
+ROBOT_WORKSPACE_SEED_EXCLUDE_WRIST_ROLL_FOR_TELEOP = True
+ROBOT_MIRROR_SEED_EXCLUDE_WRIST_ROLL_FOR_TELEOP = True
+
 # Final speed-percent defaults must remain after all max-responsiveness
 # overrides. Set REAL_ROBOT_ARM_SPEED_PERCENT below 100 only when you
 # intentionally want motors 1-7 slowed; motor 8 gripper is never scaled.
